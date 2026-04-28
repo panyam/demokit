@@ -1,4 +1,4 @@
-.PHONY: run run-tui run-quiet run-tui-quiet readme
+.PHONY: run runtui runsmooth runquiet runtui-quiet readme
 
 # Interactive, plain text
 run:
@@ -7,6 +7,10 @@ run:
 # Interactive, TUI styled boxes
 runtui:
 	go run . --tui
+
+# Interactive, plain text with smooth scroll
+runsmooth:
+	go run . --smooth
 
 # Non-interactive, plain text
 runquiet:

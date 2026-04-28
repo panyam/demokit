@@ -34,12 +34,19 @@ func captureStdout(t *testing.T, fn func()) string {
 	return <-done
 }
 
+// newTestRenderer creates a renderer with smooth scroll disabled for fast tests.
+func newTestRenderer() *Renderer {
+	r := New()
+	r.Delay = -1
+	return r
+}
+
 func TestRendererImplementsInterface(t *testing.T) {
 	var _ demokit.Renderer = (*Renderer)(nil)
 }
 
 func TestRenderHeader(t *testing.T) {
-	r := New()
+	r := newTestRenderer()
 	out := captureStdout(t, func() {
 		r.RenderHeader("My Demo", "A description", 5)
 	})
@@ -52,7 +59,7 @@ func TestRenderHeader(t *testing.T) {
 }
 
 func TestRenderStep(t *testing.T) {
-	r := New()
+	r := newTestRenderer()
 	demo := demokit.New("test").Actors(demokit.Actor("A", "A"), demokit.Actor("B", "B"))
 	step := demo.Step("Test Step").
 		Arrow("A", "B", "call").
@@ -73,7 +80,7 @@ func TestRenderStep(t *testing.T) {
 }
 
 func TestRenderResult(t *testing.T) {
-	r := New()
+	r := newTestRenderer()
 	out := captureStdout(t, func() {
 		r.RenderResult(1, "some output", nil)
 	})
@@ -86,7 +93,7 @@ func TestRenderResult(t *testing.T) {
 }
 
 func TestRenderResultEmpty(t *testing.T) {
-	r := New()
+	r := newTestRenderer()
 	out := captureStdout(t, func() {
 		r.RenderResult(1, "", nil)
 	})
@@ -97,7 +104,7 @@ func TestRenderResultEmpty(t *testing.T) {
 }
 
 func TestRenderSection(t *testing.T) {
-	r := New()
+	r := newTestRenderer()
 	demo := demokit.New("test")
 	demo.Section("My Section", "line 1", "line 2")
 
@@ -126,7 +133,7 @@ func TestRenderSection(t *testing.T) {
 }
 
 func TestRenderDone(t *testing.T) {
-	r := New()
+	r := newTestRenderer()
 	out := captureStdout(t, func() {
 		r.RenderDone()
 	})
@@ -136,20 +143,21 @@ func TestRenderDone(t *testing.T) {
 }
 
 func TestCustomWidth(t *testing.T) {
-	r := New()
-	r.Width = 40
+	r := newTestRenderer()
+	r.MaxWidth = 40
+	r.Fraction = 1.0 // use full terminal width, capped by MaxWidth
+	r.Delay = -1     // disable smooth scroll for test speed
 
 	out := captureStdout(t, func() {
 		r.RenderHeader("Narrow", "", 1)
 	})
-	// Verify it renders without panic and contains the title.
 	if !strings.Contains(out, "Narrow") {
 		t.Error("narrow render missing title")
 	}
 }
 
 func TestCustomPalette(t *testing.T) {
-	r := New()
+	r := newTestRenderer()
 	// Just verify it doesn't panic with a custom palette.
 	r.Palette = DefaultPalette()
 	out := captureStdout(t, func() {

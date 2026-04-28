@@ -4,9 +4,13 @@
 //
 //	go run ./examples/basic/
 //
-// Run with TUI renderer:
+// Run with TUI renderer (styled boxes + smooth scroll):
 //
 //	go run ./examples/basic/ --tui
+//
+// Run plain with smooth scroll:
+//
+//	go run ./examples/basic/ --smooth
 //
 // Run non-interactively (no pauses):
 //
@@ -18,6 +22,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/panyam/demokit"
 	"github.com/panyam/demokit/tui"
@@ -91,12 +96,22 @@ func main() {
 		"In production, tokens expire and must be refreshed — but that's a story for another demo.",
 	)
 
-	// Use TUI renderer if --tui flag is passed.
+	// Parse display flags.
+	useTUI := false
+	smooth := false
 	for _, arg := range os.Args[1:] {
-		if strings.TrimSpace(arg) == "--tui" {
-			demo.WithRenderer(tui.New())
-			break
+		switch strings.TrimSpace(arg) {
+		case "--tui":
+			useTUI = true
+		case "--smooth":
+			smooth = true
 		}
+	}
+
+	if useTUI {
+		demo.WithRenderer(tui.New())
+	} else if smooth {
+		demo.WithRenderer(&demokit.PlainRenderer{Delay: 18 * time.Millisecond})
 	}
 
 	demo.Execute()

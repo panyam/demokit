@@ -13,6 +13,8 @@ Interactive step-through framework for runnable Go examples. Define steps with m
 - **Sections** — arbitrary markdown blocks between steps (explanations, tables, code snippets)
 - **References** — `Ref` type for linking to RFCs, CVEs, specs, blog posts per step
 - **Output capture** — step output is captured and rendered inside styled result boxes (TUI mode)
+- **Dynamic width** — TUI boxes adapt to 80% of terminal width (configurable fraction + max cap)
+- **Smooth scroll** — new content scrolls in line-by-line for a polished demo feel (TUI default, plain opt-in)
 
 ## Usage
 
@@ -66,7 +68,8 @@ The TUI renderer shows each step, section, and result in distinct colored boxes 
 
 ```bash
 go run ./examples/basic/                    # interactive (pauses between steps)
-go run ./examples/basic/ --tui              # interactive with styled TUI boxes
+go run ./examples/basic/ --tui              # interactive with styled TUI boxes + smooth scroll
+go run ./examples/basic/ --smooth           # plain text with smooth scroll
 go run ./examples/basic/ --non-interactive  # full output, no pauses
 go run ./examples/basic/ --readme           # generate README.md
 ```

@@ -30,6 +30,7 @@ import (
 	"io"
 	"os"
 	"strings"
+	"time"
 )
 
 // ActorDef defines a participant in the sequence diagram.
@@ -229,30 +230,41 @@ type Renderer interface {
 
 // PlainRenderer renders demo output as plain text to stdout.
 // This preserves the original demokit output style.
-type PlainRenderer struct{}
+type PlainRenderer struct {
+	// Delay is the per-line smooth scroll delay. Zero means no delay (instant).
+	// Set to e.g. 18ms for a smooth scroll effect.
+	Delay time.Duration
+}
+
+// printLine prints a line and optionally sleeps for the smooth scroll effect.
+func (r *PlainRenderer) printLine(format string, args ...any) {
+	fmt.Printf(format, args...)
+	if r.Delay > 0 {
+		time.Sleep(r.Delay)
+	}
+}
 
 func (r *PlainRenderer) RenderHeader(title, description string, stepCount int) {
-	fmt.Printf("=== %s ===\n", title)
+	r.printLine("=== %s ===\n", title)
 	if description != "" {
-		fmt.Printf("    %s\n", description)
+		r.printLine("    %s\n", description)
 	}
-	fmt.Printf("    %d steps\n", stepCount)
+	r.printLine("    %d steps\n", stepCount)
 	fmt.Println()
 }
 
 func (r *PlainRenderer) RenderStep(stepNum, totalSteps int, step *StepDef) {
-	fmt.Printf("  Step %d/%d: %s", stepNum, totalSteps, step.title)
-	fmt.Printf("  [README → Step %d]\n", stepNum)
+	r.printLine("  Step %d/%d: %s  [README → Step %d]\n", stepNum, totalSteps, step.title, stepNum)
 
 	if len(step.refs) > 0 {
-		fmt.Print("    Refs: ")
+		refs := "    Refs: "
 		for i, ref := range step.refs {
 			if i > 0 {
-				fmt.Print(", ")
+				refs += ", "
 			}
-			fmt.Print(ref.Name)
+			refs += ref.Name
 		}
-		fmt.Println()
+		r.printLine("%s\n", refs)
 	}
 
 	for _, a := range step.arrows {
@@ -260,31 +272,34 @@ func (r *PlainRenderer) RenderStep(stepNum, totalSteps int, step *StepDef) {
 		if a.dashed {
 			arrow = "-->>"
 		}
-		fmt.Printf("    %s %s %s: %s\n", a.from, arrow, a.to, a.label)
+		r.printLine("    %s %s %s: %s\n", a.from, arrow, a.to, a.label)
 	}
 
 	if step.note != "" {
-		fmt.Printf("\n    %s\n", step.note)
+		r.printLine("\n    %s\n", step.note)
 	}
 }
 
 func (r *PlainRenderer) RenderResult(_ int, output string, _ error) {
 	if output != "" {
-		fmt.Print(output)
+		for _, line := range strings.Split(output, "\n") {
+			r.printLine("%s\n", line)
+		}
+	} else {
+		fmt.Println()
 	}
-	fmt.Println()
 }
 
 func (r *PlainRenderer) RenderSection(section *SectionDef) {
-	fmt.Printf("  --- %s ---\n", section.title)
+	r.printLine("  --- %s ---\n", section.title)
 	for _, line := range strings.Split(section.body, "\n") {
-		fmt.Printf("    %s\n", line)
+		r.printLine("    %s\n", line)
 	}
 	fmt.Println()
 }
 
 func (r *PlainRenderer) RenderDone() {
-	fmt.Println("=== Done ===")
+	r.printLine("=== Done ===\n")
 }
 
 func (r *PlainRenderer) WaitForStep() {

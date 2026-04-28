@@ -9,9 +9,10 @@ import (
 	"image/color"
 	"os"
 	"strings"
-
+	"time"
 
 	"charm.land/lipgloss/v2"
+	"github.com/charmbracelet/x/term"
 	"github.com/panyam/demokit"
 )
 
@@ -58,29 +59,80 @@ func DefaultPalette() Palette {
 
 // Renderer renders demo output using Lipgloss styled boxes.
 type Renderer struct {
-	Palette Palette
-	Width   int // box width; 0 means auto (72)
+	Palette  Palette
+	MaxWidth int           // hard cap on box width; 0 means 120
+	Fraction float64       // fraction of terminal width to use; 0 means 0.80
+	Delay    time.Duration // per-line scroll delay; 0 means 18ms, negative disables
 }
 
 // New creates a TUI Renderer with default settings.
 func New() *Renderer {
 	return &Renderer{
 		Palette: DefaultPalette(),
-		Width:   72,
 	}
 }
 
-func (r *Renderer) width() int {
-	if r.Width <= 0 {
-		return 72
+// termWidth returns the current terminal width, or 80 as fallback.
+func termWidth() int {
+	w, _, err := term.GetSize(os.Stdout.Fd())
+	if err != nil || w <= 0 {
+		return 80
 	}
-	return r.Width
+	return w
+}
+
+func (r *Renderer) width() int {
+	frac := r.Fraction
+	if frac <= 0 {
+		frac = 0.80
+	}
+	maxW := r.MaxWidth
+	if maxW <= 0 {
+		maxW = 120
+	}
+	w := int(float64(termWidth()) * frac)
+	if w > maxW {
+		w = maxW
+	}
+	if w < 40 {
+		w = 40
+	}
+	return w
 }
 
 // innerWidth returns the usable content width inside a bordered box.
 func (r *Renderer) innerWidth() int {
 	// Rounded border: 1 char each side + 1 padding each side = 4
 	return r.width() - 4
+}
+
+// scrollDelay returns the per-line delay for smooth scrolling.
+func (r *Renderer) scrollDelay() time.Duration {
+	if r.Delay < 0 {
+		return 0
+	}
+	if r.Delay == 0 {
+		return 18 * time.Millisecond
+	}
+	return r.Delay
+}
+
+// smoothPrint writes a rendered block line-by-line with a short delay
+// between lines to create a smooth scroll-in effect.
+func (r *Renderer) smoothPrint(rendered string) {
+	delay := r.scrollDelay()
+	if delay == 0 {
+		fmt.Println(rendered)
+		return
+	}
+	lines := strings.Split(rendered, "\n")
+	for i, line := range lines {
+		fmt.Println(line)
+		// Skip delay on the last line to avoid trailing pause.
+		if i < len(lines)-1 {
+			time.Sleep(delay)
+		}
+	}
 }
 
 func (r *Renderer) RenderHeader(title, description string, stepCount int) {
@@ -117,7 +169,7 @@ func (r *Renderer) RenderHeader(title, description string, stepCount int) {
 		Padding(0, 1).
 		Width(r.width())
 
-	fmt.Println(box.Render(content))
+	r.smoothPrint(box.Render(content))
 	fmt.Println()
 }
 
@@ -184,7 +236,7 @@ func (r *Renderer) RenderStep(stepNum, totalSteps int, step *demokit.StepDef) {
 		Padding(0, 1).
 		Width(r.width())
 
-	fmt.Println(box.Render(content))
+	r.smoothPrint(box.Render(content))
 }
 
 func (r *Renderer) RenderResult(stepNum int, output string, err error) {
@@ -220,7 +272,7 @@ func (r *Renderer) RenderResult(stepNum int, output string, err error) {
 		Padding(0, 1).
 		Width(r.width())
 
-	fmt.Println(box.Render(content))
+	r.smoothPrint(box.Render(content))
 	fmt.Println()
 }
 
@@ -251,7 +303,7 @@ func (r *Renderer) RenderSection(section *demokit.SectionDef) {
 		Padding(0, 1).
 		Width(r.width())
 
-	fmt.Println(box.Render(content))
+	r.smoothPrint(box.Render(content))
 	fmt.Println()
 }
 
@@ -269,7 +321,7 @@ func (r *Renderer) RenderDone() {
 		Padding(0, 1).
 		Width(r.width())
 
-	fmt.Println(box.Render(style.Render("Done")))
+	r.smoothPrint(box.Render(style.Render("Done")))
 }
 
 func (r *Renderer) WaitForStep() {
