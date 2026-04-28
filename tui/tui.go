@@ -10,6 +10,7 @@ import (
 	"os"
 	"strings"
 
+
 	"charm.land/lipgloss/v2"
 	"github.com/panyam/demokit"
 )
@@ -33,23 +34,25 @@ type Palette struct {
 	Dim           color.Color
 }
 
-// DefaultPalette returns the default color palette.
+// DefaultPalette returns a color palette adapted to the terminal's background.
+// Uses lipgloss.HasDarkBackground for automatic dark/light detection.
 func DefaultPalette() Palette {
+	ld := lipgloss.LightDark(lipgloss.HasDarkBackground(os.Stdin, os.Stderr))
 	return Palette{
-		StepBorder:    lipgloss.Color("#7D56F4"),
-		SectionBorder: lipgloss.Color("#626262"),
-		ResultBorder:  lipgloss.Color("#04B575"),
-		StepNumber:    lipgloss.Color("#FF6B6B"),
-		Title:         lipgloss.Color("#FAFAFA"),
-		Arrow:         lipgloss.Color("#00BFFF"),
-		DashedArrow:   lipgloss.Color("#87CEEB"),
-		Note:          lipgloss.Color("#A8A8A8"),
-		Ref:           lipgloss.Color("#D4A017"),
-		Prompt:        lipgloss.Color("#626262"),
-		Success:       lipgloss.Color("#04B575"),
-		Error:         lipgloss.Color("#FF4444"),
-		Header:        lipgloss.Color("#FF6B6B"),
-		Dim:           lipgloss.Color("#626262"),
+		StepBorder:    ld(lipgloss.Color("#6C3FC7"), lipgloss.Color("#7D56F4")),
+		SectionBorder: ld(lipgloss.Color("#999999"), lipgloss.Color("#626262")),
+		ResultBorder:  ld(lipgloss.Color("#039960"), lipgloss.Color("#04B575")),
+		StepNumber:    ld(lipgloss.Color("#D04040"), lipgloss.Color("#FF6B6B")),
+		Title:         ld(lipgloss.Color("#1A1A1A"), lipgloss.Color("#FAFAFA")),
+		Arrow:         ld(lipgloss.Color("#0070CC"), lipgloss.Color("#00BFFF")),
+		DashedArrow:   ld(lipgloss.Color("#3070A0"), lipgloss.Color("#87CEEB")),
+		Note:          ld(lipgloss.Color("#555555"), lipgloss.Color("#CCCCCC")),
+		Ref:           ld(lipgloss.Color("#9A7B10"), lipgloss.Color("#D4A017")),
+		Prompt:        ld(lipgloss.Color("#888888"), lipgloss.Color("#999999")),
+		Success:       ld(lipgloss.Color("#039960"), lipgloss.Color("#04B575")),
+		Error:         ld(lipgloss.Color("#CC2222"), lipgloss.Color("#FF4444")),
+		Header:        ld(lipgloss.Color("#D04040"), lipgloss.Color("#FF6B6B")),
+		Dim:           ld(lipgloss.Color("#999999"), lipgloss.Color("#888888")),
 	}
 }
 

@@ -24,15 +24,19 @@ type ColorRule struct {
 
 // Common ANSI escape codes for use in ColorRule definitions.
 const (
-	ANSIRed       = "\033[31m"
-	ANSIGreen     = "\033[32m"
-	ANSIYellow    = "\033[33m"
-	ANSIBlue      = "\033[34m"
-	ANSICyan      = "\033[36m"
-	ANSIBrightRed = "\033[91m"
+	ANSIRed          = "\033[31m"
+	ANSIGreen        = "\033[32m"
+	ANSIYellow       = "\033[33m"
+	ANSIBlue         = "\033[34m"
+	ANSICyan         = "\033[36m"
+	ANSIGray         = "\033[37m"  // light gray — subdued but readable on dark backgrounds
+	ANSIBrightRed    = "\033[91m"
+	ANSIBrightGreen  = "\033[92m"
 	ANSIBrightYellow = "\033[93m"
-	ANSIDimCyan   = "\033[2;36m"
-	ANSIDimBlue   = "\033[2;34m"
+	ANSIBrightCyan   = "\033[96m"
+	ANSIBrightWhite  = "\033[97m"
+	ANSIDimCyan      = "\033[2;36m"
+	ANSIDimBlue      = "\033[2;34m"
 )
 
 // NewColorLogger creates a *log.Logger with colorized output.
