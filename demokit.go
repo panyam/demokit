@@ -25,7 +25,9 @@ package demokit
 
 import (
 	"bufio"
+	"bytes"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 )
@@ -66,6 +68,12 @@ type arrowDef struct {
 	dashed          bool // -->> vs ->>
 }
 
+// ArrowView is a read-only view of an arrow for use by renderers.
+type ArrowView struct {
+	From, To, Label string
+	Dashed          bool
+}
+
 func (s *StepDef) isItem() {}
 
 // Arrow adds a solid arrow (request) to the step's sequence diagram.
@@ -98,6 +106,26 @@ func (s *StepDef) Run(fn func()) *StepDef {
 	return s
 }
 
+// --- Read accessors for renderers ---
+
+// Title returns the step title.
+func (s *StepDef) Title() string { return s.title }
+
+// Note returns the step's explanatory note (may be empty).
+func (s *StepDef) NoteText() string { return s.note }
+
+// Refs returns the step's references.
+func (s *StepDef) Refs() []Ref { return s.refs }
+
+// Arrows returns a read-only view of the step's sequence diagram arrows.
+func (s *StepDef) Arrows() []ArrowView {
+	out := make([]ArrowView, len(s.arrows))
+	for i, a := range s.arrows {
+		out[i] = ArrowView{From: a.from, To: a.to, Label: a.label, Dashed: a.dashed}
+	}
+	return out
+}
+
 // SectionDef is a non-executable block of explanatory content.
 type SectionDef struct {
 	title string
@@ -105,6 +133,12 @@ type SectionDef struct {
 }
 
 func (s *SectionDef) isItem() {}
+
+// Title returns the section title.
+func (s *SectionDef) Title() string { return s.title }
+
+// Body returns the section body text.
+func (s *SectionDef) Body() string { return s.body }
 
 // Demo is the top-level container for an interactive example.
 type Demo struct {
@@ -115,6 +149,7 @@ type Demo struct {
 	actors      []ActorDef
 	items       []item
 	stepCount   int
+	renderer    Renderer // nil means PlainRenderer
 }
 
 // New creates a new Demo with the given title.
@@ -169,6 +204,104 @@ func (d *Demo) Section(title string, lines ...string) *Demo {
 	return d
 }
 
+// Renderer controls how demo output is displayed. Implement this interface
+// to provide custom visual styles (e.g., TUI with Lipgloss boxes).
+type Renderer interface {
+	// RenderHeader displays the demo title, description, and step count.
+	RenderHeader(title, description string, stepCount int)
+	// RenderStep displays a step's metadata (number, title, arrows, refs, note)
+	// before it is executed.
+	RenderStep(stepNum, totalSteps int, step *StepDef)
+	// RenderResult displays the captured output from a step's run function.
+	// output is empty if the step had no runFn or produced no output.
+	// err is non-nil if the output capture failed (the step still ran).
+	RenderResult(stepNum int, output string, err error)
+	// RenderSection displays a non-executable explanatory block.
+	RenderSection(section *SectionDef)
+	// RenderDone displays the demo completion message.
+	RenderDone()
+	// WaitForStep blocks until the user is ready to run the next step.
+	// Called only in interactive mode.
+	WaitForStep()
+}
+
+// --- PlainRenderer: default text-only renderer (zero dependencies) ---
+
+// PlainRenderer renders demo output as plain text to stdout.
+// This preserves the original demokit output style.
+type PlainRenderer struct{}
+
+func (r *PlainRenderer) RenderHeader(title, description string, stepCount int) {
+	fmt.Printf("=== %s ===\n", title)
+	if description != "" {
+		fmt.Printf("    %s\n", description)
+	}
+	fmt.Printf("    %d steps\n", stepCount)
+	fmt.Println()
+}
+
+func (r *PlainRenderer) RenderStep(stepNum, totalSteps int, step *StepDef) {
+	fmt.Printf("  Step %d/%d: %s", stepNum, totalSteps, step.title)
+	fmt.Printf("  [README → Step %d]\n", stepNum)
+
+	if len(step.refs) > 0 {
+		fmt.Print("    Refs: ")
+		for i, ref := range step.refs {
+			if i > 0 {
+				fmt.Print(", ")
+			}
+			fmt.Print(ref.Name)
+		}
+		fmt.Println()
+	}
+
+	for _, a := range step.arrows {
+		arrow := "->>"
+		if a.dashed {
+			arrow = "-->>"
+		}
+		fmt.Printf("    %s %s %s: %s\n", a.from, arrow, a.to, a.label)
+	}
+
+	if step.note != "" {
+		fmt.Printf("\n    %s\n", step.note)
+	}
+}
+
+func (r *PlainRenderer) RenderResult(_ int, output string, _ error) {
+	if output != "" {
+		fmt.Print(output)
+	}
+	fmt.Println()
+}
+
+func (r *PlainRenderer) RenderSection(section *SectionDef) {
+	fmt.Printf("  --- %s ---\n", section.title)
+	for _, line := range strings.Split(section.body, "\n") {
+		fmt.Printf("    %s\n", line)
+	}
+	fmt.Println()
+}
+
+func (r *PlainRenderer) RenderDone() {
+	fmt.Println("=== Done ===")
+}
+
+func (r *PlainRenderer) WaitForStep() {
+	fmt.Print("\n    Press Enter to run this step...")
+	bufio.NewReader(os.Stdin).ReadString('\n')
+	fmt.Println()
+}
+
+// --- Execute ---
+
+// WithRenderer sets a custom renderer for the demo.
+// If not called, Execute uses PlainRenderer.
+func (d *Demo) WithRenderer(r Renderer) *Demo {
+	d.renderer = r
+	return d
+}
+
 // Execute runs the demo interactively — pausing between steps for Enter.
 // If --non-interactive is passed (or stdin is not a terminal), runs without pausing.
 func (d *Demo) Execute() {
@@ -183,74 +316,38 @@ func (d *Demo) Execute() {
 		}
 	}
 
-	// Header
-	fmt.Printf("=== %s ===\n", d.title)
-	if d.description != "" {
-		fmt.Printf("    %s\n", d.description)
+	r := d.renderer
+	if r == nil {
+		r = &PlainRenderer{}
 	}
-	fmt.Printf("    %d steps\n", d.stepCount)
-	fmt.Println()
 
-	reader := bufio.NewReader(os.Stdin)
+	r.RenderHeader(d.title, d.description, d.stepCount)
+
 	stepNum := 0
-
 	for _, it := range d.items {
 		switch v := it.(type) {
 		case *StepDef:
 			stepNum++
-			// Step header
-			fmt.Printf("  Step %d/%d: %s", stepNum, d.stepCount, v.title)
-			fmt.Printf("  [README → Step %d]\n", stepNum)
+			r.RenderStep(stepNum, d.stepCount, v)
 
-			// References
-			if len(v.refs) > 0 {
-				fmt.Print("    Refs: ")
-				for i, ref := range v.refs {
-					if i > 0 {
-						fmt.Print(", ")
-					}
-					fmt.Print(ref.Name)
-				}
-				fmt.Println()
-			}
-
-			// Diagram arrows
-			for _, a := range v.arrows {
-				arrow := "->>"
-				if a.dashed {
-					arrow = "-->>"
-				}
-				fmt.Printf("    %s %s %s: %s\n", a.from, arrow, a.to, a.label)
-			}
-
-			// Note
-			if v.note != "" {
-				fmt.Printf("\n    %s\n", v.note)
-			}
-
-			// Pause
 			if interactive {
-				fmt.Print("\n    Press Enter to run this step...")
-				reader.ReadString('\n')
+				r.WaitForStep()
 			}
-			fmt.Println()
 
-			// Execute
+			// Capture output from runFn
+			var output string
+			var captureErr error
 			if v.runFn != nil {
-				v.runFn()
+				output, captureErr = captureOutput(v.runFn)
 			}
-			fmt.Println()
+			r.RenderResult(stepNum, output, captureErr)
 
 		case *SectionDef:
-			fmt.Printf("  --- %s ---\n", v.title)
-			for _, line := range strings.Split(v.body, "\n") {
-				fmt.Printf("    %s\n", line)
-			}
-			fmt.Println()
+			r.RenderSection(v)
 		}
 	}
 
-	fmt.Println("=== Done ===")
+	r.RenderDone()
 }
 
 // Markdown generates the full README content from the demo definition.
@@ -369,6 +466,31 @@ func (d *Demo) Markdown() string {
 	fmt.Fprintf(&b, "```bash\ngo run ./%s/ --non-interactive\n```\n", runPath)
 
 	return b.String()
+}
+
+// captureOutput redirects stdout while fn runs and returns what was written.
+func captureOutput(fn func()) (string, error) {
+	old := os.Stdout
+	r, w, err := os.Pipe()
+	if err != nil {
+		// If pipe fails, just run normally — don't block the demo.
+		fn()
+		return "", err
+	}
+	os.Stdout = w
+
+	done := make(chan string)
+	go func() {
+		var buf bytes.Buffer
+		io.Copy(&buf, r)
+		done <- buf.String()
+	}()
+
+	fn()
+
+	w.Close()
+	os.Stdout = old
+	return <-done, nil
 }
 
 // isTerminal returns true if stdin appears to be an interactive terminal.

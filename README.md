@@ -5,11 +5,14 @@ Interactive step-through framework for runnable Go examples. Define steps with m
 ## Features
 
 - **Interactive CLI** — pause between steps, show diagram arrows and references
+- **TUI mode** — styled terminal boxes via Lipgloss (`tui/` subpackage) with distinct colors for step numbers, titles, arrows, notes, refs, and results
+- **Pluggable renderers** — `Renderer` interface lets you swap presentation without touching demo logic
 - **Non-interactive mode** — `--non-interactive` for CI / full output
 - **README generation** — `--readme` outputs markdown with mermaid diagrams, step descriptions, and deduped reference links
 - **Single source of truth** — steps, arrows, notes, and references defined once in Go code
 - **Sections** — arbitrary markdown blocks between steps (explanations, tables, code snippets)
 - **References** — `Ref` type for linking to RFCs, CVEs, specs, blog posts per step
+- **Output capture** — step output is captured and rendered inside styled result boxes (TUI mode)
 
 ## Usage
 
@@ -46,12 +49,26 @@ func main() {
 }
 ```
 
+### TUI mode
+
+Use the `tui` subpackage for styled terminal output with Lipgloss:
+
+```go
+import "github.com/panyam/demokit/tui"
+
+// Add --tui flag support, or set it directly:
+demo.WithRenderer(tui.New())
+```
+
+The TUI renderer shows each step, section, and result in distinct colored boxes with differentiated styling for step numbers, titles, arrows, notes, and references.
+
 ## Run modes
 
 ```bash
-go run ./examples/01-my-example/                    # interactive (pauses between steps)
-go run ./examples/01-my-example/ --non-interactive   # full output, no pauses
-go run ./examples/01-my-example/ --readme            # generate README.md
+go run ./examples/basic/                    # interactive (pauses between steps)
+go run ./examples/basic/ --tui              # interactive with styled TUI boxes
+go run ./examples/basic/ --non-interactive  # full output, no pauses
+go run ./examples/basic/ --readme           # generate README.md
 ```
 
 ## Install
