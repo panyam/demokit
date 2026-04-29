@@ -1,14 +1,14 @@
-.PHONY: run runtui runsmooth runquiet runtui-quiet readme record replay readme-from readme-html-from gen-readme
+.PHONY: run demo runsmooth runquiet demo-quiet readme record replay readme-from readme-html-from gen-readme
 
 TRACE := /tmp/demokit-basic-trace.json
+
+# Interactive, TUI styled boxes
+demo:
+	go run . --tui
 
 # Interactive, plain text
 run:
 	go run .
-
-# Interactive, TUI styled boxes
-runtui:
-	go run . --tui
 
 # Interactive, plain text with smooth scroll
 runsmooth:
@@ -19,7 +19,7 @@ runquiet:
 	go run . --non-interactive
 
 # Non-interactive, TUI styled boxes
-runtui-quiet:
+demo-quiet:
 	go run . --tui --non-interactive
 
 # Generate README from demo definitions (linear, mermaid)

@@ -1,14 +1,14 @@
-.PHONY: run runtui runquiet record replay readme-from readme-html-from gen-readme
+.PHONY: run demo runquiet record replay readme-from readme-html-from gen-readme
 
 TRACE := /tmp/demokit-graph-trace.json
+
+# Interactive, TUI styled boxes
+demo:
+	go run . --tui
 
 # Interactive, plain text — pick a symptom and walk the recovery path
 run:
 	go run .
-
-# Interactive, TUI styled boxes
-runtui:
-	go run . --tui
 
 # Non-interactive — uses each input's WithDefault
 runquiet:
