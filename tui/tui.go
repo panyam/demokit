@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"charm.land/lipgloss/v2"
-	"github.com/charmbracelet/x/term"
 	"github.com/panyam/demokit"
 )
 
@@ -31,6 +30,8 @@ type Palette struct {
 	Prompt        color.Color
 	Success       color.Color
 	Error         color.Color
+	Warning       color.Color
+	Info          color.Color
 	Header        color.Color
 	Dim           color.Color
 }
@@ -52,6 +53,8 @@ func DefaultPalette() Palette {
 		Prompt:        ld(lipgloss.Color("#888888"), lipgloss.Color("#999999")),
 		Success:       ld(lipgloss.Color("#039960"), lipgloss.Color("#04B575")),
 		Error:         ld(lipgloss.Color("#CC2222"), lipgloss.Color("#FF4444")),
+		Warning:       ld(lipgloss.Color("#B8860B"), lipgloss.Color("#FFD700")),
+		Info:          ld(lipgloss.Color("#0070CC"), lipgloss.Color("#00BFFF")),
 		Header:        ld(lipgloss.Color("#D04040"), lipgloss.Color("#FF6B6B")),
 		Dim:           ld(lipgloss.Color("#999999"), lipgloss.Color("#888888")),
 	}
@@ -72,13 +75,9 @@ func New() *Renderer {
 	}
 }
 
-// termWidth returns the current terminal width, or 80 as fallback.
+// termWidth returns the current terminal width via the shared demokit helper.
 func termWidth() int {
-	w, _, err := term.GetSize(os.Stdout.Fd())
-	if err != nil || w <= 0 {
-		return 80
-	}
-	return w
+	return demokit.TermWidth()
 }
 
 func (r *Renderer) width() int {
@@ -239,36 +238,69 @@ func (r *Renderer) RenderStep(stepNum, totalSteps int, step *demokit.StepDef) {
 	r.smoothPrint(box.Render(content))
 }
 
-func (r *Renderer) RenderResult(stepNum int, output string, err error) {
+// statusColors returns the border and label colors for a given result status.
+func (r *Renderer) statusColors(status demokit.ResultStatus) (border, label color.Color) {
 	p := r.Palette
+	switch status {
+	case demokit.StatusError:
+		return p.Error, p.Error
+	case demokit.StatusWarning:
+		return p.Warning, p.Warning
+	case demokit.StatusInfo:
+		return p.Info, p.Info
+	default:
+		return p.ResultBorder, p.Success
+	}
+}
+
+func (r *Renderer) RenderResult(stepNum int, output string, result *demokit.StepResult) {
 	output = strings.TrimRight(output, "\n")
 
-	if output == "" && err == nil {
+	// Nothing to show
+	if output == "" && result == nil {
 		fmt.Println()
 		return
 	}
 
+	// Determine status
+	status := demokit.StatusSuccess
+	if result != nil {
+		status = result.Status
+	}
+	borderColor, labelColor := r.statusColors(status)
+
+	// Label
+	displayLabel := "Result"
+	if result != nil {
+		displayLabel = result.DisplayLabel()
+	}
 	label := lipgloss.NewStyle().
 		Bold(true).
-		Foreground(p.Success).
-		Render("Result")
+		Foreground(labelColor).
+		Render(displayLabel)
 
-	var body string
-	if err != nil {
-		errStyle := lipgloss.NewStyle().Foreground(p.Error)
-		body = errStyle.Render(fmt.Sprintf("(capture error: %v)", err))
-		if output != "" {
-			body += "\n" + output
-		}
-	} else {
-		body = output
+	// Build body
+	var bodyParts []string
+
+	// Message (error text, warning, info note)
+	if result != nil && result.Message != "" {
+		msgStyle := lipgloss.NewStyle().Foreground(labelColor)
+		bodyParts = append(bodyParts, msgStyle.Render(result.Message))
 	}
 
-	content := label + "\n" + body
+	// Captured stdout
+	if output != "" {
+		bodyParts = append(bodyParts, output)
+	}
+
+	content := label
+	if len(bodyParts) > 0 {
+		content += "\n" + strings.Join(bodyParts, "\n")
+	}
 
 	box := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
-		BorderForeground(p.ResultBorder).
+		BorderForeground(borderColor).
 		Padding(0, 1).
 		Width(r.width())
 

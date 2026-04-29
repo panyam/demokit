@@ -52,10 +52,11 @@ func main() {
 			URL:  "https://www.rfc-editor.org/rfc/rfc6749#section-2",
 		}).
 		Note("The auth server issues credentials that the client will use to authenticate.").
-		Run(func() {
+		Run(func() (result *demokit.StepResult) {
 			fmt.Println("Registered client: app-demo-001")
 			fmt.Println("  client_id:     app-demo-001")
 			fmt.Println("  client_secret: ********")
+			return
 		})
 
 	demo.Step("Request an access token").
@@ -66,11 +67,12 @@ func main() {
 			URL:  "https://www.rfc-editor.org/rfc/rfc6749#section-4.4",
 		}).
 		Note("Using the client_credentials grant, the client exchanges its credentials for a bearer token.").
-		Run(func() {
+		Run(func() (result *demokit.StepResult) {
 			fmt.Println("Token response:")
 			fmt.Println("  access_token: eyJhbGci...truncated")
 			fmt.Println("  token_type:   Bearer")
 			fmt.Println("  expires_in:   3600")
+			return
 		})
 
 	demo.Step("Call a protected API").
@@ -79,19 +81,51 @@ func main() {
 		DashedArrow("AS", "API", "Token valid").
 		DashedArrow("API", "Client", "{user profile}").
 		Note("The API validates the token with the auth server before returning data.").
-		Run(func() {
+		Run(func() (result *demokit.StepResult) {
 			fmt.Println("API response (200 OK):")
 			fmt.Println("  {")
 			fmt.Println(`    "id": "user-42",`)
 			fmt.Println(`    "name": "Alice",`)
 			fmt.Println(`    "email": "alice@example.com"`)
 			fmt.Println("  }")
+			return
+		})
+
+	demo.Step("Refresh with expired token").
+		Arrow("Client", "API", "GET /users/me (expired token)").
+		DashedArrow("API", "Client", "401 Unauthorized").
+		Note("Demonstrates error handling when a token has expired.").
+		Run(func() (result *demokit.StepResult) {
+			fmt.Println("API response (401 Unauthorized):")
+			fmt.Println(`  {"error": "token_expired"}`)
+			return demokit.Errf("token expired, need to refresh")
+		})
+
+	demo.Step("Retry with backoff").
+		Arrow("Client", "AS", "POST /token (refresh)").
+		DashedArrow("AS", "Client", "429 Too Many Requests").
+		Note("Demonstrates warning when rate-limited.").
+		Run(func() (result *demokit.StepResult) {
+			fmt.Println("Rate limited — will retry in 2s")
+			return demokit.Warn("rate limited, backing off")
+		})
+
+	demo.Step("Token refreshed (cached)").
+		Arrow("Client", "AS", "POST /token (refresh)").
+		DashedArrow("AS", "Client", "{new_access_token}").
+		Note("Demonstrates info result for cache hits.").
+		Run(func() (result *demokit.StepResult) {
+			fmt.Println("New token issued")
+			return demokit.Info("served from token cache")
 		})
 
 	demo.Section("What happened",
 		"1. The client registered and received credentials.",
 		"2. It exchanged those credentials for a short-lived access token.",
 		"3. It used that token to call a protected API endpoint.",
+		"4. The token expired — the API returned 401 (shown as Error).",
+		"5. Refresh was rate-limited (shown as Warning).",
+		"6. Token was served from cache (shown as Info).",
 		"",
 		"In production, tokens expire and must be refreshed — but that's a story for another demo.",
 	)

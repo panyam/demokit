@@ -49,12 +49,13 @@ func TestSectionAccessors(t *testing.T) {
 	}
 }
 
-func TestCaptureOutput(t *testing.T) {
-	out, err := captureOutput(func() {
+func TestCaptureOutputSuccess(t *testing.T) {
+	out, result := captureOutput(func() *StepResult {
 		fmt.Print("hello world")
+		return nil
 	})
-	if err != nil {
-		t.Fatalf("captureOutput error: %v", err)
+	if result != nil {
+		t.Fatalf("expected nil result, got %+v", result)
 	}
 	if out != "hello world" {
 		t.Errorf("captureOutput = %q, want %q", out, "hello world")
@@ -62,12 +63,93 @@ func TestCaptureOutput(t *testing.T) {
 }
 
 func TestCaptureOutputEmpty(t *testing.T) {
-	out, err := captureOutput(func() {})
-	if err != nil {
-		t.Fatalf("captureOutput error: %v", err)
+	out, result := captureOutput(func() *StepResult { return nil })
+	if result != nil {
+		t.Fatalf("expected nil result, got %+v", result)
 	}
 	if out != "" {
 		t.Errorf("captureOutput = %q, want empty", out)
+	}
+}
+
+func TestCaptureOutputError(t *testing.T) {
+	out, result := captureOutput(func() *StepResult {
+		fmt.Print("partial output")
+		return Errf("step failed")
+	})
+	if result == nil || result.Status != StatusError {
+		t.Fatalf("expected error result, got %+v", result)
+	}
+	if result.Message != "step failed" {
+		t.Errorf("message = %q, want %q", result.Message, "step failed")
+	}
+	if out != "partial output" {
+		t.Errorf("output = %q, want %q", out, "partial output")
+	}
+}
+
+func TestCaptureOutputPanic(t *testing.T) {
+	out, result := captureOutput(func() *StepResult {
+		fmt.Print("before panic")
+		panic("boom")
+	})
+	if result == nil || result.Status != StatusError {
+		t.Fatalf("expected error result from panic, got %+v", result)
+	}
+	if !strings.Contains(result.Message, "boom") {
+		t.Errorf("message = %q, want to contain 'boom'", result.Message)
+	}
+	if out != "before panic" {
+		t.Errorf("output = %q, want %q", out, "before panic")
+	}
+}
+
+func TestCaptureOutputWarning(t *testing.T) {
+	_, result := captureOutput(func() *StepResult {
+		return Warn("heads up")
+	})
+	if result == nil || result.Status != StatusWarning {
+		t.Fatalf("expected warning result, got %+v", result)
+	}
+	if result.DisplayLabel() != "Warning" {
+		t.Errorf("label = %q, want %q", result.DisplayLabel(), "Warning")
+	}
+}
+
+func TestCaptureOutputInfo(t *testing.T) {
+	_, result := captureOutput(func() *StepResult {
+		return Info("FYI")
+	})
+	if result == nil || result.Status != StatusInfo {
+		t.Fatalf("expected info result, got %+v", result)
+	}
+	if result.DisplayLabel() != "Info" {
+		t.Errorf("label = %q, want %q", result.DisplayLabel(), "Info")
+	}
+}
+
+func TestStepResultCustomLabel(t *testing.T) {
+	r := &StepResult{Status: StatusWarning, Label: "Heads Up", Message: "custom"}
+	if r.DisplayLabel() != "Heads Up" {
+		t.Errorf("DisplayLabel() = %q, want %q", r.DisplayLabel(), "Heads Up")
+	}
+}
+
+func TestStepResultDefaultLabels(t *testing.T) {
+	tests := []struct {
+		status ResultStatus
+		want   string
+	}{
+		{StatusSuccess, "Result"},
+		{StatusError, "Error"},
+		{StatusWarning, "Warning"},
+		{StatusInfo, "Info"},
+	}
+	for _, tt := range tests {
+		got := tt.status.DefaultLabel()
+		if got != tt.want {
+			t.Errorf("DefaultLabel(%d) = %q, want %q", tt.status, got, tt.want)
+		}
 	}
 }
 
@@ -76,12 +158,12 @@ type recordingRenderer struct {
 	calls []string
 }
 
-func (r *recordingRenderer) RenderHeader(title, desc string, n int)      { r.calls = append(r.calls, "header:"+title) }
-func (r *recordingRenderer) RenderStep(num, total int, s *StepDef)       { r.calls = append(r.calls, "step:"+s.title) }
-func (r *recordingRenderer) RenderResult(num int, out string, err error) { r.calls = append(r.calls, "result") }
-func (r *recordingRenderer) RenderSection(s *SectionDef)                 { r.calls = append(r.calls, "section:"+s.title) }
-func (r *recordingRenderer) RenderDone()                                 { r.calls = append(r.calls, "done") }
-func (r *recordingRenderer) WaitForStep()                                {} // no-op
+func (r *recordingRenderer) RenderHeader(title, desc string, n int)                { r.calls = append(r.calls, "header:"+title) }
+func (r *recordingRenderer) RenderStep(num, total int, s *StepDef)                 { r.calls = append(r.calls, "step:"+s.title) }
+func (r *recordingRenderer) RenderResult(num int, out string, res *StepResult)     { r.calls = append(r.calls, "result") }
+func (r *recordingRenderer) RenderSection(s *SectionDef)                           { r.calls = append(r.calls, "section:"+s.title) }
+func (r *recordingRenderer) RenderDone()                                           { r.calls = append(r.calls, "done") }
+func (r *recordingRenderer) WaitForStep()                                          {} // no-op
 
 func TestExecuteCallsRenderer(t *testing.T) {
 	orig := os.Args
@@ -91,7 +173,10 @@ func TestExecuteCallsRenderer(t *testing.T) {
 	rec := &recordingRenderer{}
 	demo := New("Test Demo").WithRenderer(rec)
 	demo.Section("Intro", "hello")
-	demo.Step("Do thing").Run(func() { fmt.Print("output") })
+	demo.Step("Do thing").Run(func() (result *StepResult) {
+		fmt.Print("output")
+		return
+	})
 	demo.Step("Another")
 
 	demo.Execute()
@@ -142,7 +227,7 @@ func TestBuilderChaining(t *testing.T) {
 		DashedArrow("B", "A", "res").
 		Ref(Ref{Name: "R", URL: "http://r"}).
 		Note("n").
-		Run(func() {})
+		Run(func() (result *StepResult) { return })
 
 	if s.title != "s" || len(s.arrows) != 2 || len(s.refs) != 1 || s.note != "n" || s.runFn == nil {
 		t.Errorf("step chaining failed: %+v", s)

@@ -79,7 +79,7 @@ func TestRenderStep(t *testing.T) {
 	}
 }
 
-func TestRenderResult(t *testing.T) {
+func TestRenderResultSuccess(t *testing.T) {
 	r := newTestRenderer()
 	out := captureStdout(t, func() {
 		r.RenderResult(1, "some output", nil)
@@ -97,9 +97,62 @@ func TestRenderResultEmpty(t *testing.T) {
 	out := captureStdout(t, func() {
 		r.RenderResult(1, "", nil)
 	})
-	// Empty result should not render a box
 	if strings.Contains(out, "Result") {
 		t.Error("empty result should not render a Result box")
+	}
+}
+
+func TestRenderResultError(t *testing.T) {
+	r := newTestRenderer()
+	out := captureStdout(t, func() {
+		r.RenderResult(1, "partial output", demokit.Errf("something broke"))
+	})
+	if !strings.Contains(out, "Error") {
+		t.Error("error result should contain 'Error' label")
+	}
+	if !strings.Contains(out, "something broke") {
+		t.Error("error result should contain error message")
+	}
+	if !strings.Contains(out, "partial output") {
+		t.Error("error result should still show captured output")
+	}
+}
+
+func TestRenderResultWarning(t *testing.T) {
+	r := newTestRenderer()
+	out := captureStdout(t, func() {
+		r.RenderResult(1, "", demokit.Warn("watch out"))
+	})
+	if !strings.Contains(out, "Warning") {
+		t.Error("warning result should contain 'Warning' label")
+	}
+	if !strings.Contains(out, "watch out") {
+		t.Error("warning result should contain message")
+	}
+}
+
+func TestRenderResultInfo(t *testing.T) {
+	r := newTestRenderer()
+	out := captureStdout(t, func() {
+		r.RenderResult(1, "", demokit.Info("FYI"))
+	})
+	if !strings.Contains(out, "Info") {
+		t.Error("info result should contain 'Info' label")
+	}
+	if !strings.Contains(out, "FYI") {
+		t.Error("info result should contain message")
+	}
+}
+
+func TestRenderResultCustomLabel(t *testing.T) {
+	r := newTestRenderer()
+	out := captureStdout(t, func() {
+		r.RenderResult(1, "", &demokit.StepResult{
+			Status: demokit.StatusWarning, Label: "Heads Up", Message: "custom label",
+		})
+	})
+	if !strings.Contains(out, "Heads Up") {
+		t.Error("custom label result should contain 'Heads Up'")
 	}
 }
 

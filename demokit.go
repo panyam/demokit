@@ -31,6 +31,8 @@ import (
 	"os"
 	"strings"
 	"time"
+
+	"github.com/charmbracelet/x/term"
 )
 
 // ActorDef defines a participant in the sequence diagram.
@@ -55,13 +57,78 @@ type Ref struct {
 	URL  string // e.g., "https://www.rfc-editor.org/rfc/rfc7519"
 }
 
+// ResultStatus controls how a step's result is rendered.
+type ResultStatus int
+
+const (
+	StatusSuccess ResultStatus = iota // green / "Result"
+	StatusError                       // red / "Error"
+	StatusWarning                     // yellow / "Warning"
+	StatusInfo                        // blue / "Info"
+)
+
+// DefaultLabel returns the default display label for a status.
+func (s ResultStatus) DefaultLabel() string {
+	switch s {
+	case StatusError:
+		return "Error"
+	case StatusWarning:
+		return "Warning"
+	case StatusInfo:
+		return "Info"
+	default:
+		return "Result"
+	}
+}
+
+// StepResult carries the outcome of a step's run function.
+// A nil *StepResult from Run means success with no message.
+// The zero value is also success.
+type StepResult struct {
+	Status  ResultStatus // controls color/border styling
+	Label   string       // custom title; empty = auto from Status
+	Message string       // shown prominently (error text, info note, etc.)
+	Err     error        // underlying error, if any
+}
+
+// DisplayLabel returns Label if set, otherwise the default for the Status.
+func (r *StepResult) DisplayLabel() string {
+	if r.Label != "" {
+		return r.Label
+	}
+	return r.Status.DefaultLabel()
+}
+
+// Convenience constructors for common result types.
+
+// Err creates an error result from an error.
+func Err(err error) *StepResult {
+	return &StepResult{Status: StatusError, Message: err.Error(), Err: err}
+}
+
+// Errf creates an error result from a formatted string.
+func Errf(format string, args ...any) *StepResult {
+	msg := fmt.Sprintf(format, args...)
+	return &StepResult{Status: StatusError, Message: msg, Err: fmt.Errorf("%s", msg)}
+}
+
+// Warn creates a warning result.
+func Warn(msg string) *StepResult {
+	return &StepResult{Status: StatusWarning, Message: msg}
+}
+
+// Info creates an informational result.
+func Info(msg string) *StepResult {
+	return &StepResult{Status: StatusInfo, Message: msg}
+}
+
 // StepDef defines one executable step in the demo.
 type StepDef struct {
 	title  string
 	arrows []arrowDef
 	refs   []Ref
 	note   string
-	runFn  func()
+	runFn  func() *StepResult
 }
 
 type arrowDef struct {
@@ -102,7 +169,13 @@ func (s *StepDef) Note(text string) *StepDef {
 }
 
 // Run sets the function to execute for this step.
-func (s *StepDef) Run(fn func()) *StepDef {
+// Return nil or a zero StepResult for success. Use named return for brevity:
+//
+//	step.Run(func() (result *demokit.StepResult) {
+//	    fmt.Println("did the thing")
+//	    return // nil = success
+//	})
+func (s *StepDef) Run(fn func() *StepResult) *StepDef {
 	s.runFn = fn
 	return s
 }
@@ -214,9 +287,8 @@ type Renderer interface {
 	// before it is executed.
 	RenderStep(stepNum, totalSteps int, step *StepDef)
 	// RenderResult displays the captured output from a step's run function.
-	// output is empty if the step had no runFn or produced no output.
-	// err is non-nil if the output capture failed (the step still ran).
-	RenderResult(stepNum int, output string, err error)
+	// output is the captured stdout. result is nil for success with no message.
+	RenderResult(stepNum int, output string, result *StepResult)
 	// RenderSection displays a non-executable explanatory block.
 	RenderSection(section *SectionDef)
 	// RenderDone displays the demo completion message.
@@ -234,6 +306,62 @@ type PlainRenderer struct {
 	// Delay is the per-line smooth scroll delay. Zero means no delay (instant).
 	// Set to e.g. 18ms for a smooth scroll effect.
 	Delay time.Duration
+	// MaxWidth caps the output width. 0 means 120.
+	MaxWidth int
+	// Fraction of terminal width to use. 0 means 0.90.
+	Fraction float64
+}
+
+// width returns the usable output width.
+func (r *PlainRenderer) width() int {
+	frac := r.Fraction
+	if frac <= 0 {
+		frac = 0.90
+	}
+	maxW := r.MaxWidth
+	if maxW <= 0 {
+		maxW = 120
+	}
+	w := int(float64(TermWidth()) * frac)
+	if w > maxW {
+		w = maxW
+	}
+	if w < 40 {
+		w = 40
+	}
+	return w
+}
+
+// wrapText wraps a string to fit within width, respecting an indent prefix.
+// Each output line is prefixed with indent.
+func wrapText(s string, width int, indent string) string {
+	maxLen := width - len(indent)
+	if maxLen <= 10 {
+		maxLen = 10
+	}
+	var result []string
+	for _, para := range strings.Split(s, "\n") {
+		if para == "" {
+			result = append(result, indent)
+			continue
+		}
+		words := strings.Fields(para)
+		if len(words) == 0 {
+			result = append(result, indent)
+			continue
+		}
+		line := words[0]
+		for _, w := range words[1:] {
+			if len(line)+1+len(w) > maxLen {
+				result = append(result, indent+line)
+				line = w
+			} else {
+				line += " " + w
+			}
+		}
+		result = append(result, indent+line)
+	}
+	return strings.Join(result, "\n")
 }
 
 // printLine prints a line and optionally sleeps for the smooth scroll effect.
@@ -245,16 +373,22 @@ func (r *PlainRenderer) printLine(format string, args ...any) {
 }
 
 func (r *PlainRenderer) RenderHeader(title, description string, stepCount int) {
-	r.printLine("=== %s ===\n", title)
+	w := r.width()
+	sep := strings.Repeat("=", w)
+	r.printLine("%s\n", sep)
+	r.printLine("  %s\n", title)
 	if description != "" {
-		r.printLine("    %s\n", description)
+		r.printLine("  %s\n", description)
 	}
-	r.printLine("    %d steps\n", stepCount)
+	r.printLine("  %d steps\n", stepCount)
+	r.printLine("%s\n", sep)
 	fmt.Println()
 }
 
 func (r *PlainRenderer) RenderStep(stepNum, totalSteps int, step *StepDef) {
-	r.printLine("  Step %d/%d: %s  [README → Step %d]\n", stepNum, totalSteps, step.title, stepNum)
+	w := r.width()
+	r.printLine("  Step %d/%d: %s\n", stepNum, totalSteps, step.title)
+	r.printLine("  %s\n", strings.Repeat("-", w-2))
 
 	if len(step.refs) > 0 {
 		refs := "    Refs: "
@@ -276,25 +410,41 @@ func (r *PlainRenderer) RenderStep(stepNum, totalSteps int, step *StepDef) {
 	}
 
 	if step.note != "" {
-		r.printLine("\n    %s\n", step.note)
+		r.printLine("\n%s\n", wrapText(step.note, w, "    "))
 	}
 }
 
-func (r *PlainRenderer) RenderResult(_ int, output string, _ error) {
+func (r *PlainRenderer) RenderResult(_ int, output string, result *StepResult) {
+	w := r.width()
+
+	// Determine label
+	label := "Result"
+	if result != nil {
+		label = result.DisplayLabel()
+	}
+
+	// Print label for non-success or when there's a message
+	if result != nil && result.Status != StatusSuccess {
+		r.printLine("  [%s]", label)
+		if result.Message != "" {
+			r.printLine(" %s", result.Message)
+		}
+		r.printLine("\n")
+	}
+
 	if output != "" {
-		for _, line := range strings.Split(output, "\n") {
+		wrapped := wrapText(output, w, "")
+		for _, line := range strings.Split(wrapped, "\n") {
 			r.printLine("%s\n", line)
 		}
-	} else {
-		fmt.Println()
 	}
+	fmt.Println()
 }
 
 func (r *PlainRenderer) RenderSection(section *SectionDef) {
+	w := r.width()
 	r.printLine("  --- %s ---\n", section.title)
-	for _, line := range strings.Split(section.body, "\n") {
-		r.printLine("    %s\n", line)
-	}
+	r.printLine("%s\n", wrapText(section.body, w, "    "))
 	fmt.Println()
 }
 
@@ -351,11 +501,11 @@ func (d *Demo) Execute() {
 
 			// Capture output from runFn
 			var output string
-			var captureErr error
+			var result *StepResult
 			if v.runFn != nil {
-				output, captureErr = captureOutput(v.runFn)
+				output, result = captureOutput(v.runFn)
 			}
-			r.RenderResult(stepNum, output, captureErr)
+			r.RenderResult(stepNum, output, result)
 
 		case *SectionDef:
 			r.RenderSection(v)
@@ -484,13 +634,14 @@ func (d *Demo) Markdown() string {
 }
 
 // captureOutput redirects stdout while fn runs and returns what was written.
-func captureOutput(fn func()) (string, error) {
+// Panics are recovered and converted to a StepResult with StatusError.
+func captureOutput(fn func() *StepResult) (output string, result *StepResult) {
 	old := os.Stdout
 	r, w, err := os.Pipe()
 	if err != nil {
 		// If pipe fails, just run normally — don't block the demo.
-		fn()
-		return "", err
+		result = fn()
+		return "", result
 	}
 	os.Stdout = w
 
@@ -501,11 +652,33 @@ func captureOutput(fn func()) (string, error) {
 		done <- buf.String()
 	}()
 
-	fn()
+	func() {
+		defer func() {
+			if rec := recover(); rec != nil {
+				result = &StepResult{
+					Status:  StatusError,
+					Message: fmt.Sprintf("panic: %v", rec),
+				}
+			}
+		}()
+		result = fn()
+	}()
 
 	w.Close()
 	os.Stdout = old
-	return <-done, nil
+	output = <-done
+	return output, result
+}
+
+// TermWidth returns the current terminal width, or 80 as fallback.
+// Tries stdout, then stderr (which stays connected even when stdout is piped).
+func TermWidth() int {
+	for _, f := range []*os.File{os.Stdout, os.Stderr} {
+		if w, _, err := term.GetSize(f.Fd()); err == nil && w > 0 {
+			return w
+		}
+	}
+	return 80
 }
 
 // isTerminal returns true if stdin appears to be an interactive terminal.

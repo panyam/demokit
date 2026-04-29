@@ -13,25 +13,27 @@ go run ./examples/basic/ --readme                # generate README markdown
 
 ## Architecture
 
-- **`demokit.go`** — core library: Demo, StepDef, SectionDef, Renderer interface, PlainRenderer, captureOutput
-- **`tui/`** — Lipgloss-based TUI renderer (styled boxes, configurable palette/width)
+- **`demokit.go`** — core: Demo, StepDef, StepResult, Renderer, PlainRenderer, TermWidth, captureOutput
+- **`tui/`** — Lipgloss TUI renderer (styled boxes, palette, width)
 - **`examples/basic/`** — showcase example with Makefile
 
 See README.md for usage API and install instructions.
 
 ## Conventions
 
-- `Renderer` interface decouples presentation from execution — add new renderers without touching core
-- Core package (`demokit`) uses only stdlib; Lipgloss is isolated in `tui/` subpackage
-- StepDef fields are unexported; read accessors (`Title()`, `NoteText()`, `Refs()`, `Arrows()`) exist for external renderers
-- `captureOutput()` redirects stdout during `runFn()` so renderers can display results in styled boxes
+- `Renderer` interface decouples presentation from execution
+- `Run(fn func() *StepResult)` — named returns for ergonomics: bare `return` = success
+- `StepResult` carries `Status/Label/Message/Err`; renderers style by status
 - Builder pattern: all setters return receiver for chaining
+- StepDef fields unexported; read accessors for external renderers
+- Data between steps: shared closure variables (no framework plumbing)
+- Both renderers are terminal-width-aware (`Fraction`/`MaxWidth` fields)
 
 ## Gotchas
 
-- `Note()` and `Ref()` are setters on StepDef — read accessors are `NoteText()` and `Refs()` to avoid conflict
-- `lipgloss.Color()` in v2 is a function returning `color.Color`, not a type — use `image/color.Color` for struct fields
-- Go's builtin `print()` writes to stderr, not stdout — use `fmt.Print()` for output that needs capturing
-- `.gitignore` pattern `basic` matches dirs too — use `/basic` to match only root binary
-- TUI width is dynamic (80% terminal, capped at `MaxWidth`) — don't hardcode widths
-- Smooth scroll: TUI default 18ms/line, PlainRenderer opt-in via `Delay` field, `Delay < 0` disables in tests
+- `Note()`/`Ref()` are setters — read accessors are `NoteText()`/`Refs()`
+- `lipgloss.Color()` in v2 is a func returning `color.Color`, not a type — use `image/color.Color`
+- `print()` writes to stderr — use `fmt.Print()` for capturable output
+- `.gitignore` pattern `basic` matches dirs — use `/basic` for root binary only
+- `term.GetSize(os.Stdout.Fd())` fails when piped (e.g. `make`) — `TermWidth()` falls back to stderr
+- Smooth scroll: `Delay < 0` disables in tests; TUI default 18ms, PlainRenderer opt-in

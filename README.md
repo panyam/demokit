@@ -12,8 +12,9 @@ Interactive step-through framework for runnable Go examples. Define steps with m
 - **Single source of truth** — steps, arrows, notes, and references defined once in Go code
 - **Sections** — arbitrary markdown blocks between steps (explanations, tables, code snippets)
 - **References** — `Ref` type for linking to RFCs, CVEs, specs, blog posts per step
-- **Output capture** — step output is captured and rendered inside styled result boxes (TUI mode)
-- **Dynamic width** — TUI boxes adapt to 80% of terminal width (configurable fraction + max cap)
+- **Output capture** — step output is captured and rendered inside styled result boxes
+- **Status-aware results** — `StepResult` with Success/Error/Warning/Info status, custom labels, and per-status styling
+- **Dynamic width** — both renderers adapt to terminal width (configurable fraction + max cap)
 - **Smooth scroll** — new content scrolls in line-by-line for a polished demo feel (TUI default, plain opt-in)
 
 ## Usage
@@ -37,8 +38,9 @@ func main() {
         Arrow("Client", "Server", "GET /api/data").
         DashedArrow("Server", "Client", "200 {data}").
         Note("The client sends a request and gets a response.").
-        Run(func() {
+        Run(func() (result *demokit.StepResult) {
             fmt.Println("    Making request...")
+            return // nil = success
         })
 
     demo.Section("Why this matters",
