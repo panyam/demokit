@@ -1,102 +1,86 @@
-# Token Exchange Flow
+# Office Coffee Crisis
 
-How a client obtains and uses an access token
+A short choose-your-own-adventure about the morning caffeine ritual
 
 ## What you'll learn
 
-- **Register the client** — The auth server issues credentials that the client will use to authenticate.
-- **Request an access token** — Using the client_credentials grant, the client exchanges its credentials for a bearer token.
-- **Call a protected API** — The API validates the token with the auth server before returning data.
-- **Refresh with expired token** — Demonstrates error handling when a token has expired.
-- **Retry with backoff** — Demonstrates warning when rate-limited.
-- **Token refreshed (cached)** — Demonstrates info result for cache hits.
+- **Approach the machine** — The machine has three buttons. None of them are labelled in any way that inspires confidence.
+- **Pick a button** — Black is reliable. Sugar is suspicious. Wild Card is, allegedly, what Karen drinks.
+- **Black coffee** — Dependable. Functional. Tastes like burnt cardboard.
+- **Sugar overload** — Tastes great for 90 seconds. The crash will be biblical.
+- **Transformed** — You are, briefly, a cat. Karen does not seem surprised.
 
 ## Flow
 
 ```mermaid
 sequenceDiagram
-    participant Client as Client App
-    participant AS as Auth Server
-    participant API as Resource API
+    participant You
+    participant Machine as Coffee Machine
+    participant Karen as Karen from Accounting
 
-    Note over Client,API: Step 1: Register the client
-    Client->>AS: POST /register
-    AS-->>Client: {client_id, client_secret}
+    Note over You,Karen: Step 1: Approach the machine
+    You->>Machine: shuffle forward
+    Machine-->>You: [hum of disappointment]
 
-    Note over Client,API: Step 2: Request an access token
-    Client->>AS: POST /token (client_credentials)
-    AS-->>Client: {access_token, expires_in}
+    Note over You,Karen: Step 2: Pick a button
 
-    Note over Client,API: Step 3: Call a protected API
-    Client->>API: GET /users/me (Bearer token)
-    API-->>AS: Validate token
-    AS-->>API: Token valid
-    API-->>Client: {user profile}
+    Note over You,Karen: Step 3: Black coffee
+    Machine->>You: pours scalding hot bitter liquid
 
-    Note over Client,API: Step 4: Refresh with expired token
-    Client->>API: GET /users/me (expired token)
-    API-->>Client: 401 Unauthorized
+    Note over You,Karen: Step 4: Sugar overload
+    Machine->>You: syrupy sludge with whipped foam
 
-    Note over Client,API: Step 5: Retry with backoff
-    Client->>AS: POST /token (refresh)
-    AS-->>Client: 429 Too Many Requests
+    Note over You,Karen: Step 5: Wild card
+    Machine->>You: ??? (smells faintly of cilantro)
 
-    Note over Client,API: Step 6: Token refreshed (cached)
-    Client->>AS: POST /token (refresh)
-    AS-->>Client: {new_access_token}
+    Note over You,Karen: Step 6: Drink the wild card?
+    Karen->>You: raises an eyebrow from across the kitchen
+
+    Note over You,Karen: Step 7: Transformed
+
+    Note over You,Karen: Step 8: Dignified retreat
+
+    Note over You,Karen: Step 9: Try a different button?
+
+    Note over You,Karen: Step 10: End
 ```
 
 ## Steps
 
-### Overview
+### Setting the scene
 
-This example walks through a simplified OAuth-style token exchange.
+It is 9:01 AM. You did not sleep enough. The standup is in 14 minutes.
+You approach the office coffee machine with the focus of a samurai.
 
-The client registers, obtains a token, then calls a protected API.
+### Step 1: Approach the machine
 
-### Step 1: Register the client
+The machine has three buttons. None of them are labelled in any way that inspires confidence.
 
-> **References:** [RFC 6749 §2](https://www.rfc-editor.org/rfc/rfc6749#section-2)
+### Step 2: Pick a button
 
-The auth server issues credentials that the client will use to authenticate.
+Black is reliable. Sugar is suspicious. Wild Card is, allegedly, what Karen drinks.
 
-### Step 2: Request an access token
+### Step 3: Black coffee
 
-> **References:** [RFC 6749 §4.4](https://www.rfc-editor.org/rfc/rfc6749#section-4.4)
+Dependable. Functional. Tastes like burnt cardboard.
 
-Using the client_credentials grant, the client exchanges its credentials for a bearer token.
+### Step 4: Sugar overload
 
-### Step 3: Call a protected API
+Tastes great for 90 seconds. The crash will be biblical.
 
-The API validates the token with the auth server before returning data.
+### Step 5: Wild card
 
-### Step 4: Refresh with expired token
+### Step 6: Drink the wild card?
 
-Demonstrates error handling when a token has expired.
+### Step 7: Transformed
 
-### Step 5: Retry with backoff
+You are, briefly, a cat. Karen does not seem surprised.
 
-Demonstrates warning when rate-limited.
+### Step 8: Dignified retreat
 
-### Step 6: Token refreshed (cached)
+### Step 9: Try a different button?
 
-Demonstrates info result for cache hits.
-
-### What happened
-
-1. The client registered and received credentials.
-2. It exchanged those credentials for a short-lived access token.
-3. It used that token to call a protected API endpoint.
-4. The token expired — the API returned 401 (shown as Error).
-5. Refresh was rate-limited (shown as Warning).
-6. Token was served from cache (shown as Info).
-
-In production, tokens expire and must be refreshed — but that's a story for another demo.
-
-## References
-
-- [RFC 6749 §2](https://www.rfc-editor.org/rfc/rfc6749#section-2)
-- [RFC 6749 §4.4](https://www.rfc-editor.org/rfc/rfc6749#section-4.4)
+### Step 10: End
 
 ## Run it
 

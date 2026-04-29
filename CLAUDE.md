@@ -35,7 +35,7 @@ cd examples/graph && make gen-readme
 - JSON round-trip widens numeric inputs to float64 — tests handle both
 - It's a **directed graph**, not a DAG — cycles allowed (hence MaxVisits)
 - Replay forces deterministic Next: user's Run can return anything, recorded Next wins
-- `WaitForStep` with `AutoAcceptAfter` leaks an `os.Stdin.Read` goroutine when the countdown expires — that zombie reader can race later `Prompt` reads and cause a hang. Use `muesli/cancelreader` to cancel pending stdin reads, never raw goroutines.
+- Cancellable stdin reads use `muesli/cancelreader` (not bare goroutines) — Go has no portable stdin deadline; `os.Stdin.SetReadDeadline` is unreliable on terminals across macOS/Windows. See `WaitForEnterOrTimeout` in demokit.go.
 - Regenerate example READMEs with `make gen-readme` in `examples/basic/` (static linear via `--readme`) and `examples/graph/` (trace-driven via `--readme-from`)
 
 ## Open polish

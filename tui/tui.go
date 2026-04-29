@@ -389,41 +389,19 @@ func (r *Renderer) WaitForStep(opts demokit.WaitOpts) {
 		return
 	}
 
-	enter := make(chan struct{}, 1)
-	go func() {
-		bufio.NewReader(os.Stdin).ReadString('\n')
-		enter <- struct{}{}
-	}()
-
-	deadline := time.Now().Add(opts.AutoAcceptAfter)
 	if !opts.ShowCountdown {
 		fmt.Println(style.Render(fmt.Sprintf("  Press Enter to run (auto in %s)...",
 			opts.AutoAcceptAfter.Round(time.Second))))
-		select {
-		case <-enter:
-		case <-time.After(opts.AutoAcceptAfter):
-		}
+		demokit.WaitForEnterOrTimeout(opts.AutoAcceptAfter, nil)
 		return
 	}
 
-	tick := time.NewTicker(100 * time.Millisecond)
-	defer tick.Stop()
-	for {
-		remaining := time.Until(deadline)
-		if remaining <= 0 {
-			fmt.Print("\r" + strings.Repeat(" ", 70) + "\r")
-			return
-		}
+	demokit.WaitForEnterOrTimeout(opts.AutoAcceptAfter, func(remaining time.Duration) {
 		bar := plainCountdownBar(remaining, opts.AutoAcceptAfter, 20)
 		line := fmt.Sprintf("  %s  %4.1fs  (Enter to accept)", bar, remaining.Seconds())
 		fmt.Print("\r" + style.Render(line))
-		select {
-		case <-enter:
-			fmt.Print("\r" + strings.Repeat(" ", 70) + "\r")
-			return
-		case <-tick.C:
-		}
-	}
+	})
+	fmt.Print("\r" + strings.Repeat(" ", 70) + "\r")
 }
 
 // Prompt delegates to the renderer's FormPrompter (default

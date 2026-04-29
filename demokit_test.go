@@ -1,10 +1,13 @@
 package demokit
 
 import (
+	"flag"
 	"fmt"
 	"os"
+	"runtime"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestStepAccessors(t *testing.T) {
@@ -695,6 +698,63 @@ func TestHTMLFromTrace(t *testing.T) {
 	}
 	if !strings.Contains(out, "&lt;not html&gt;") {
 		t.Error("output not escaped")
+	}
+}
+
+// TestRegisterFlags verifies that registering demokit's flags onto a
+// user-owned FlagSet routes values into the demo and disables the
+// internal os.Args scan.
+func TestRegisterFlags(t *testing.T) {
+	orig := os.Args
+	defer func() { os.Args = orig }()
+
+	tmp, err := os.CreateTemp("", "demokit-rf-*.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tmp.Close()
+	defer os.Remove(tmp.Name())
+
+	fs := flag.NewFlagSet("test", flag.ContinueOnError)
+	demo := New("RF").WithRenderer(&recordingRenderer{})
+	demo.RegisterFlags(fs)
+	demo.Step("only").ID("only")
+
+	if err := fs.Parse([]string{"--non-interactive", "--record", tmp.Name()}); err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+
+	// Sanity: even though os.Args has nothing useful for us, the demo
+	// should honour the FlagSet-supplied values.
+	os.Args = []string{"test"}
+
+	demo.Execute()
+
+	loaded, err := LoadTrace(tmp.Name())
+	if err != nil {
+		t.Fatalf("LoadTrace: %v", err)
+	}
+	if len(loaded) != 1 || loaded[0].StepID != "only" {
+		t.Errorf("--record via RegisterFlags did not write trace: %+v", loaded)
+	}
+}
+
+// TestWaitForEnterOrTimeoutRespectsBudget verifies the function returns
+// promptly. In production this exercises the cancelreader-based timeout
+// path; in `go test` (where stdin is typically EOF) it returns from the
+// stdin-read goroutine itself. Either way the budget should be honored.
+//
+// The original bug — leaking the stdin goroutine on countdown expiry —
+// requires a real terminal stdin to reproduce, so we don't test the
+// goroutine count here. The manual repro in examples/graph/ remains
+// the fixture for that.
+func TestWaitForEnterOrTimeoutRespectsBudget(t *testing.T) {
+	_ = runtime.NumGoroutine() // imported only here; keep the import live
+	start := time.Now()
+	WaitForEnterOrTimeout(50*time.Millisecond, nil)
+	elapsed := time.Since(start)
+	if elapsed > 500*time.Millisecond {
+		t.Errorf("WaitForEnterOrTimeout(50ms) blocked for %v — should be near-instant", elapsed)
 	}
 }
 
