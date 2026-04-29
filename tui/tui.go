@@ -66,6 +66,7 @@ type Renderer struct {
 	MaxWidth int           // hard cap on box width; 0 means 120
 	Fraction float64       // fraction of terminal width to use; 0 means 0.80
 	Delay    time.Duration // per-line scroll delay; 0 means 18ms, negative disables
+	prompter FormPrompter
 }
 
 // New creates a TUI Renderer with default settings.
@@ -73,6 +74,26 @@ func New() *Renderer {
 	return &Renderer{
 		Palette: DefaultPalette(),
 	}
+}
+
+// WithPrompter installs a custom FormPrompter for collecting step
+// inputs. If unset, the default ReadlinePrompter (sequential readline
+// with sticky-on-retry defaults) is used.
+func (r *Renderer) WithPrompter(p FormPrompter) *Renderer {
+	r.prompter = p
+	return r
+}
+
+// activePrompter returns the configured FormPrompter, lazily creating
+// the default ReadlinePrompter on first access.
+func (r *Renderer) activePrompter() FormPrompter {
+	if r.prompter == nil {
+		r.prompter = &ReadlinePrompter{
+			PromptColor: r.Palette.Prompt,
+			ErrorColor:  r.Palette.Error,
+		}
+	}
+	return r.prompter
 }
 
 // termWidth returns the current terminal width via the shared demokit helper.
@@ -356,11 +377,71 @@ func (r *Renderer) RenderDone() {
 	r.smoothPrint(box.Render(style.Render("Done")))
 }
 
-func (r *Renderer) WaitForStep() {
+func (r *Renderer) WaitForStep(opts demokit.WaitOpts) {
 	p := r.Palette
 	style := lipgloss.NewStyle().
 		Foreground(p.Prompt).
 		Italic(true)
-	fmt.Println(style.Render("  Press Enter to run this step..."))
-	bufio.NewReader(os.Stdin).ReadString('\n')
+
+	if opts.AutoAcceptAfter <= 0 {
+		fmt.Println(style.Render("  Press Enter to run this step..."))
+		bufio.NewReader(os.Stdin).ReadString('\n')
+		return
+	}
+
+	enter := make(chan struct{}, 1)
+	go func() {
+		bufio.NewReader(os.Stdin).ReadString('\n')
+		enter <- struct{}{}
+	}()
+
+	deadline := time.Now().Add(opts.AutoAcceptAfter)
+	if !opts.ShowCountdown {
+		fmt.Println(style.Render(fmt.Sprintf("  Press Enter to run (auto in %s)...",
+			opts.AutoAcceptAfter.Round(time.Second))))
+		select {
+		case <-enter:
+		case <-time.After(opts.AutoAcceptAfter):
+		}
+		return
+	}
+
+	tick := time.NewTicker(100 * time.Millisecond)
+	defer tick.Stop()
+	for {
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			fmt.Print("\r" + strings.Repeat(" ", 70) + "\r")
+			return
+		}
+		bar := plainCountdownBar(remaining, opts.AutoAcceptAfter, 20)
+		line := fmt.Sprintf("  %s  %4.1fs  (Enter to accept)", bar, remaining.Seconds())
+		fmt.Print("\r" + style.Render(line))
+		select {
+		case <-enter:
+			fmt.Print("\r" + strings.Repeat(" ", 70) + "\r")
+			return
+		case <-tick.C:
+		}
+	}
+}
+
+// Prompt delegates to the renderer's FormPrompter (default
+// ReadlinePrompter). Customize via Renderer.WithPrompter.
+func (r *Renderer) Prompt(stepID string, inputs []demokit.InputDef) map[string]any {
+	return r.activePrompter().Prompt(stepID, inputs)
+}
+
+func plainCountdownBar(remaining, total time.Duration, width int) string {
+	if total <= 0 {
+		return strings.Repeat(" ", width)
+	}
+	filled := int(float64(width) * float64(remaining) / float64(total))
+	if filled < 0 {
+		filled = 0
+	}
+	if filled > width {
+		filled = width
+	}
+	return "[" + strings.Repeat("█", filled) + strings.Repeat("░", width-filled) + "]"
 }

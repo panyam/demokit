@@ -1,3 +1,5 @@
 # Compiled binaries
 /basic
+/graph
 examples/basic/basic
+examples/graph/graph

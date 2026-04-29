@@ -1,39 +1,43 @@
 # CLAUDE.md — demokit
 
+See [README.md](README.md) for what demokit is and how to use it.
+See [examples/graph/main.go](examples/graph/main.go) for a working branching demo.
+
 ## Quick ref
 
 ```bash
-go test ./...                                    # run all tests
-go run ./examples/basic/                         # interactive plain demo
-go run ./examples/basic/ --tui                   # interactive TUI demo (smooth scroll)
-go run ./examples/basic/ --smooth                # plain text with smooth scroll
-go run ./examples/basic/ --non-interactive       # no pauses
-go run ./examples/basic/ --readme                # generate README markdown
+go test ./...
+go run ./examples/graph/                                  # branching demo
+go run ./examples/graph/ --record /tmp/run.json           # save a trace
+go run ./examples/graph/ --replay /tmp/run.json           # replay it
+go run ./examples/graph/ --readme-from /tmp/run.json      # markdown of path
+
+# Per-example README regeneration (checked into repo)
+cd examples/basic && make gen-readme
+cd examples/graph && make gen-readme
 ```
 
-## Architecture
+## Files
 
-- **`demokit.go`** — core: Demo, StepDef, StepResult, Renderer, PlainRenderer, TermWidth, captureOutput
-- **`tui/`** — Lipgloss TUI renderer (styled boxes, palette, width)
-- **`examples/basic/`** — showcase example with Makefile
-
-See README.md for usage API and install instructions.
-
-## Conventions
-
-- `Renderer` interface decouples presentation from execution
-- `Run(fn func() *StepResult)` — named returns for ergonomics: bare `return` = success
-- `StepResult` carries `Status/Label/Message/Err`; renderers style by status
-- Builder pattern: all setters return receiver for chaining
-- StepDef fields unexported; read accessors for external renderers
-- Data between steps: shared closure variables (no framework plumbing)
-- Both renderers are terminal-width-aware (`Fraction`/`MaxWidth` fields)
+- `demokit.go` — Demo, StepDef, StepResult, StepContext, Execute loop, PlainRenderer
+- `inputs.go` — InputDef + helpers (String/Int/Choice/WithDefault)
+- `recorder.go` — TraceEntry, Recorder, JSONFileRecorder, LoadTrace
+- `render_trace.go` — MarkdownFromTrace, HTMLFromTrace
+- `tui/` — Lipgloss renderer + FormPrompter interface
 
 ## Gotchas
 
-- `Note()`/`Ref()` are setters — read accessors are `NoteText()`/`Refs()`
-- `lipgloss.Color()` in v2 is a func returning `color.Color`, not a type — use `image/color.Color`
+- `Note()`/`Ref()` are setters — readers are `NoteText()`/`Refs()`
+- `ID(s)` is a setter; reader is `StepID()` (no Go overloading)
+- `WithDefault` not `Default` on `InputDef` (Default is the public field)
 - `print()` writes to stderr — use `fmt.Print()` for capturable output
-- `.gitignore` pattern `basic` matches dirs — use `/basic` for root binary only
-- `term.GetSize(os.Stdout.Fd())` fails when piped (e.g. `make`) — `TermWidth()` falls back to stderr
-- Smooth scroll: `Delay < 0` disables in tests; TUI default 18ms, PlainRenderer opt-in
+- `term.GetSize(os.Stdout.Fd())` fails when piped — `TermWidth()` falls back to stderr
+- JSON round-trip widens numeric inputs to float64 — tests handle both
+- It's a **directed graph**, not a DAG — cycles allowed (hence MaxVisits)
+- Replay forces deterministic Next: user's Run can return anything, recorded Next wins
+- `WaitForStep` with `AutoAcceptAfter` leaks an `os.Stdin.Read` goroutine when the countdown expires — that zombie reader can race later `Prompt` reads and cause a hang. Use `muesli/cancelreader` to cancel pending stdin reads, never raw goroutines.
+- Regenerate example READMEs with `make gen-readme` in `examples/basic/` (static linear via `--readme`) and `examples/graph/` (trace-driven via `--readme-from`)
+
+## Open polish
+
+CLI arg parsing in `Demo.Execute` is ad-hoc `os.Args` walking. Refactor to stdlib `flag` with a `RegisterFlags(*flag.FlagSet)` hook so demos with their own flags compose cleanly. Tracked as a separate task in this PR.
