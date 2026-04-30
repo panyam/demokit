@@ -43,8 +43,9 @@ type Demo struct {
 	renderer        Renderer // nil means PlainRenderer
 	maxSteps        int      // upper bound on total step visits per Execute (0 = default)
 	maxVisits       int      // upper bound on visits to any single step (0 = unlimited)
-	autoAcceptAfter time.Duration
-	showCountdown   bool
+	autoAcceptAfter      time.Duration
+	showCountdown        bool
+	showStepDenominator  bool
 	recorder        Recorder
 	replay          []TraceEntry
 	replayCursor    int
@@ -61,6 +62,12 @@ type Demo struct {
 	flagReplayPath      string
 	flagDoc             string // md|html|json (empty = not requested)
 	flagFrom            string // optional trace path used with --doc
+
+	// Sidecar-markdown loader state. Errors are stored rather than
+	// returned so FromMarkdown stays chainable; surfaced at Execute.
+	loadError    error
+	loadWarnings []string
+	bindErrors   []string
 }
 
 // New creates a new Demo with the given title.
@@ -93,6 +100,18 @@ func (d *Demo) AutoAcceptAfter(dur time.Duration) *Demo {
 // AutoAcceptAfter is in effect. Has no effect if AutoAcceptAfter is zero.
 func (d *Demo) ShowCountdown(show bool) *Demo {
 	d.showCountdown = show
+	return d
+}
+
+// ShowStepDenominator controls whether step headings render as
+// "Step N/M" (denominator on) or just "Step N" (off, default). The
+// denominator is misleading for cyclic graphs where the visit count
+// can exceed the declared step count, so it's opt-in.
+//
+// Linear demos with no Next jumps benefit from "Step N/M" — set this
+// to true on those. For cyclic / branching demos, leave it off.
+func (d *Demo) ShowStepDenominator(show bool) *Demo {
+	d.showStepDenominator = show
 	return d
 }
 
@@ -284,6 +303,22 @@ func (d *Demo) Execute() {
 		d.scanOwnArgs(os.Args[1:])
 	}
 
+	// Sidecar-markdown errors are fatal — surface them once and abort
+	// before any flag dispatch, so users see the real cause rather
+	// than a downstream symptom (empty doc output, missing step).
+	if d.loadError != nil {
+		fmt.Fprintf(os.Stderr, "demokit: %v\n", d.loadError)
+		return
+	}
+	if len(d.bindErrors) > 0 {
+		fmt.Fprintf(os.Stderr, "demokit: Bind to unknown step id(s): %s\n",
+			strings.Join(d.bindErrors, ", "))
+		return
+	}
+	for _, w := range d.loadWarnings {
+		fmt.Fprintf(os.Stderr, "demokit: %s\n", w)
+	}
+
 	// Doc-emit shortcuts exit before doing anything else. The new
 	// --doc <format> [--from <trace>] surface dispatches first; the
 	// legacy --readme* flags fall through with a deprecation warning.
@@ -365,7 +400,13 @@ walk:
 				break walk
 			}
 
-			r.RenderStep(totalVisits, d.stepCount, v)
+			// totalSteps == 0 means "no denominator". Demos opt in
+			// via ShowStepDenominator for linear walkthroughs.
+			declared := 0
+			if d.showStepDenominator {
+				declared = d.stepCount
+			}
+			r.RenderStep(totalVisits, declared, v)
 
 			// Replay mode pulls inputs and the next-step path from the
 			// recorded trace. A mismatched step ID falls through to the

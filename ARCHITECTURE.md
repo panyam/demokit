@@ -16,6 +16,7 @@ This document describes how demokit is wired together internally — the files, 
 | `render.go` | `RenderContext{Demo, Trace, State}` + `EntryOpts{StepNumber}` — the contract every doc renderer consumes |
 | `render_trace.go` | `RenderEntryMD/HTML`, `RenderDocumentMD/HTML`, legacy `MarkdownFromTrace`/`HTMLFromTrace` wrappers |
 | `render_json.go` | `RenderDocumentJSON`, `JSONFromTrace`, `Demo.JSON()` + projection view structs |
+| `markdown_load.go` | `Demo.FromMarkdown(path)` + `Demo.FromMarkdownBytes` + `Demo.Bind(id)` — sidecar markdown loader |
 | `term.go` | Terminal width detection with stdout/stderr fallback |
 | `logger.go` | Internal `print()` helper (writes to stderr — see gotchas) |
 | `tui/` | Lipgloss-based renderer + `FormPrompter` interface |
@@ -35,6 +36,93 @@ Renderers **never invoke `Run()`**. Computed values are produced by `Execute`, p
 - A renderer can run in a different process (web server, embed host).
 
 The trace renderers (md, html) are layered into a per-entry primitive and a whole-document shell — `RenderEntryMD/HTML` for self-contained fragments (no preamble, no aggregations), `RenderDocumentMD/HTML` for full documents with title preamble, `## Walkthrough` header, and deduplicated references footer. JSON is a single document function (per-entry JSON would be a trivial `json.Marshal(entry)` and not worth wrapping).
+
+## Sidecar markdown
+
+A demo's *content* (titles, notes, mermaid arrows, refs, declared inputs, sections) can live in a companion markdown file loaded via `Demo.FromMarkdown(path)`. *Behavior* — `Run`, `Coalesce`, custom `Parse` closures — stays in Go and attaches to loaded steps via `Demo.Bind(id)`. The sidecar is **optional and additive**: every demo can be expressed inline via `Step()`/`Note()`/`Run()` without a markdown file. Sidecar mode is for demos where prose dominates and the content is easier to edit in markdown than in Go.
+
+### Single source of truth: `StepDef`
+
+Both paths converge on the same struct. Markdown populates `StepDef` fields at `FromMarkdown` time; Go setters mutate the same fields at `Bind(id)` chain time; `Run` reads them at execution. There is no separate "sidecar StepDef" type.
+
+```
+Md (frontmatter / fenced blocks) ─┐
+                                  ├─→ StepDef ──→ Execute / Renderer reads
+Go setter (Bind(id).XYZ(v))     ──┘             ↗
+                                                 
+Run(ctx) closure                ───────────────→ reads via ctx.Inputs
+```
+
+### Override semantics, by field shape
+
+| Field shape | Md sets | Go setter does |
+|---|---|---|
+| **Scalar** (note, title, future per-step `autoAcceptAfter`) | initial value | replace (latest wins) |
+| **Keyed list** (inputs, keyed by `Name`) | initial list | replace-by-key, else append |
+| **Plain list** (refs, future `tags`) | initial list | append |
+| **Closure** (Run, Coalesce, Parse) | (md has no closures) | set; only Go can |
+
+### File format
+
+```markdown
+---
+title: ...
+description: ...
+actors:
+  - { id: A, label: Alpha }
+---
+
+## Section title {#section-id}
+
+Prose-only section body.
+
+## Step title {#step-id}
+
+> Blockquote becomes the step's note (multi-paragraph supported).
+
+​```mermaid
+A ->> B: solid arrow
+B -->> A: dashed arrow
+​```
+
+​```inputs
+- name: x
+  type: string|int|choice
+  options: [a, b, c]   # only for choice
+  default: ...
+​```
+
+​```refs
+- name: RFC ...
+  url: https://...
+​```
+```
+
+### Conventions
+
+- **Heading anchor `{#id}` is the join key.** CommonMark extension; renders cleanly on GitHub. Without an explicit anchor, the title is slugified.
+- **Step vs section is decided by content shape.** A heading with any of [blockquote note, mermaid arrows, refs, inputs] is a step; prose-only headings are sections. Bind only steps.
+- **Three reserved fenced info-strings:** `mermaid`, `inputs`, `refs`. Other fenced blocks pass through as section body for future renderers.
+- **Mermaid features beyond `->>` / `-->>`** (`participant`, `Note over`, `alt`, `loop`, `autonumber`) are silently dropped with a load warning. demokit's model is arrow-only.
+
+### Examples
+
+| Directory | Mode | Stresses |
+|---|---|---|
+| `examples/basic/` | inline | inline-only API; regression check that the Go-only path keeps working |
+| `examples/graph/` | inline | branching state machine, `Coalesce`, `AutoAcceptAfter` countdown |
+| `examples/dungeon/` | sidecar | `FromMarkdownBytes` + `go:embed`, `Bind`, multiple cycles, `MaxVisits` guard, `int` input, Go-side state (the magic ring) |
+
+### Errors
+
+`FromMarkdown` never panics or returns an error directly — it stores any failure on the `Demo` and the chained-call surface stays clean. `Demo.Execute()` checks for stored errors at startup and aborts with a clear stderr message before any step runs:
+
+- File not found / permission denied
+- Malformed frontmatter YAML or unterminated frontmatter
+- Unknown input `type`
+- `Bind(id)` to an id that doesn't appear in the markdown
+
+Load warnings (unsupported mermaid syntax, content before the first heading) print to stderr at Execute start but don't abort.
 
 ## Doc-emit dispatch (`--doc <format>` + `--from <path>`)
 

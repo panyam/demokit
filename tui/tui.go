@@ -201,7 +201,13 @@ func (r *Renderer) RenderStep(stepNum, totalSteps int, step *demokit.StepDef) {
 	numStyle := lipgloss.NewStyle().
 		Bold(true).
 		Foreground(p.StepNumber)
-	badge := numStyle.Render(fmt.Sprintf("Step %d/%d", stepNum, totalSteps))
+	// Once visit count exceeds the declared step total (cyclic graph),
+	// the "N/M" denominator becomes misleading — drop it.
+	stepLabel := fmt.Sprintf("Step %d/%d", stepNum, totalSteps)
+	if stepNum > totalSteps {
+		stepLabel = fmt.Sprintf("Step %d", stepNum)
+	}
+	badge := numStyle.Render(stepLabel)
 
 	// Title
 	titleStyle := lipgloss.NewStyle().

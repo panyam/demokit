@@ -40,12 +40,15 @@ type itemView struct {
 }
 
 // inputView projects an InputDef without its Parse closure (which has
-// no JSON representation). Phase 2 ships Name/Prompt/Default; the typed
-// metadata (kind, options) lands with the inputs registry in Phase 3.
+// no JSON representation). Carries the declarative metadata authors
+// see — Name/Prompt/Default plus the typed shape (Kind/Options) — so
+// embed hosts can render proper choice pickers, int validators, etc.
 type inputView struct {
-	Name    string `json:"name"`
-	Prompt  string `json:"prompt,omitempty"`
-	Default any    `json:"default,omitempty"`
+	Name    string   `json:"name"`
+	Prompt  string   `json:"prompt,omitempty"`
+	Default any      `json:"default,omitempty"`
+	Kind    string   `json:"kind,omitempty"`
+	Options []string `json:"options,omitempty"`
 }
 
 // RenderDocumentJSON renders the demo definition (and optionally a
@@ -109,6 +112,8 @@ func projectDemo(d *Demo) *demoView {
 					Name:    in.Name,
 					Prompt:  in.Prompt,
 					Default: in.Default,
+					Kind:    in.Kind,
+					Options: in.Options,
 				})
 			}
 			v.Items = append(v.Items, iv)

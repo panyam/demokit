@@ -6,6 +6,8 @@ require (
 	charm.land/lipgloss/v2 v2.0.3
 	github.com/charmbracelet/x/term v0.2.2
 	github.com/muesli/cancelreader v0.2.2
+	github.com/yuin/goldmark v1.8.2
+	gopkg.in/yaml.v3 v3.0.1
 )
 
 require (
