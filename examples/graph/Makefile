@@ -1,4 +1,4 @@
-.PHONY: run demo runquiet record replay readme-from readme-html-from gen-readme
+.PHONY: run demo runquiet record replay readme-from readme-html-from gen-readme doc-md doc-html doc-json
 
 TRACE := /tmp/demokit-graph-trace.json
 
@@ -37,5 +37,18 @@ readme-html-from: record
 # Regenerate this example's README.md from a recorded trace.
 # The default-input run captures the "expired token → refresh" branch.
 gen-readme: record
-	go run . --readme-from $(TRACE) > README.md
+	go run . --doc md --from $(TRACE) > README.md
 	@echo "Wrote README.md"
+
+# New --doc <format> surface (replaces --readme*; old flags still work
+# but warn on stderr).
+doc-md: record
+	go run . --doc md --from $(TRACE)
+
+doc-html: record
+	go run . --doc html --from $(TRACE)
+
+# JSON for embed hosts. Includes both the static demo definition and
+# the recorded trace.
+doc-json: record
+	go run . --doc json --from $(TRACE)

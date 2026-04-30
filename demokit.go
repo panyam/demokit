@@ -59,6 +59,8 @@ type Demo struct {
 	flagReadmeHTMLPath  string
 	flagRecordPath      string
 	flagReplayPath      string
+	flagDoc             string // md|html|json (empty = not requested)
+	flagFrom            string // optional trace path used with --doc
 }
 
 // New creates a new Demo with the given title.
@@ -218,6 +220,10 @@ func (d *Demo) RegisterFlags(fs *flag.FlagSet) {
 		"record this run to the given trace file")
 	fs.StringVar(&d.flagReplayPath, "replay", "",
 		"replay from the given trace file (forces deterministic Next)")
+	fs.StringVar(&d.flagDoc, "doc", "",
+		"emit documentation in the given format (md|html|json) and exit")
+	fs.StringVar(&d.flagFrom, "from", "",
+		"trace file to render with --doc (omit for static-definition output)")
 }
 
 // scanOwnArgs is the default flag scanner used when RegisterFlags is
@@ -252,6 +258,16 @@ func (d *Demo) scanOwnArgs(args []string) {
 			i++
 		case strings.HasPrefix(arg, "--replay="):
 			d.flagReplayPath = strings.TrimPrefix(arg, "--replay=")
+		case arg == "--doc" && i+1 < len(args):
+			d.flagDoc = args[i+1]
+			i++
+		case strings.HasPrefix(arg, "--doc="):
+			d.flagDoc = strings.TrimPrefix(arg, "--doc=")
+		case arg == "--from" && i+1 < len(args):
+			d.flagFrom = args[i+1]
+			i++
+		case strings.HasPrefix(arg, "--from="):
+			d.flagFrom = strings.TrimPrefix(arg, "--from=")
 		}
 	}
 }
@@ -268,27 +284,26 @@ func (d *Demo) Execute() {
 		d.scanOwnArgs(os.Args[1:])
 	}
 
-	// Doc-emit shortcuts exit before doing anything else.
+	// Doc-emit shortcuts exit before doing anything else. The new
+	// --doc <format> [--from <trace>] surface dispatches first; the
+	// legacy --readme* flags fall through with a deprecation warning.
+	if d.flagDoc != "" {
+		d.emitDoc(d.flagDoc, d.flagFrom)
+		return
+	}
 	if d.flagReadme {
-		fmt.Print(d.Markdown())
+		fmt.Fprintln(os.Stderr, "demokit: --readme is deprecated; use --doc md")
+		d.emitDoc("md", "")
 		return
 	}
 	if d.flagReadmeFromPath != "" {
-		entries, err := LoadTrace(d.flagReadmeFromPath)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "demokit: --readme-from %s: %v\n", d.flagReadmeFromPath, err)
-			return
-		}
-		fmt.Print(RenderDocumentMD(RenderContext{Demo: d, Trace: entries}))
+		fmt.Fprintln(os.Stderr, "demokit: --readme-from is deprecated; use --doc md --from <path>")
+		d.emitDoc("md", d.flagReadmeFromPath)
 		return
 	}
 	if d.flagReadmeHTMLPath != "" {
-		entries, err := LoadTrace(d.flagReadmeHTMLPath)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "demokit: --readme-html-from %s: %v\n", d.flagReadmeHTMLPath, err)
-			return
-		}
-		fmt.Print(RenderDocumentHTML(RenderContext{Demo: d, Trace: entries}))
+		fmt.Fprintln(os.Stderr, "demokit: --readme-html-from is deprecated; use --doc html --from <path>")
+		d.emitDoc("html", d.flagReadmeHTMLPath)
 		return
 	}
 
@@ -466,6 +481,42 @@ walk:
 	}
 
 	r.RenderDone()
+}
+
+// emitDoc writes one documentation render to stdout and returns. The
+// format argument selects the renderer (md, html, json); from selects
+// the source — empty means static (definition only) and a non-empty
+// path is loaded as a trace. Errors are written to stderr; a malformed
+// trace or unknown format produces no stdout output.
+func (d *Demo) emitDoc(format, from string) {
+	var entries []TraceEntry
+	if from != "" {
+		loaded, err := LoadTrace(from)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "demokit: --from %s: %v\n", from, err)
+			return
+		}
+		entries = loaded
+	}
+
+	switch format {
+	case "md":
+		// Static md routes to the rich Demo.Markdown() visitor; trace
+		// md routes to the per-entry layered renderer. They walk
+		// different sources (declarations vs recorded entries) and
+		// produce intentionally different shapes.
+		if entries == nil {
+			fmt.Print(d.Markdown())
+		} else {
+			fmt.Print(RenderDocumentMD(RenderContext{Demo: d, Trace: entries}))
+		}
+	case "html":
+		fmt.Print(RenderDocumentHTML(RenderContext{Demo: d, Trace: entries}))
+	case "json":
+		fmt.Print(RenderDocumentJSON(RenderContext{Demo: d, Trace: entries}))
+	default:
+		fmt.Fprintf(os.Stderr, "demokit: unknown --doc format %q (want md|html|json)\n", format)
+	}
 }
 
 // collectInputs gathers a step's input payload. In interactive mode the

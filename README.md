@@ -45,11 +45,14 @@ demo.Execute()
 A working version is in [`examples/graph/`](examples/graph/). Run it:
 
 ```bash
-go run ./examples/graph/                                # interactive
-go run ./examples/graph/ --tui                          # styled boxes
-go run ./examples/graph/ --record /tmp/run.json         # save a trace
-go run ./examples/graph/ --replay /tmp/run.json         # replay it
-go run ./examples/graph/ --readme-from /tmp/run.json    # markdown of that path
+go run ./examples/graph/                                  # interactive
+go run ./examples/graph/ --tui                            # styled boxes
+go run ./examples/graph/ --record /tmp/run.json           # save a trace
+go run ./examples/graph/ --replay /tmp/run.json           # replay it
+go run ./examples/graph/ --doc md                         # static markdown
+go run ./examples/graph/ --doc md --from /tmp/run.json    # markdown of that path
+go run ./examples/graph/ --doc html --from /tmp/run.json  # standalone HTML
+go run ./examples/graph/ --doc json --from /tmp/run.json  # JSON for embed hosts
 ```
 
 ## What's in the box
@@ -60,7 +63,9 @@ go run ./examples/graph/ --readme-from /tmp/run.json    # markdown of that path
 
 **Recording and replay.** `--record path.json` writes the path the user took, including inputs and step output. `--replay path.json` reruns the demo over that trace — same inputs, same path, same output. Steps that diverge (e.g., refactored to take a different branch) get their `Next` overridden so the replay is deterministic.
 
-**Trace-driven docs.** `--readme-from trace.json` renders the *actual visited path* as markdown — useful when one demo has many paths and you want to document each. `--readme-html-from` does the same for HTML. The static linear `--readme` is still there for non-branching demos.
+**Trace-driven docs.** `--doc md --from trace.json` renders the *actual visited path* as markdown — useful when one demo has many paths and you want to document each. `--doc html --from` does the same for HTML. `--doc json --from` produces structured data for embed hosts that want to render their own DOM. Without `--from`, `--doc md` falls back to a rich static walkthrough of the demo definition (mermaid diagram, notes summary, run-it commands).
+
+The legacy flags `--readme`, `--readme-from`, `--readme-html-from` still work but print a deprecation warning; new code should use `--doc <format>`.
 
 **Auto-advance with countdown.** `Demo.AutoAcceptAfter(5 * time.Second).ShowCountdown(true)` makes `WaitForStep` advance after a timer with a visible burn-down bar, while still letting Enter accept early. Useful for kiosks and timed demos.
 
