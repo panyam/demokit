@@ -809,6 +809,37 @@ func TestMarkdownGeneration(t *testing.T) {
 	}
 }
 
+// TestMarkdownGenerationWithoutActors verifies Demo.Markdown() produces
+// useful output for a demo with no actors — no panic, and crucially no
+// empty mermaid sequenceDiagram block (which doesn't render meaningfully
+// without participants). The "## Flow" section is skipped entirely;
+// title, notes, steps detail, and run-it footer all still appear.
+// Regression for issue 6.
+func TestMarkdownGenerationWithoutActors(t *testing.T) {
+	d := New("NoActors").Description("d")
+	d.Step("only").Note("a note")
+
+	md := d.Markdown()
+
+	if md == "" {
+		t.Fatalf("Markdown() returned empty for demo with no actors")
+	}
+	for _, want := range []string{"# NoActors", "a note", "## Steps"} {
+		if !strings.Contains(md, want) {
+			t.Errorf("Markdown() missing %q for actor-less demo:\n%s", want, md)
+		}
+	}
+	// No participants ⇒ no sequenceDiagram block. Mermaid renders an
+	// empty sequenceDiagram as a broken/unhelpful figure, so we'd
+	// rather omit it than emit a placeholder.
+	if strings.Contains(md, "sequenceDiagram") {
+		t.Errorf("Markdown() should omit the Flow section when no actors are declared:\n%s", md)
+	}
+	if strings.Contains(md, "## Flow") {
+		t.Errorf("Markdown() should omit the Flow header when no actors are declared:\n%s", md)
+	}
+}
+
 func TestBuilderChaining(t *testing.T) {
 	demo := New("Chain").Description("d").Dir("dir").RunPrefix("ex")
 	if demo.title != "Chain" || demo.description != "d" || demo.dir != "dir" || demo.runPrefix != "ex" {

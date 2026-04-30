@@ -105,8 +105,9 @@ func TestEmitDocFormatsProduceNonEmpty(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	d := New("Matrix").Description("desc").
-		Actors(Actor("A", "A"))
+	// No actors declared on purpose — exercises the static md visitor's
+	// no-actors path (issue 6 regression).
+	d := New("Matrix").Description("desc")
 	d.Step("x").ID("x").Note("a note")
 
 	cases := []struct {
