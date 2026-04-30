@@ -22,7 +22,8 @@ cd examples/graph && make gen-readme
 - `demokit.go` — Demo, StepDef, StepResult, StepContext, Execute loop, PlainRenderer
 - `inputs.go` — InputDef + helpers (String/Int/Choice/WithDefault)
 - `recorder.go` — TraceEntry, Recorder, JSONFileRecorder, LoadTrace
-- `render_trace.go` — MarkdownFromTrace, HTMLFromTrace
+- `render.go` — RenderContext + EntryOpts (the (Demo, Trace, State) contract)
+- `render_trace.go` — RenderEntryMD/HTML, RenderDocumentMD/HTML; legacy MarkdownFromTrace/HTMLFromTrace wrappers
 - `tui/` — Lipgloss renderer + FormPrompter interface
 
 ## Gotchas

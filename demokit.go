@@ -279,7 +279,7 @@ func (d *Demo) Execute() {
 			fmt.Fprintf(os.Stderr, "demokit: --readme-from %s: %v\n", d.flagReadmeFromPath, err)
 			return
 		}
-		fmt.Print(MarkdownFromTrace(d, entries))
+		fmt.Print(RenderDocumentMD(RenderContext{Demo: d, Trace: entries}))
 		return
 	}
 	if d.flagReadmeHTMLPath != "" {
@@ -288,7 +288,7 @@ func (d *Demo) Execute() {
 			fmt.Fprintf(os.Stderr, "demokit: --readme-html-from %s: %v\n", d.flagReadmeHTMLPath, err)
 			return
 		}
-		fmt.Print(HTMLFromTrace(d, entries))
+		fmt.Print(RenderDocumentHTML(RenderContext{Demo: d, Trace: entries}))
 		return
 	}
 

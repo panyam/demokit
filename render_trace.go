@@ -7,113 +7,117 @@ import (
 	"strings"
 )
 
-// MarkdownFromTrace renders a recorded trace as markdown documentation.
-// Unlike Demo.Markdown (which describes the demo's static declaration),
-// this captures the actual path that was visited — useful for branching
-// graph-mode demos where one document = one playthrough.
-//
-// Pass d for title/description/refs context. Pass nil to render the
-// trace alone with no header.
-func MarkdownFromTrace(d *Demo, entries []TraceEntry) string {
+// RenderEntryMD renders a single TraceEntry as a self-contained markdown
+// fragment. No preamble, no walkthrough header, no global references
+// list — those are document-level concerns. Inline references for the
+// step are emitted in place; deduplicated aggregation happens only in
+// RenderDocumentMD.
+func RenderEntryMD(ctx RenderContext, entry TraceEntry, opts EntryOpts) string {
+	var b strings.Builder
+	switch entry.Kind {
+	case KindStep:
+		title := entry.Title
+		if title == "" {
+			title = entry.StepID
+		}
+		if opts.StepNumber > 0 {
+			fmt.Fprintf(&b, "### %d. %s", opts.StepNumber, title)
+		} else {
+			fmt.Fprintf(&b, "### %s", title)
+		}
+		if entry.Visit > 1 {
+			fmt.Fprintf(&b, " _(visit %d)_", entry.Visit)
+		}
+		b.WriteString("\n\n")
+
+		s := lookupStep(ctx.Demo, entry.StepID)
+		if s != nil && s.note != "" {
+			fmt.Fprintf(&b, "%s\n\n", s.note)
+		}
+		if s != nil && len(s.refs) > 0 {
+			b.WriteString("> **References:** ")
+			for i, ref := range s.refs {
+				if i > 0 {
+					b.WriteString(", ")
+				}
+				fmt.Fprintf(&b, "[%s](%s)", ref.Name, ref.URL)
+			}
+			b.WriteString("\n\n")
+		}
+
+		if len(entry.Inputs) > 0 {
+			b.WriteString("**Inputs:**\n\n")
+			for _, k := range sortedKeys(entry.Inputs) {
+				fmt.Fprintf(&b, "- `%s` = `%v`\n", k, entry.Inputs[k])
+			}
+			b.WriteString("\n")
+		}
+
+		if entry.Output != "" {
+			b.WriteString("```\n")
+			b.WriteString(strings.TrimRight(entry.Output, "\n"))
+			b.WriteString("\n```\n\n")
+		}
+
+		if entry.Status != StatusSuccess && (entry.Message != "" || entry.Label != "") {
+			label := entry.Label
+			if label == "" {
+				label = entry.Status.DefaultLabel()
+			}
+			fmt.Fprintf(&b, "> **%s:** %s\n\n", label, entry.Message)
+		}
+
+		if entry.Next != "" {
+			fmt.Fprintf(&b, "→ jumped to `%s`\n\n", entry.Next)
+		}
+
+	case KindSection:
+		fmt.Fprintf(&b, "### %s\n\n", entry.Title)
+		if entry.Body != "" {
+			fmt.Fprintf(&b, "%s\n\n", entry.Body)
+		}
+	}
+	return b.String()
+}
+
+// RenderDocumentMD renders the full markdown document: title +
+// description preamble, "Walkthrough" header, per-entry fragments in
+// order, and a deduplicated references footer.
+func RenderDocumentMD(ctx RenderContext) string {
 	var b strings.Builder
 
-	if d != nil {
-		fmt.Fprintf(&b, "# %s\n\n", d.title)
-		if d.description != "" {
-			fmt.Fprintf(&b, "%s\n\n", d.description)
+	if ctx.Demo != nil {
+		fmt.Fprintf(&b, "# %s\n\n", ctx.Demo.title)
+		if ctx.Demo.description != "" {
+			fmt.Fprintf(&b, "%s\n\n", ctx.Demo.description)
 		}
 	}
 
-	if len(entries) == 0 {
+	if len(ctx.Trace) == 0 {
 		b.WriteString("_(empty trace)_\n")
 		return b.String()
 	}
 
-	stepIdx := 0
-	allRefs := map[string]Ref{} // url → ref, dedup
-	stepByID := map[string]*StepDef{}
-	if d != nil {
-		for _, it := range d.items {
-			if s, ok := it.(*StepDef); ok {
-				stepByID[s.id] = s
-			}
-		}
-	}
-
 	b.WriteString("## Walkthrough\n\n")
-	for _, e := range entries {
-		switch e.Kind {
-		case KindStep:
+	stepIdx := 0
+	for _, e := range ctx.Trace {
+		opts := EntryOpts{}
+		if e.Kind == KindStep {
 			stepIdx++
-			title := e.Title
-			if title == "" {
-				title = e.StepID
-			}
-			fmt.Fprintf(&b, "### %d. %s", stepIdx, title)
-			if e.Visit > 1 {
-				fmt.Fprintf(&b, " _(visit %d)_", e.Visit)
-			}
-			b.WriteString("\n\n")
-
-			if s, ok := stepByID[e.StepID]; ok && s.note != "" {
-				fmt.Fprintf(&b, "%s\n\n", s.note)
-			}
-
-			if s, ok := stepByID[e.StepID]; ok && len(s.refs) > 0 {
-				b.WriteString("> **References:** ")
-				for i, ref := range s.refs {
-					if i > 0 {
-						b.WriteString(", ")
-					}
-					fmt.Fprintf(&b, "[%s](%s)", ref.Name, ref.URL)
-					allRefs[ref.URL] = ref
-				}
-				b.WriteString("\n\n")
-			}
-
-			if len(e.Inputs) > 0 {
-				b.WriteString("**Inputs:**\n\n")
-				for _, k := range sortedKeys(e.Inputs) {
-					fmt.Fprintf(&b, "- `%s` = `%v`\n", k, e.Inputs[k])
-				}
-				b.WriteString("\n")
-			}
-
-			if e.Output != "" {
-				b.WriteString("```\n")
-				b.WriteString(strings.TrimRight(e.Output, "\n"))
-				b.WriteString("\n```\n\n")
-			}
-
-			if e.Status != StatusSuccess && (e.Message != "" || e.Label != "") {
-				label := e.Label
-				if label == "" {
-					label = e.Status.DefaultLabel()
-				}
-				fmt.Fprintf(&b, "> **%s:** %s\n\n", label, e.Message)
-			}
-
-			if e.Next != "" {
-				fmt.Fprintf(&b, "→ jumped to `%s`\n\n", e.Next)
-			}
-
-		case KindSection:
-			fmt.Fprintf(&b, "### %s\n\n", e.Title)
-			if e.Body != "" {
-				fmt.Fprintf(&b, "%s\n\n", e.Body)
-			}
+			opts.StepNumber = stepIdx
 		}
+		b.WriteString(RenderEntryMD(ctx, e, opts))
 	}
 
-	if len(allRefs) > 0 {
+	if refs := collectRefsFromTrace(ctx); len(refs) > 0 {
 		b.WriteString("## References\n\n")
-		urls := make([]string, 0, len(allRefs))
-		for u := range allRefs {
+		urls := make([]string, 0, len(refs))
+		for u := range refs {
 			urls = append(urls, u)
 		}
 		sort.Strings(urls)
 		for _, u := range urls {
-			r := allRefs[u]
+			r := refs[u]
 			fmt.Fprintf(&b, "- [%s](%s)\n", r.Name, r.URL)
 		}
 		b.WriteString("\n")
@@ -122,14 +126,81 @@ func MarkdownFromTrace(d *Demo, entries []TraceEntry) string {
 	return b.String()
 }
 
-// HTMLFromTrace renders a recorded trace as a minimal standalone HTML
-// document. Markup is intentionally plain — callers can apply their own
-// stylesheet by post-processing or by wrapping the output.
-func HTMLFromTrace(d *Demo, entries []TraceEntry) string {
+// MarkdownFromTrace is a thin compatibility wrapper around
+// RenderDocumentMD. Prefer RenderDocumentMD in new code.
+func MarkdownFromTrace(d *Demo, entries []TraceEntry) string {
+	return RenderDocumentMD(RenderContext{Demo: d, Trace: entries})
+}
+
+// RenderEntryHTML renders a single TraceEntry as a self-contained HTML
+// fragment. No doctype, no <head>, no surrounding document chrome —
+// callers compose those in RenderDocumentHTML.
+func RenderEntryHTML(ctx RenderContext, entry TraceEntry, opts EntryOpts) string {
+	var b strings.Builder
+	switch entry.Kind {
+	case KindStep:
+		title := entry.Title
+		if title == "" {
+			title = entry.StepID
+		}
+		if opts.StepNumber > 0 {
+			fmt.Fprintf(&b, "<h2>%d. %s", opts.StepNumber, html.EscapeString(title))
+		} else {
+			fmt.Fprintf(&b, "<h2>%s", html.EscapeString(title))
+		}
+		if entry.Visit > 1 {
+			fmt.Fprintf(&b, " <small>(visit %d)</small>", entry.Visit)
+		}
+		b.WriteString("</h2>\n")
+
+		s := lookupStep(ctx.Demo, entry.StepID)
+		if s != nil && s.note != "" {
+			fmt.Fprintf(&b, "<p>%s</p>\n", html.EscapeString(s.note))
+		}
+
+		if len(entry.Inputs) > 0 {
+			b.WriteString("<p><strong>Inputs:</strong></p>\n<ul>\n")
+			for _, k := range sortedKeys(entry.Inputs) {
+				fmt.Fprintf(&b, "  <li><code>%s</code> = <code>%v</code></li>\n",
+					html.EscapeString(k), entry.Inputs[k])
+			}
+			b.WriteString("</ul>\n")
+		}
+
+		if entry.Output != "" {
+			fmt.Fprintf(&b, "<pre>%s</pre>\n", html.EscapeString(strings.TrimRight(entry.Output, "\n")))
+		}
+
+		if entry.Status != StatusSuccess && entry.Message != "" {
+			class := statusCSSClass(entry.Status)
+			label := entry.Label
+			if label == "" {
+				label = entry.Status.DefaultLabel()
+			}
+			fmt.Fprintf(&b, "<blockquote class=\"%s\"><strong>%s:</strong> %s</blockquote>\n",
+				class, html.EscapeString(label), html.EscapeString(entry.Message))
+		}
+
+		if entry.Next != "" {
+			fmt.Fprintf(&b, "<p class=\"jump\">→ jumped to <code>%s</code></p>\n", html.EscapeString(entry.Next))
+		}
+
+	case KindSection:
+		fmt.Fprintf(&b, "<h2>%s</h2>\n", html.EscapeString(entry.Title))
+		if entry.Body != "" {
+			fmt.Fprintf(&b, "<p>%s</p>\n", html.EscapeString(entry.Body))
+		}
+	}
+	return b.String()
+}
+
+// RenderDocumentHTML renders a minimal standalone HTML document built
+// from the same per-entry fragments.
+func RenderDocumentHTML(ctx RenderContext) string {
 	var b strings.Builder
 	title := "Demo"
-	if d != nil && d.title != "" {
-		title = d.title
+	if ctx.Demo != nil && ctx.Demo.title != "" {
+		title = ctx.Demo.title
 	}
 	fmt.Fprintf(&b, "<!doctype html>\n<html>\n<head>\n<meta charset=\"utf-8\">\n<title>%s</title>\n",
 		html.EscapeString(title))
@@ -144,75 +215,64 @@ func HTMLFromTrace(d *Demo, entries []TraceEntry) string {
 		"</style>\n</head>\n<body>\n")
 
 	fmt.Fprintf(&b, "<h1>%s</h1>\n", html.EscapeString(title))
-	if d != nil && d.description != "" {
-		fmt.Fprintf(&b, "<p>%s</p>\n", html.EscapeString(d.description))
-	}
-
-	stepByID := map[string]*StepDef{}
-	if d != nil {
-		for _, it := range d.items {
-			if s, ok := it.(*StepDef); ok {
-				stepByID[s.id] = s
-			}
-		}
+	if ctx.Demo != nil && ctx.Demo.description != "" {
+		fmt.Fprintf(&b, "<p>%s</p>\n", html.EscapeString(ctx.Demo.description))
 	}
 
 	stepIdx := 0
-	for _, e := range entries {
-		switch e.Kind {
-		case KindStep:
+	for _, e := range ctx.Trace {
+		opts := EntryOpts{}
+		if e.Kind == KindStep {
 			stepIdx++
-			title := e.Title
-			if title == "" {
-				title = e.StepID
-			}
-			fmt.Fprintf(&b, "<h2>%d. %s", stepIdx, html.EscapeString(title))
-			if e.Visit > 1 {
-				fmt.Fprintf(&b, " <small>(visit %d)</small>", e.Visit)
-			}
-			b.WriteString("</h2>\n")
-
-			if s, ok := stepByID[e.StepID]; ok && s.note != "" {
-				fmt.Fprintf(&b, "<p>%s</p>\n", html.EscapeString(s.note))
-			}
-
-			if len(e.Inputs) > 0 {
-				b.WriteString("<p><strong>Inputs:</strong></p>\n<ul>\n")
-				for _, k := range sortedKeys(e.Inputs) {
-					fmt.Fprintf(&b, "  <li><code>%s</code> = <code>%v</code></li>\n",
-						html.EscapeString(k), e.Inputs[k])
-				}
-				b.WriteString("</ul>\n")
-			}
-
-			if e.Output != "" {
-				fmt.Fprintf(&b, "<pre>%s</pre>\n", html.EscapeString(strings.TrimRight(e.Output, "\n")))
-			}
-
-			if e.Status != StatusSuccess && e.Message != "" {
-				class := statusCSSClass(e.Status)
-				label := e.Label
-				if label == "" {
-					label = e.Status.DefaultLabel()
-				}
-				fmt.Fprintf(&b, "<blockquote class=\"%s\"><strong>%s:</strong> %s</blockquote>\n",
-					class, html.EscapeString(label), html.EscapeString(e.Message))
-			}
-
-			if e.Next != "" {
-				fmt.Fprintf(&b, "<p class=\"jump\">→ jumped to <code>%s</code></p>\n", html.EscapeString(e.Next))
-			}
-
-		case KindSection:
-			fmt.Fprintf(&b, "<h2>%s</h2>\n", html.EscapeString(e.Title))
-			if e.Body != "" {
-				fmt.Fprintf(&b, "<p>%s</p>\n", html.EscapeString(e.Body))
-			}
+			opts.StepNumber = stepIdx
 		}
+		b.WriteString(RenderEntryHTML(ctx, e, opts))
 	}
 
 	b.WriteString("</body>\n</html>\n")
 	return b.String()
+}
+
+// HTMLFromTrace is a thin compatibility wrapper around RenderDocumentHTML.
+// Prefer RenderDocumentHTML in new code.
+func HTMLFromTrace(d *Demo, entries []TraceEntry) string {
+	return RenderDocumentHTML(RenderContext{Demo: d, Trace: entries})
+}
+
+// lookupStep finds a step by ID in the demo's items list, or nil if the
+// demo is nil or the step isn't found.
+func lookupStep(d *Demo, id string) *StepDef {
+	if d == nil {
+		return nil
+	}
+	for _, it := range d.items {
+		if s, ok := it.(*StepDef); ok && s.id == id {
+			return s
+		}
+	}
+	return nil
+}
+
+// collectRefsFromTrace walks the trace and gathers every step's refs,
+// keyed by URL for deduplication.
+func collectRefsFromTrace(ctx RenderContext) map[string]Ref {
+	out := map[string]Ref{}
+	if ctx.Demo == nil {
+		return out
+	}
+	for _, e := range ctx.Trace {
+		if e.Kind != KindStep {
+			continue
+		}
+		s := lookupStep(ctx.Demo, e.StepID)
+		if s == nil {
+			continue
+		}
+		for _, ref := range s.refs {
+			out[ref.URL] = ref
+		}
+	}
+	return out
 }
 
 func statusCSSClass(s ResultStatus) string {
