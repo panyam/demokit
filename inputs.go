@@ -13,11 +13,18 @@ import (
 //
 // Build InputDefs via the helpers (String, Int, Choice) and chain Named,
 // Default, WithParse, etc. to customize.
+//
+// Kind / Options are declarative metadata used for sidecar-markdown
+// round-trips and JSON projection. Helpers populate them; WithParse
+// preserves them so swapping in a custom parser doesn't lose the
+// declared shape (a Choice with custom validation is still a choice).
 type InputDef struct {
 	Name    string                    // map key in StepContext.Inputs
 	Prompt  string                    // user-facing label; defaults to Name
 	Default any                       // shown in brackets; Enter accepts it
 	Parse   func(string) (any, error) // returns the typed value or a retry error
+	Kind    string                    // "string" | "int" | "choice" — set by helpers
+	Options []string                  // populated only when Kind == "choice"
 }
 
 // Named sets the input's identifier and user-facing prompt label. The
@@ -46,31 +53,42 @@ func (d InputDef) WithParse(p func(string) (any, error)) InputDef {
 // String returns an InputDef whose Parse returns the raw line unchanged.
 // Useful for free-form text.
 func String() InputDef {
-	return InputDef{Parse: func(s string) (any, error) { return s, nil }}
+	return InputDef{
+		Kind:  "string",
+		Parse: func(s string) (any, error) { return s, nil },
+	}
 }
 
 // Int returns an InputDef that parses the line as a base-10 integer.
 func Int() InputDef {
-	return InputDef{Parse: func(s string) (any, error) {
-		n, err := strconv.Atoi(strings.TrimSpace(s))
-		if err != nil {
-			return nil, fmt.Errorf("not a valid integer: %q", s)
-		}
-		return n, nil
-	}}
+	return InputDef{
+		Kind: "int",
+		Parse: func(s string) (any, error) {
+			n, err := strconv.Atoi(strings.TrimSpace(s))
+			if err != nil {
+				return nil, fmt.Errorf("not a valid integer: %q", s)
+			}
+			return n, nil
+		},
+	}
 }
 
 // Choice returns an InputDef that accepts only one of the given values.
 // Matching is case-insensitive against the trimmed input. The returned
 // value is the canonical form from opts.
 func Choice(opts ...string) InputDef {
-	return InputDef{Parse: func(s string) (any, error) {
-		got := strings.TrimSpace(s)
-		for _, opt := range opts {
-			if strings.EqualFold(got, opt) {
-				return opt, nil
+	canonical := append([]string(nil), opts...) // defensive copy for Options
+	return InputDef{
+		Kind:    "choice",
+		Options: canonical,
+		Parse: func(s string) (any, error) {
+			got := strings.TrimSpace(s)
+			for _, opt := range opts {
+				if strings.EqualFold(got, opt) {
+					return opt, nil
+				}
 			}
-		}
-		return nil, fmt.Errorf("must be one of: %s", strings.Join(opts, ", "))
-	}}
+			return nil, fmt.Errorf("must be one of: %s", strings.Join(opts, ", "))
+		},
+	}
 }

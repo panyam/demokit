@@ -84,7 +84,19 @@ func (s *StepDef) Note(text string) *StepDef {
 // Input declares an input the renderer should collect before this step's
 // Run executes. Inputs prompt in declaration order and the parsed values
 // are placed into StepContext.Inputs keyed by InputDef.Name.
+//
+// If a previously-declared input has the same Name (typically populated
+// by FromMarkdown), this call replaces it in place — preserving order.
+// Otherwise the new input is appended. This lets sidecar-md authors
+// declare inputs by name and Go callers selectively override one
+// input's parser via .Input(demokit.Choice(...).Named("x", ...).WithParse(custom)).
 func (s *StepDef) Input(d InputDef) *StepDef {
+	for i := range s.inputs {
+		if s.inputs[i].Name == d.Name && d.Name != "" {
+			s.inputs[i] = d
+			return s
+		}
+	}
 	s.inputs = append(s.inputs, d)
 	return s
 }

@@ -61,6 +61,12 @@ type Demo struct {
 	flagReplayPath      string
 	flagDoc             string // md|html|json (empty = not requested)
 	flagFrom            string // optional trace path used with --doc
+
+	// Sidecar-markdown loader state. Errors are stored rather than
+	// returned so FromMarkdown stays chainable; surfaced at Execute.
+	loadError    error
+	loadWarnings []string
+	bindErrors   []string
 }
 
 // New creates a new Demo with the given title.
@@ -282,6 +288,22 @@ func (d *Demo) scanOwnArgs(args []string) {
 func (d *Demo) Execute() {
 	if !d.flagsRegistered {
 		d.scanOwnArgs(os.Args[1:])
+	}
+
+	// Sidecar-markdown errors are fatal — surface them once and abort
+	// before any flag dispatch, so users see the real cause rather
+	// than a downstream symptom (empty doc output, missing step).
+	if d.loadError != nil {
+		fmt.Fprintf(os.Stderr, "demokit: %v\n", d.loadError)
+		return
+	}
+	if len(d.bindErrors) > 0 {
+		fmt.Fprintf(os.Stderr, "demokit: Bind to unknown step id(s): %s\n",
+			strings.Join(d.bindErrors, ", "))
+		return
+	}
+	for _, w := range d.loadWarnings {
+		fmt.Fprintf(os.Stderr, "demokit: %s\n", w)
 	}
 
 	// Doc-emit shortcuts exit before doing anything else. The new

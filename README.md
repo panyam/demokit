@@ -69,6 +69,20 @@ The legacy flags `--readme`, `--readme-from`, `--readme-html-from` still work bu
 
 **Auto-advance with countdown.** `Demo.AutoAcceptAfter(5 * time.Second).ShowCountdown(true)` makes `WaitForStep` advance after a timer with a visible burn-down bar, while still letting Enter accept early. Useful for kiosks and timed demos.
 
+**Sidecar markdown (optional).** Demos with a lot of prose can move content into a companion `demo.md` file. Frontmatter holds the title/description/actors; `## Heading {#id}` blocks become steps or sections; blockquotes become step notes; reserved fenced blocks (`mermaid`, `inputs`, `refs`) declare arrows, typed inputs, and references. Behavior (Run, Coalesce, custom parsers) stays in Go and attaches via `Demo.Bind(id)`:
+
+```go
+demo := demokit.New("Auth Failure Triage").FromMarkdown("demo.md")
+
+demo.Bind("triage").Run(func(ctx demokit.StepContext) *demokit.StepResult {
+    // ctx.Inputs["symptom"] is the value the user picked, validated by
+    // the choice parser declared in demo.md.
+    return &demokit.StepResult{Next: ctx.Inputs["symptom"].(string)}
+})
+```
+
+Sidecar is **optional**. Every feature works inline via `Step()`/`Note()`/`Run()` — sidecar is just a content layer for demos where prose dominates. See [ARCHITECTURE.md](ARCHITECTURE.md#sidecar-markdown) for the file format and override semantics.
+
 **Two renderers.** `PlainRenderer` (zero deps) for plain stdout. `tui.Renderer` (via the `tui/` subpackage, Lipgloss-backed) for styled boxes. Both implement the same `Renderer` interface; you can swap your own in if you want HTML, JSON, or a TUI Bubble app.
 
 **Pluggable form prompts.** `tui.Renderer.WithPrompter(myPrompter)` swaps the input collection step. The default is a sequential readline; richer impls (e.g. one backed by `huh.Select` for arrow-key choices) are a small interface away.
