@@ -1,4 +1,4 @@
-.PHONY: run demo runsmooth runquiet demo-quiet readme record replay readme-from readme-html-from gen-readme
+.PHONY: run demo runsmooth runquiet demo-quiet readme record replay readme-from readme-html-from gen-readme doc-md doc-html doc-json
 
 TRACE := /tmp/demokit-basic-trace.json
 
@@ -46,5 +46,18 @@ readme-html-from: record
 
 # Regenerate this example's README.md from the demo definition
 gen-readme:
-	go run . --readme > README.md
+	go run . --doc md > README.md
 	@echo "Wrote README.md"
+
+# New --doc <format> surface (replaces --readme*; old flags still work
+# but warn on stderr).
+doc-md:
+	go run . --doc md
+
+doc-html:
+	go run . --doc html
+
+# JSON for embed hosts. Without --from, emits the static demo definition
+# only (no trace).
+doc-json:
+	go run . --doc json

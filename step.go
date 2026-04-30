@@ -2,8 +2,8 @@ package demokit
 
 // ActorDef defines a participant in the sequence diagram.
 type ActorDef struct {
-	ID    string // Short identifier used in arrows (e.g., "AS")
-	Label string // Display label (e.g., "Auth Server")
+	ID    string `json:"id"`    // Short identifier used in arrows (e.g., "AS")
+	Label string `json:"label"` // Display label (e.g., "Auth Server")
 }
 
 // Actor creates an ActorDef.
@@ -13,8 +13,8 @@ func Actor(id, label string) ActorDef {
 
 // Ref is a named reference (RFC, CVE, blog post, spec section, etc.).
 type Ref struct {
-	Name string // e.g., "RFC 7519 (JWT)" or "CVE-2015-9235"
-	URL  string // e.g., "https://www.rfc-editor.org/rfc/rfc7519"
+	Name string `json:"name"` // e.g., "RFC 7519 (JWT)" or "CVE-2015-9235"
+	URL  string `json:"url"`  // e.g., "https://www.rfc-editor.org/rfc/rfc7519"
 }
 
 // item is a union type for the ordered sequence of steps and sections.
@@ -41,8 +41,10 @@ type arrowDef struct {
 
 // ArrowView is a read-only view of an arrow for use by renderers.
 type ArrowView struct {
-	From, To, Label string
-	Dashed          bool
+	From   string `json:"from"`
+	To     string `json:"to"`
+	Label  string `json:"label,omitempty"`
+	Dashed bool   `json:"dashed,omitempty"`
 }
 
 func (s *StepDef) isItem() {}

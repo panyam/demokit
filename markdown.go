@@ -44,36 +44,40 @@ func (d *Demo) Markdown() string {
 		b.WriteString("\n")
 	}
 
-	// Sequence diagram
-	b.WriteString("## Flow\n\n```mermaid\nsequenceDiagram\n")
-	for _, a := range d.actors {
-		if a.ID != a.Label {
-			fmt.Fprintf(&b, "    participant %s as %s\n", a.ID, a.Label)
-		} else {
-			fmt.Fprintf(&b, "    participant %s\n", a.ID)
+	// Sequence diagram — only meaningful when actors are declared. A
+	// `sequenceDiagram` with no participants doesn't render usefully in
+	// mermaid, so demos without actors skip the Flow section entirely
+	// and rely on the per-step detail below.
+	if len(d.actors) > 0 {
+		b.WriteString("## Flow\n\n```mermaid\nsequenceDiagram\n")
+		for _, a := range d.actors {
+			if a.ID != a.Label {
+				fmt.Fprintf(&b, "    participant %s as %s\n", a.ID, a.Label)
+			} else {
+				fmt.Fprintf(&b, "    participant %s\n", a.ID)
+			}
 		}
-	}
-	stepNum := 0
-	for _, it := range d.items {
-		switch v := it.(type) {
-		case *StepDef:
-			stepNum++
-			fmt.Fprintf(&b, "\n    Note over %s,%s: Step %d: %s\n",
-				d.actors[0].ID, d.actors[len(d.actors)-1].ID, stepNum, v.title)
-			for _, a := range v.arrows {
-				if a.dashed {
-					fmt.Fprintf(&b, "    %s-->>%s: %s\n", a.from, a.to, a.label)
-				} else {
-					fmt.Fprintf(&b, "    %s->>%s: %s\n", a.from, a.to, a.label)
+		stepNum := 0
+		for _, it := range d.items {
+			if v, ok := it.(*StepDef); ok {
+				stepNum++
+				fmt.Fprintf(&b, "\n    Note over %s,%s: Step %d: %s\n",
+					d.actors[0].ID, d.actors[len(d.actors)-1].ID, stepNum, v.title)
+				for _, a := range v.arrows {
+					if a.dashed {
+						fmt.Fprintf(&b, "    %s-->>%s: %s\n", a.from, a.to, a.label)
+					} else {
+						fmt.Fprintf(&b, "    %s->>%s: %s\n", a.from, a.to, a.label)
+					}
 				}
 			}
 		}
+		b.WriteString("```\n\n")
 	}
-	b.WriteString("```\n\n")
 
 	// Steps detail
 	b.WriteString("## Steps\n\n")
-	stepNum = 0
+	stepNum := 0
 	allRefs := make(map[string]Ref) // dedup by URL
 	for _, it := range d.items {
 		switch v := it.(type) {
