@@ -125,7 +125,15 @@ func (r *PlainRenderer) RenderHeader(title, description string, stepCount int) {
 
 func (r *PlainRenderer) RenderStep(stepNum, totalSteps int, step *StepDef) {
 	w := r.width()
-	r.printLine("  Step %d/%d: %s\n", stepNum, totalSteps, step.title)
+	// totalSteps == 0 means "no denominator" — Demo.ShowStepDenominator
+	// defaults off because the count is misleading for cyclic graphs.
+	// stepNum > totalSteps is a belt-and-suspenders fallback if a demo
+	// opts in but ends up cyclic anyway.
+	if totalSteps == 0 || stepNum > totalSteps {
+		r.printLine("  Step %d: %s\n", stepNum, step.title)
+	} else {
+		r.printLine("  Step %d/%d: %s\n", stepNum, totalSteps, step.title)
+	}
 	r.printLine("  %s\n", strings.Repeat("-", w-2))
 
 	if len(step.refs) > 0 {

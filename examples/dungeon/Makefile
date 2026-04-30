@@ -1,0 +1,48 @@
+.PHONY: run demo runquiet record replay doc-md doc-html doc-json gen-readme
+
+TRACE := /tmp/demokit-dungeon-trace.json
+
+# Interactive, plain text — the canonical "play through the cave" mode.
+run:
+	go run .
+
+# Interactive, TUI styled boxes.
+demo:
+	go run . --tui
+
+# Non-interactive run using each input's WithDefault. Default path:
+#   north → left → forward → dragon → death (no ring)
+#   → entrance → choose-dir → ... → death again until MaxSteps trips
+# This deliberately demonstrates the "no ring → dragon eats you" branch.
+runquiet:
+	go run . --non-interactive
+
+# Record a non-interactive run to $(TRACE). The default-input path
+# loops on the no-ring death until MaxSteps fires — produces a trace
+# that exercises the cycle and the safety guard.
+record:
+	go run . --non-interactive --record $(TRACE)
+	@echo "Trace written to $(TRACE)"
+
+# Replay the recorded trace deterministically.
+replay: record
+	go run . --replay $(TRACE)
+
+# Documentation outputs.
+doc-md: record
+	go run . --doc md --from $(TRACE)
+
+doc-html: record
+	go run . --doc html --from $(TRACE)
+
+# JSON for embed hosts. Includes both the static demo definition and
+# the recorded trace.
+doc-json: record
+	go run . --doc json --from $(TRACE)
+
+# Regenerate this example's README.md from a recorded trace. The
+# default-input run captures the no-ring → death loop, which makes
+# for a nice "what happens when you die" walkthrough.
+gen-readme: record
+	go run . --doc md --from $(TRACE) > README.md
+	@echo "Wrote README.md"

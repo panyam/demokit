@@ -16,7 +16,7 @@ This document describes how demokit is wired together internally — the files, 
 | `render.go` | `RenderContext{Demo, Trace, State}` + `EntryOpts{StepNumber}` — the contract every doc renderer consumes |
 | `render_trace.go` | `RenderEntryMD/HTML`, `RenderDocumentMD/HTML`, legacy `MarkdownFromTrace`/`HTMLFromTrace` wrappers |
 | `render_json.go` | `RenderDocumentJSON`, `JSONFromTrace`, `Demo.JSON()` + projection view structs |
-| `markdown_load.go` | `Demo.FromMarkdown(path)` + `Demo.Bind(id)` — sidecar markdown loader |
+| `markdown_load.go` | `Demo.FromMarkdown(path)` + `Demo.FromMarkdownBytes` + `Demo.Bind(id)` — sidecar markdown loader |
 | `term.go` | Terminal width detection with stdout/stderr fallback |
 | `logger.go` | Internal `print()` helper (writes to stderr — see gotchas) |
 | `tui/` | Lipgloss-based renderer + `FormPrompter` interface |
@@ -104,6 +104,14 @@ B -->> A: dashed arrow
 - **Step vs section is decided by content shape.** A heading with any of [blockquote note, mermaid arrows, refs, inputs] is a step; prose-only headings are sections. Bind only steps.
 - **Three reserved fenced info-strings:** `mermaid`, `inputs`, `refs`. Other fenced blocks pass through as section body for future renderers.
 - **Mermaid features beyond `->>` / `-->>`** (`participant`, `Note over`, `alt`, `loop`, `autonumber`) are silently dropped with a load warning. demokit's model is arrow-only.
+
+### Examples
+
+| Directory | Mode | Stresses |
+|---|---|---|
+| `examples/basic/` | inline | inline-only API; regression check that the Go-only path keeps working |
+| `examples/graph/` | inline | branching state machine, `Coalesce`, `AutoAcceptAfter` countdown |
+| `examples/dungeon/` | sidecar | `FromMarkdownBytes` + `go:embed`, `Bind`, multiple cycles, `MaxVisits` guard, `int` input, Go-side state (the magic ring) |
 
 ### Errors
 

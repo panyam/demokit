@@ -56,7 +56,7 @@ AS -->> App: 401 token_expired
 // load into the expected Demo state. Catches a wholesale loader
 // regression.
 func TestFromMarkdownEndToEnd(t *testing.T) {
-	d := New("placeholder").fromMarkdownBytes([]byte(fixtureFullMarkdown))
+	d := New("placeholder").FromMarkdownBytes([]byte(fixtureFullMarkdown))
 	if d.loadError != nil {
 		t.Fatalf("unexpected loadError: %v", d.loadError)
 	}
@@ -183,7 +183,7 @@ func TestHeadingAnchorAndSlug(t *testing.T) {
   type: string
 ` + "```" + `
 `)
-	d := New("").fromMarkdownBytes(src)
+	d := New("").FromMarkdownBytes(src)
 	if d.loadError != nil {
 		t.Fatalf("loadError: %v", d.loadError)
 	}
@@ -237,7 +237,7 @@ func TestInputsBlockUnknownTypeIsAnError(t *testing.T) {
   type: nonsense
 ` + "```" + `
 `)
-	d := New("").fromMarkdownBytes(src)
+	d := New("").FromMarkdownBytes(src)
 	if d.loadError == nil || !strings.Contains(d.loadError.Error(), "nonsense") {
 		t.Errorf("expected loadError mentioning \"nonsense\", got %v", d.loadError)
 	}
@@ -247,7 +247,7 @@ func TestInputsBlockUnknownTypeIsAnError(t *testing.T) {
 // loaded by FromMarkdown, and setters on the returned value override
 // the markdown-supplied content (Go-wins-on-conflict).
 func TestBindKnownIDReturnsLoadedStep(t *testing.T) {
-	d := New("").fromMarkdownBytes([]byte(`## Hello {#hello}
+	d := New("").FromMarkdownBytes([]byte(`## Hello {#hello}
 
 > note from md
 `))
@@ -279,7 +279,7 @@ func TestBindUnknownIDDeferredErrorAtExecute(t *testing.T) {
 	defer func() { os.Args = orig }()
 	os.Args = []string{"test", "--non-interactive"}
 
-	d := New("").fromMarkdownBytes([]byte(`## Real {#real}
+	d := New("").FromMarkdownBytes([]byte(`## Real {#real}
 
 > some note
 `))
@@ -330,7 +330,7 @@ func TestInputReplaceByName(t *testing.T) {
 // FromMarkdown appends inline steps to the loaded ones, preserving
 // md-order followed by Go-order.
 func TestMixedModeMDThenInline(t *testing.T) {
-	d := New("").fromMarkdownBytes([]byte(`## A {#a}
+	d := New("").FromMarkdownBytes([]byte(`## A {#a}
 
 > note for a
 `))
@@ -365,7 +365,7 @@ func TestFromMarkdownMissingFileSurfacesAtExecute(t *testing.T) {
 // Kind/Options metadata flows through to JSON output — closing the
 // Phase 2 gap where input type info wasn't surfaced.
 func TestSidecarLoadAndJSONIncludesKindOptions(t *testing.T) {
-	d := New("").fromMarkdownBytes([]byte(`## Pick {#pick}
+	d := New("").FromMarkdownBytes([]byte(`## Pick {#pick}
 
 ` + "```inputs" + `
 - name: kind
@@ -422,7 +422,7 @@ Some prose explaining the demo.
 
 	rec := &MemoryRecorder{}
 	d := New("placeholder").
-		fromMarkdownBytes(src).
+		FromMarkdownBytes(src).
 		WithRenderer(&recordingRenderer{}).
 		WithRecorder(rec)
 

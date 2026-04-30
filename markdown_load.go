@@ -45,12 +45,24 @@ func (d *Demo) FromMarkdown(path string) *Demo {
 		d.loadError = fmt.Errorf("FromMarkdown(%s): %w", path, err)
 		return d
 	}
-	return d.fromMarkdownBytes(src)
+	return d.FromMarkdownBytes(src)
 }
 
-// fromMarkdownBytes is the file-content variant used by tests. It does
-// the actual parsing.
-func (d *Demo) fromMarkdownBytes(src []byte) *Demo {
+// FromMarkdownBytes loads sidecar content from an in-memory byte slice
+// instead of a file path. The same parsing rules as FromMarkdown apply.
+//
+// Typical use: pair with go:embed so the demo binary carries its own
+// content and runs identically regardless of the invoker's working
+// directory:
+//
+//	//go:embed demo.md
+//	var demoMD []byte
+//
+//	demo := demokit.New("placeholder").FromMarkdownBytes(demoMD)
+//
+// Errors are stored on the Demo (same as FromMarkdown) and surface at
+// Execute time; this method never returns an error or panics.
+func (d *Demo) FromMarkdownBytes(src []byte) *Demo {
 	fm, body, err := splitFrontmatter(src)
 	if err != nil {
 		d.loadError = err

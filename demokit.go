@@ -43,8 +43,9 @@ type Demo struct {
 	renderer        Renderer // nil means PlainRenderer
 	maxSteps        int      // upper bound on total step visits per Execute (0 = default)
 	maxVisits       int      // upper bound on visits to any single step (0 = unlimited)
-	autoAcceptAfter time.Duration
-	showCountdown   bool
+	autoAcceptAfter      time.Duration
+	showCountdown        bool
+	showStepDenominator  bool
 	recorder        Recorder
 	replay          []TraceEntry
 	replayCursor    int
@@ -99,6 +100,18 @@ func (d *Demo) AutoAcceptAfter(dur time.Duration) *Demo {
 // AutoAcceptAfter is in effect. Has no effect if AutoAcceptAfter is zero.
 func (d *Demo) ShowCountdown(show bool) *Demo {
 	d.showCountdown = show
+	return d
+}
+
+// ShowStepDenominator controls whether step headings render as
+// "Step N/M" (denominator on) or just "Step N" (off, default). The
+// denominator is misleading for cyclic graphs where the visit count
+// can exceed the declared step count, so it's opt-in.
+//
+// Linear demos with no Next jumps benefit from "Step N/M" — set this
+// to true on those. For cyclic / branching demos, leave it off.
+func (d *Demo) ShowStepDenominator(show bool) *Demo {
+	d.showStepDenominator = show
 	return d
 }
 
@@ -387,7 +400,13 @@ walk:
 				break walk
 			}
 
-			r.RenderStep(totalVisits, d.stepCount, v)
+			// totalSteps == 0 means "no denominator". Demos opt in
+			// via ShowStepDenominator for linear walkthroughs.
+			declared := 0
+			if d.showStepDenominator {
+				declared = d.stepCount
+			}
+			r.RenderStep(totalVisits, declared, v)
 
 			// Replay mode pulls inputs and the next-step path from the
 			// recorded trace. A mismatched step ID falls through to the
