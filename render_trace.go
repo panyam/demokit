@@ -126,12 +126,6 @@ func RenderDocumentMD(ctx RenderContext) string {
 	return b.String()
 }
 
-// MarkdownFromTrace is a thin compatibility wrapper around
-// RenderDocumentMD. Prefer RenderDocumentMD in new code.
-func MarkdownFromTrace(d *Demo, entries []TraceEntry) string {
-	return RenderDocumentMD(RenderContext{Demo: d, Trace: entries})
-}
-
 // RenderEntryHTML renders a single TraceEntry as a self-contained HTML
 // fragment. No doctype, no <head>, no surrounding document chrome —
 // callers compose those in RenderDocumentHTML.
@@ -231,12 +225,6 @@ func RenderDocumentHTML(ctx RenderContext) string {
 
 	b.WriteString("</body>\n</html>\n")
 	return b.String()
-}
-
-// HTMLFromTrace is a thin compatibility wrapper around RenderDocumentHTML.
-// Prefer RenderDocumentHTML in new code.
-func HTMLFromTrace(d *Demo, entries []TraceEntry) string {
-	return RenderDocumentHTML(RenderContext{Demo: d, Trace: entries})
 }
 
 // lookupStep finds a step by ID in the demo's items list, or nil if the

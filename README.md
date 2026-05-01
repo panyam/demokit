@@ -65,8 +65,6 @@ go run ./examples/graph/ --doc json --from /tmp/run.json  # JSON for embed hosts
 
 **Trace-driven docs.** `--doc md --from trace.json` renders the *actual visited path* as markdown — useful when one demo has many paths and you want to document each. `--doc html --from` does the same for HTML. `--doc json --from` produces structured data for embed hosts that want to render their own DOM. Without `--from`, `--doc md` falls back to a rich static walkthrough of the demo definition (mermaid diagram, notes summary, run-it commands).
 
-The legacy flags `--readme`, `--readme-from`, `--readme-html-from` still work but print a deprecation warning; new code should use `--doc <format>`.
-
 **Auto-advance with countdown.** `Demo.AutoAcceptAfter(5 * time.Second).ShowCountdown(true)` makes `WaitForStep` advance after a timer with a visible burn-down bar, while still letting Enter accept early. Useful for kiosks and timed demos.
 
 **Sidecar markdown (optional).** Demos with a lot of prose can move content into a companion `demo.md` file. See [`examples/dungeon/`](examples/dungeon/) for a CYOA showcase that exercises cycles, the `MaxVisits` guard, an `int` input, and Go-side state in 50 lines of markdown + 80 lines of Go. Frontmatter holds the title/description/actors; `## Heading {#id}` blocks become steps or sections; blockquotes become step notes; reserved fenced blocks (`mermaid`, `inputs`, `refs`) declare arrows, typed inputs, and references. Behavior (Run, Coalesce, custom parsers) stays in Go and attaches via `Demo.Bind(id)`:

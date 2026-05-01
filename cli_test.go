@@ -167,60 +167,6 @@ func TestEmitDocFromMissingFileErrors(t *testing.T) {
 	}
 }
 
-// TestExecuteDeprecatedReadmeWarns verifies invoking the legacy --readme
-// flag prints a deprecation warning to stderr while still producing
-// the expected static markdown on stdout. Same shape applies to
-// --readme-from and --readme-html-from.
-func TestExecuteDeprecatedReadmeWarns(t *testing.T) {
-	orig := os.Args
-	defer func() { os.Args = orig }()
-	os.Args = []string{"test", "--readme"}
-
-	d := New("Legacy").Description("d").Actors(Actor("A", "A"))
-	d.Step("only").Arrow("A", "A", "self")
-
-	out, errOut := captureStdoutStderr(t, func() { d.Execute() })
-
-	if !strings.Contains(out, "# Legacy") {
-		t.Errorf("--readme should still produce static markdown:\n%s", out)
-	}
-	if !strings.Contains(errOut, "deprecated") || !strings.Contains(errOut, "--doc md") {
-		t.Errorf("expected deprecation warning pointing at --doc md, got stderr:\n%s", errOut)
-	}
-}
-
-// TestExecuteDeprecatedReadmeFromWarns is the trace-md variant of the
-// deprecation-warning test.
-func TestExecuteDeprecatedReadmeFromWarns(t *testing.T) {
-	orig := os.Args
-	defer func() { os.Args = orig }()
-
-	tmp, err := os.CreateTemp("", "demokit-trace-*.json")
-	if err != nil {
-		t.Fatal(err)
-	}
-	tmp.Close()
-	defer os.Remove(tmp.Name())
-	rec := NewJSONFileRecorder(tmp.Name())
-	rec.Record(TraceEntry{Kind: KindStep, Title: "x", StepID: "x", Visit: 1})
-	if err := rec.Close(); err != nil {
-		t.Fatal(err)
-	}
-
-	os.Args = []string{"test", "--readme-from", tmp.Name()}
-	d := New("Legacy")
-	d.Step("x").ID("x")
-
-	out, errOut := captureStdoutStderr(t, func() { d.Execute() })
-
-	if !strings.Contains(out, "## Walkthrough") {
-		t.Errorf("--readme-from should still emit trace markdown:\n%s", out)
-	}
-	if !strings.Contains(errOut, "deprecated") || !strings.Contains(errOut, "--doc md --from") {
-		t.Errorf("expected deprecation warning pointing at --doc md --from, got stderr:\n%s", errOut)
-	}
-}
-
 // TestExecuteDocFlagDispatch verifies the new --doc md flag plumbing
 // works end-to-end through Execute (covers scanOwnArgs + Execute
 // dispatch glue, not just emitDoc).

@@ -7,8 +7,9 @@ import (
 
 // Markdown generates static linear documentation from the demo
 // definition. This is the canonical output for non-branching demos
-// (run with --readme to regenerate). For branching demos, prefer
-// MarkdownFromTrace which captures the actual visited path.
+// (run with --doc md to regenerate). For branching demos, prefer
+// RenderDocumentMD which captures the actual visited path from a
+// recorded trace (--doc md --from <trace>).
 func (d *Demo) Markdown() string {
 	var b strings.Builder
 

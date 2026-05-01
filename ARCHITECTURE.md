@@ -14,7 +14,7 @@ This document describes how demokit is wired together internally — the files, 
 | `renderer.go` | `Renderer` interface + `PlainRenderer` (default zero-dep stdout renderer) |
 | `markdown.go` | `Demo.Markdown()` — the static-visitor markdown emitter (used by `--doc md` without `--from`) |
 | `render.go` | `RenderContext{Demo, Trace, State}` + `EntryOpts{StepNumber}` — the contract every doc renderer consumes |
-| `render_trace.go` | `RenderEntryMD/HTML`, `RenderDocumentMD/HTML`, legacy `MarkdownFromTrace`/`HTMLFromTrace` wrappers |
+| `render_trace.go` | `RenderEntryMD/HTML`, `RenderDocumentMD/HTML` |
 | `render_json.go` | `RenderDocumentJSON`, `JSONFromTrace`, `Demo.JSON()` + projection view structs |
 | `markdown_load.go` | `Demo.FromMarkdown(path)` + `Demo.FromMarkdownBytes` + `Demo.Bind(id)` — sidecar markdown loader |
 | `term.go` | Terminal width detection with stdout/stderr fallback |
@@ -172,7 +172,6 @@ Load warnings (unsupported mermaid syntax, content before the first heading) pri
 
 Static-md and trace-md route to **different renderers** because they walk fundamentally different sources (declarations vs. recorded entries) and produce intentionally different shapes. The static visitor includes a "What you'll learn" notes summary, a consolidated mermaid sequence diagram, and a Run-it footer; the trace renderer produces a per-step walkthrough with captured outputs and inputs.
 
-Legacy flags `--readme`, `--readme-from`, `--readme-html-from` still work but print a one-line deprecation warning to stderr.
 
 ## Gotchas
 

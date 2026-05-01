@@ -77,8 +77,8 @@ func RenderDocumentJSON(ctx RenderContext) string {
 	return buf.String()
 }
 
-// JSONFromTrace is the trace-mode wrapper, mirroring MarkdownFromTrace
-// and HTMLFromTrace.
+// JSONFromTrace is the trace-mode wrapper, mirroring RenderDocumentJSON
+// for callers that prefer the (demo, entries) shape.
 func JSONFromTrace(d *Demo, entries []TraceEntry) string {
 	return RenderDocumentJSON(RenderContext{Demo: d, Trace: entries})
 }

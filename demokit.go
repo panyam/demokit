@@ -54,15 +54,12 @@ type Demo struct {
 	// CLI flag state. Populated either by RegisterFlags + the user's own
 	// FlagSet.Parse, or — if RegisterFlags is never called — by Execute's
 	// internal os.Args scan.
-	flagsRegistered     bool
-	flagNonInteractive  bool
-	flagReadme          bool
-	flagReadmeFromPath  string
-	flagReadmeHTMLPath  string
-	flagRecordPath      string
-	flagReplayPath      string
-	flagDoc             string // md|html|json (empty = not requested)
-	flagFrom            string // optional trace path used with --doc
+	flagsRegistered    bool
+	flagNonInteractive bool
+	flagRecordPath     string
+	flagReplayPath     string
+	flagDoc            string // md|html|json (empty = not requested)
+	flagFrom           string // optional trace path used with --doc
 
 	// Sidecar-markdown loader state. Errors are stored rather than
 	// returned so FromMarkdown stays chainable; surfaced at Execute.
@@ -230,12 +227,6 @@ func (d *Demo) RegisterFlags(fs *flag.FlagSet) {
 	d.flagsRegistered = true
 	fs.BoolVar(&d.flagNonInteractive, "non-interactive", false,
 		"skip pauses between steps")
-	fs.BoolVar(&d.flagReadme, "readme", false,
-		"emit static markdown for the demo to stdout and exit")
-	fs.StringVar(&d.flagReadmeFromPath, "readme-from", "",
-		"emit markdown rendered from the given trace file and exit")
-	fs.StringVar(&d.flagReadmeHTMLPath, "readme-html-from", "",
-		"emit HTML rendered from the given trace file and exit")
 	fs.StringVar(&d.flagRecordPath, "record", "",
 		"record this run to the given trace file")
 	fs.StringVar(&d.flagReplayPath, "replay", "",
@@ -256,18 +247,6 @@ func (d *Demo) scanOwnArgs(args []string) {
 		switch {
 		case arg == "--non-interactive":
 			d.flagNonInteractive = true
-		case arg == "--readme":
-			d.flagReadme = true
-		case arg == "--readme-from" && i+1 < len(args):
-			d.flagReadmeFromPath = args[i+1]
-			i++
-		case strings.HasPrefix(arg, "--readme-from="):
-			d.flagReadmeFromPath = strings.TrimPrefix(arg, "--readme-from=")
-		case arg == "--readme-html-from" && i+1 < len(args):
-			d.flagReadmeHTMLPath = args[i+1]
-			i++
-		case strings.HasPrefix(arg, "--readme-html-from="):
-			d.flagReadmeHTMLPath = strings.TrimPrefix(arg, "--readme-html-from=")
 		case arg == "--record" && i+1 < len(args):
 			d.flagRecordPath = args[i+1]
 			i++
@@ -320,26 +299,10 @@ func (d *Demo) Execute() {
 		fmt.Fprintf(os.Stderr, "demokit: %s\n", w)
 	}
 
-	// Doc-emit shortcuts exit before doing anything else. The new
-	// --doc <format> [--from <trace>] surface dispatches first; the
-	// legacy --readme* flags fall through with a deprecation warning.
+	// --doc <format> [--from <trace>] short-circuits before any
+	// run-mode setup so document generation never executes Run.
 	if d.flagDoc != "" {
 		d.emitDoc(d.flagDoc, d.flagFrom)
-		return
-	}
-	if d.flagReadme {
-		fmt.Fprintln(os.Stderr, "demokit: --readme is deprecated; use --doc md")
-		d.emitDoc("md", "")
-		return
-	}
-	if d.flagReadmeFromPath != "" {
-		fmt.Fprintln(os.Stderr, "demokit: --readme-from is deprecated; use --doc md --from <path>")
-		d.emitDoc("md", d.flagReadmeFromPath)
-		return
-	}
-	if d.flagReadmeHTMLPath != "" {
-		fmt.Fprintln(os.Stderr, "demokit: --readme-html-from is deprecated; use --doc html --from <path>")
-		d.emitDoc("html", d.flagReadmeHTMLPath)
 		return
 	}
 

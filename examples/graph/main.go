@@ -5,16 +5,16 @@
 //   - Declarative inputs with Choice() and sticky-on-retry defaults
 //   - AutoAcceptAfter countdown for time-based advancement
 //   - Recording (--record path.json) and replay (--replay path.json)
-//   - Trace-driven docs (--readme-from path.json, --readme-html-from path.json)
+//   - Trace-driven docs (--doc md --from path.json, --doc html --from path.json)
 //
 // Try:
 //
-//	go run ./examples/graph/                                  # interactive
-//	go run ./examples/graph/ --tui                            # TUI box style
-//	go run ./examples/graph/ --record /tmp/run.json           # save a trace
-//	go run ./examples/graph/ --replay /tmp/run.json           # replay it
-//	go run ./examples/graph/ --readme-from /tmp/run.json      # markdown doc
-//	go run ./examples/graph/ --readme-html-from /tmp/run.json # html doc
+//	go run ./examples/graph/                                    # interactive
+//	go run ./examples/graph/ --tui                              # TUI box style
+//	go run ./examples/graph/ --record /tmp/run.json             # save a trace
+//	go run ./examples/graph/ --replay /tmp/run.json             # replay it
+//	go run ./examples/graph/ --doc md --from /tmp/run.json      # markdown doc
+//	go run ./examples/graph/ --doc html --from /tmp/run.json    # html doc
 package main
 
 import (

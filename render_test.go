@@ -26,36 +26,6 @@ func fixtureDemoForRender() (*Demo, []TraceEntry) {
 	return d, trace
 }
 
-// TestMarkdownFromTraceWrapperEquivalence verifies that the legacy
-// MarkdownFromTrace function produces byte-identical output to a direct
-// RenderDocumentMD call. The wrapper exists for backwards compatibility
-// and must remain a no-op shim — any drift here is a contract break.
-func TestMarkdownFromTraceWrapperEquivalence(t *testing.T) {
-	d, trace := fixtureDemoForRender()
-
-	viaWrapper := MarkdownFromTrace(d, trace)
-	viaContext := RenderDocumentMD(RenderContext{Demo: d, Trace: trace})
-
-	if viaWrapper != viaContext {
-		t.Errorf("wrapper output differs from RenderContext output\n--- wrapper ---\n%s\n--- context ---\n%s",
-			viaWrapper, viaContext)
-	}
-}
-
-// TestHTMLFromTraceWrapperEquivalence is the HTML mirror of the markdown
-// wrapper-equivalence test.
-func TestHTMLFromTraceWrapperEquivalence(t *testing.T) {
-	d, trace := fixtureDemoForRender()
-
-	viaWrapper := HTMLFromTrace(d, trace)
-	viaContext := RenderDocumentHTML(RenderContext{Demo: d, Trace: trace})
-
-	if viaWrapper != viaContext {
-		t.Errorf("wrapper output differs from RenderContext output\n--- wrapper ---\n%s\n--- context ---\n%s",
-			viaWrapper, viaContext)
-	}
-}
-
 // TestRenderEntryMDIsSelfContained verifies a per-entry markdown render
 // is a fragment with no document-level chrome: it must not include the
 // "## Walkthrough" header, the deduplicated "## References" section, or
@@ -159,9 +129,8 @@ func TestRenderDocumentMDComposition(t *testing.T) {
 }
 
 // TestRenderDocumentMDEmptyTrace verifies the empty-trace marker is
-// preserved — preserves prior MarkdownFromTrace behavior so that doc
-// generation against an empty recording produces a recognizable stub
-// rather than an empty file.
+// preserved so that doc generation against an empty recording produces
+// a recognizable stub rather than an empty file.
 func TestRenderDocumentMDEmptyTrace(t *testing.T) {
 	d := New("Empty")
 	got := RenderDocumentMD(RenderContext{Demo: d, Trace: nil})

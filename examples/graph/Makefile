@@ -1,4 +1,4 @@
-.PHONY: run demo runquiet record replay readme-from readme-html-from gen-readme doc-md doc-html doc-json
+.PHONY: run demo runquiet record replay gen-readme doc-md doc-html doc-json
 
 TRACE := /tmp/demokit-graph-trace.json
 
@@ -25,23 +25,13 @@ record:
 replay: record
 	go run . --replay $(TRACE)
 
-# Render markdown of the recorded path. This is the canonical way to
-# document a branching demo — one trace = one story.
-readme-from: record
-	go run . --readme-from $(TRACE)
-
-# Same, but as standalone HTML.
-readme-html-from: record
-	go run . --readme-html-from $(TRACE)
-
 # Regenerate this example's README.md from a recorded trace.
 # The default-input run captures the "expired token → refresh" branch.
 gen-readme: record
 	go run . --doc md --from $(TRACE) > README.md
 	@echo "Wrote README.md"
 
-# New --doc <format> surface (replaces --readme*; old flags still work
-# but warn on stderr).
+# Trace-driven documentation outputs.
 doc-md: record
 	go run . --doc md --from $(TRACE)
 

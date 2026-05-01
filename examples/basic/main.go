@@ -6,16 +6,16 @@
 //   - Sections for narration
 //   - Sequence-diagram arrows between named actors
 //   - Recording, replay, and trace-driven docs (--record / --replay /
-//     --readme-from)
+//     --doc md --from)
 //
 // Run modes:
 //
-//	go run ./examples/basic/                     # interactive
-//	go run ./examples/basic/ --tui               # styled boxes
-//	go run ./examples/basic/ --smooth            # plain w/ smooth scroll
-//	go run ./examples/basic/ --non-interactive   # default-input run
+//	go run ./examples/basic/                              # interactive
+//	go run ./examples/basic/ --tui                        # styled boxes
+//	go run ./examples/basic/ --smooth                     # plain w/ smooth scroll
+//	go run ./examples/basic/ --non-interactive            # default-input run
 //	go run ./examples/basic/ --record /tmp/r.json
-//	go run ./examples/basic/ --readme-from /tmp/r.json
+//	go run ./examples/basic/ --doc md --from /tmp/r.json
 package main
 
 import (

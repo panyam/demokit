@@ -1,4 +1,4 @@
-.PHONY: run demo runsmooth runquiet demo-quiet readme record replay readme-from readme-html-from gen-readme doc-md doc-html doc-json
+.PHONY: run demo runsmooth runquiet demo-quiet record replay gen-readme doc-md doc-html doc-json
 
 TRACE := /tmp/demokit-basic-trace.json
 
@@ -22,10 +22,6 @@ runquiet:
 demo-quiet:
 	go run . --tui --non-interactive
 
-# Generate README from demo definitions (linear, mermaid)
-readme:
-	go run . --readme
-
 # Record a non-interactive run to $(TRACE)
 record:
 	go run . --non-interactive --record $(TRACE)
@@ -35,22 +31,12 @@ record:
 replay: record
 	go run . --replay $(TRACE)
 
-# Render markdown of the recorded path (captures actual visited steps,
-# inputs, and outputs — different from --readme which is static)
-readme-from: record
-	go run . --readme-from $(TRACE)
-
-# Same, but as standalone HTML
-readme-html-from: record
-	go run . --readme-html-from $(TRACE)
-
-# Regenerate this example's README.md from the demo definition
+# Regenerate this example's README.md from the static demo definition.
 gen-readme:
 	go run . --doc md > README.md
 	@echo "Wrote README.md"
 
-# New --doc <format> surface (replaces --readme*; old flags still work
-# but warn on stderr).
+# Documentation outputs.
 doc-md:
 	go run . --doc md
 
@@ -61,3 +47,13 @@ doc-html:
 # only (no trace).
 doc-json:
 	go run . --doc json
+
+# Trace-driven documentation outputs.
+doc-md-from: record
+	go run . --doc md --from $(TRACE)
+
+doc-html-from: record
+	go run . --doc html --from $(TRACE)
+
+doc-json-from: record
+	go run . --doc json --from $(TRACE)

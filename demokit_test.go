@@ -637,10 +637,12 @@ func TestReplayFlag(t *testing.T) {
 	}
 }
 
-// TestMarkdownFromTrace verifies trace-driven markdown captures the
-// visited step path (including jumps) and reaches into the demo for
-// notes and refs.
-func TestMarkdownFromTrace(t *testing.T) {
+// TestRenderDocumentMDSubstrings verifies trace-driven markdown
+// captures the visited step path (including jumps) and reaches into
+// the demo for notes and refs. The assertions are substring-based
+// because exact byte equality is covered by render_test.go's
+// composition tests; this test pins user-visible content survival.
+func TestRenderDocumentMDSubstrings(t *testing.T) {
 	demo := New("Branchy").Description("test trace doc gen")
 	demo.Step("first").ID("a").
 		Note("explanation of A").
@@ -656,7 +658,7 @@ func TestMarkdownFromTrace(t *testing.T) {
 			Status: StatusInfo, Message: "fyi"},
 	}
 
-	md := MarkdownFromTrace(demo, trace)
+	md := RenderDocumentMD(RenderContext{Demo: demo, Trace: trace})
 	checks := []string{
 		"# Branchy",
 		"test trace doc gen",
@@ -673,13 +675,16 @@ func TestMarkdownFromTrace(t *testing.T) {
 	}
 	for _, c := range checks {
 		if !strings.Contains(md, c) {
-			t.Errorf("MarkdownFromTrace missing %q", c)
+			t.Errorf("RenderDocumentMD missing %q", c)
 		}
 	}
 }
 
-// TestHTMLFromTrace verifies HTML output structure and escaping.
-func TestHTMLFromTrace(t *testing.T) {
+// TestRenderDocumentHTMLEscaping verifies HTML output structure and
+// that user-supplied content (description, output) is escaped before
+// being written into the document body. A regression here is a
+// genuine XSS-shaped vulnerability, so this stays as a focused test.
+func TestRenderDocumentHTMLEscaping(t *testing.T) {
 	demo := New("HTML Demo").Description("a <script>alert(1)</script>")
 	demo.Step("step").ID("s")
 
@@ -687,12 +692,11 @@ func TestHTMLFromTrace(t *testing.T) {
 		{Kind: KindStep, Title: "step", StepID: "s", Visit: 1,
 			Inputs: map[string]any{"x": "<b>"}, Output: "<not html>"},
 	}
-	out := HTMLFromTrace(demo, trace)
+	out := RenderDocumentHTML(RenderContext{Demo: demo, Trace: trace})
 
 	if !strings.Contains(out, "<!doctype html>") {
 		t.Error("missing doctype")
 	}
-	// Description must be escaped, not raw.
 	if strings.Contains(out, "<script>alert(1)</script>") {
 		t.Error("description not escaped")
 	}
