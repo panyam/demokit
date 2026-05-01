@@ -7,6 +7,7 @@ import (
 	"bufio"
 	"fmt"
 	"image/color"
+	"io"
 	"os"
 	"strings"
 	"time"
@@ -278,6 +279,22 @@ func (r *Renderer) statusColors(status demokit.ResultStatus) (border, label colo
 	default:
 		return p.ResultBorder, p.Success
 	}
+}
+
+// StreamOutput writes a chunk of step output as the step's Run is
+// still executing. demokit's Execute loop dispatches here when the
+// renderer implements StreamingRenderer; the resulting RenderResult
+// call is then handed an empty output so the body isn't double-printed.
+//
+// out is the writer to emit chunks to (the user's actual stdout,
+// captured before the redirect into demokit's capture pipe).
+//
+// Phase-1 implementation writes chunks raw between the step header
+// and the eventual styled status box. A future enhancement would
+// track an in-progress box and redraw it via cursor rewind on each
+// chunk for a live-growing-box effect; that's deferred.
+func (r *Renderer) StreamOutput(_ int, chunk []byte, out io.Writer) {
+	out.Write(chunk)
 }
 
 func (r *Renderer) RenderResult(stepNum int, output string, result *demokit.StepResult) {
