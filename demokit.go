@@ -445,8 +445,25 @@ walk:
 
 			var output string
 			var result *StepResult
+			// Tee output chunks into the renderer in real time when it
+			// supports streaming. The trace and recorder still receive
+			// the full captured string regardless. Snapshot os.Stdout
+			// before captureOutput redirects it so the chunk callback
+			// can write to the user's actual terminal — writing to
+			// os.Stdout from the drain goroutine would loop the bytes
+			// back into the capture pipe.
+			var onChunk func([]byte)
+			streaming := false
+			if sr, ok := r.(StreamingRenderer); ok {
+				streaming = true
+				stepNum := totalVisits
+				originalStdout := os.Stdout
+				onChunk = func(chunk []byte) {
+					sr.StreamOutput(stepNum, chunk, originalStdout)
+				}
+			}
 			if v.runFn != nil {
-				output, result = captureOutput(v.runFn, ctx)
+				output, result = captureOutput(v.runFn, ctx, onChunk)
 			}
 
 			// In replay mode, the recorded path wins over what the user's
@@ -459,7 +476,14 @@ walk:
 				result.Next = replayEntry.Next
 			}
 
-			r.RenderResult(totalVisits, output, result)
+			// When the body has already been streamed, hand RenderResult
+			// an empty output so it doesn't double-print. The trace
+			// entry below still carries the full captured string.
+			displayOutput := output
+			if streaming {
+				displayOutput = ""
+			}
+			r.RenderResult(totalVisits, displayOutput, result)
 
 			entry := TraceEntry{
 				Kind:   KindStep,

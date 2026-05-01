@@ -3,6 +3,7 @@ package demokit
 import (
 	"bufio"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 	"time"
@@ -34,6 +35,31 @@ type Renderer interface {
 	// when the step has at least one input. Implementations should
 	// re-prompt on Parse error and respect each input's Default.
 	Prompt(stepID string, inputs []InputDef) map[string]any
+}
+
+// StreamingRenderer is implemented by renderers that can show step
+// output incrementally while Run is still executing. demokit detects
+// this via type assertion: when the renderer implements StreamOutput,
+// captureOutput tees each chunk into the renderer in roughly real
+// time. RenderResult is then called with output == "" because the
+// body has already appeared on screen.
+//
+// Renderers that don't implement StreamingRenderer get the buffered
+// path: the full captured output is passed to RenderResult after Run
+// returns.
+type StreamingRenderer interface {
+	Renderer
+	// StreamOutput is called for each byte chunk a step's Run writes
+	// to stdout or stderr while it's still executing. May be invoked
+	// from a goroutine other than the one driving Render*; renderers
+	// must serialize their own state if needed.
+	//
+	// out is the writer to emit chunks to — the user's actual stdout,
+	// captured before captureOutput redirected it. Writing to
+	// os.Stdout directly would loop the chunks back into the capture
+	// pipe. stepNum is the absolute visit count (matching what
+	// RenderStep received); implementations are free to ignore it.
+	StreamOutput(stepNum int, chunk []byte, out io.Writer)
 }
 
 // --- PlainRenderer: default text-only renderer (zero dependencies) ---
@@ -196,6 +222,16 @@ func (r *PlainRenderer) RenderSection(section *SectionDef) {
 
 func (r *PlainRenderer) RenderDone() {
 	r.printLine("=== Done ===\n")
+}
+
+// StreamOutput writes a chunk of step output as it's produced. The
+// out writer is the user's actual stdout (captured by Execute before
+// captureOutput redirected os.Stdout into the capture pipe); writing
+// to os.Stdout directly here would loop straight back into the pipe.
+// PlainRenderer doesn't style or buffer per-chunk — this is a
+// passthrough that lets long-running steps print live.
+func (r *PlainRenderer) StreamOutput(_ int, chunk []byte, out io.Writer) {
+	out.Write(chunk)
 }
 
 func (r *PlainRenderer) WaitForStep(opts WaitOpts) {

@@ -51,6 +51,59 @@ var honorifics = []string{
 	"Surprisingly Tall",
 }
 
+// ANSI escape codes for the dragon scene. Plain text terminals
+// render these as literal characters; modern TTYs interpret them.
+// The streaming demo prints them as-is — TTY-stripping for piped
+// output is a future enhancement (would key off term.IsTerminal).
+const (
+	ansiReset      = "\033[0m"
+	ansiDim        = "\033[2m"
+	ansiBold       = "\033[1m"
+	ansiCyan       = "\033[36m"
+	ansiBoldYellow = "\033[1;33m"
+	ansiRed        = "\033[31m"
+	ansiBoldRed    = "\033[1;31m"
+	ansiGold       = "\033[38;5;220m" // 256-color: warm gold
+	ansiSmoke      = "\033[38;5;245m" // 256-color: medium gray
+	ansiScale      = "\033[38;5;88m"  // 256-color: deep crimson
+)
+
+// dragonScene is revealed line-by-line in the dragon step, exercising
+// streaming output: each line prints with a brief sleep so the
+// silhouette assembles in front of the user instead of dumping all
+// at once when Run returns. Three movements: approach (stalactites),
+// reveal (the dragon itself), aftermath (treasure, magazine, "lunch").
+var dragonScene = []string{
+	ansiSmoke + "      The cave widens. Your torch flickers and gives up entirely." + ansiReset,
+	ansiSmoke + "      Something else takes over the lighting." + ansiReset,
+	"",
+	ansiCyan + "                    /\\        /\\        /\\        /\\" + ansiReset,
+	ansiCyan + "                   /  \\      /  \\      /  \\      /  \\" + ansiReset,
+	ansiCyan + "                  /    \\    /    \\    /    \\    /    \\" + ansiReset,
+	ansiCyan + "                 /______\\  /______\\  /______\\  /______\\" + ansiReset,
+	"",
+	ansiScale + "                              \\||/" + ansiReset,
+	ansiScale + "                              |  " + ansiBoldYellow + "@" + ansiScale + "___oo" + ansiReset,
+	ansiScale + "                    /\\  /\\   / (__,,,,|" + ansiReset,
+	ansiScale + "                   ) /^\\) ^\\/ _)" + ansiReset,
+	ansiScale + "                   )   /^\\/   _)" + ansiReset,
+	ansiScale + "                   )   _ /  / _)" + ansiReset,
+	ansiScale + "                  /\\  )/\\/ ||  | )_)" + ansiReset,
+	ansiScale + "                 <  >      |(,,) )__)" + ansiReset,
+	ansiScale + "                  ||      /    \\)___)\\" + ansiReset,
+	ansiScale + "                  | \\____(      )___) )___" + ansiReset,
+	ansiScale + "                   \\______(_______;;; __;;;" + ansiReset,
+	"",
+	ansiGold + "      Around him: rivers of gold, sparkling like dirty fountains." + ansiReset,
+	ansiDim + "      A magazine titled \"" + ansiReset + ansiBold + "Hoard Quarterly" + ansiReset + ansiDim + "\" rests across one claw." + ansiReset,
+	ansiDim + "      He licks a page with a forked tongue and turns it." + ansiReset,
+	ansiDim + "      The article is a six-page spread on adamantine polishing." + ansiReset,
+	"",
+	ansiBoldYellow + "      Slowly, two enormous yellow eyes lift to meet yours." + ansiReset,
+	"",
+	ansiBoldRed + "      \"Oh good,\"" + ansiReset + ansiRed + " he says, conversationally. " + ansiBoldRed + "\"Lunch.\"" + ansiReset,
+}
+
 // demoMarkdown is the sidecar content. Using go:embed makes the binary
 // self-contained — it works regardless of the invoker's cwd, and
 // `go install` produces a single-file binary that ships its own demo.
@@ -168,6 +221,18 @@ func main() {
 	// --- the dragon (state-driven outcome) ---
 
 	demo.Bind("dragon").Run(func(ctx demokit.StepContext) *demokit.StepResult {
+		// Reveal the lair scene line by line. Each Println streams
+		// out as soon as it's written (PlainRenderer / TUI both
+		// implement StreamingRenderer); the user sees the dragon
+		// assemble in real time instead of getting a wall-of-text
+		// dump after Run returns.
+		for _, line := range dragonScene {
+			fmt.Println(line)
+			time.Sleep(80 * time.Millisecond)
+		}
+		// Beat for dramatic effect before the verdict.
+		time.Sleep(700 * time.Millisecond)
+
 		if hasRing {
 			return &demokit.StepResult{Next: "victory"}
 		}

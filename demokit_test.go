@@ -56,7 +56,7 @@ func TestCaptureOutputSuccess(t *testing.T) {
 	out, result := captureOutput(func(ctx StepContext) *StepResult {
 		fmt.Print("hello world")
 		return nil
-	}, StepContext{})
+	}, StepContext{}, nil)
 	if result != nil {
 		t.Fatalf("expected nil result, got %+v", result)
 	}
@@ -66,7 +66,7 @@ func TestCaptureOutputSuccess(t *testing.T) {
 }
 
 func TestCaptureOutputEmpty(t *testing.T) {
-	out, result := captureOutput(func(ctx StepContext) *StepResult { return nil }, StepContext{})
+	out, result := captureOutput(func(ctx StepContext) *StepResult { return nil }, StepContext{}, nil)
 	if result != nil {
 		t.Fatalf("expected nil result, got %+v", result)
 	}
@@ -79,7 +79,7 @@ func TestCaptureOutputError(t *testing.T) {
 	out, result := captureOutput(func(ctx StepContext) *StepResult {
 		fmt.Print("partial output")
 		return Errf("step failed")
-	}, StepContext{})
+	}, StepContext{}, nil)
 	if result == nil || result.Status != StatusError {
 		t.Fatalf("expected error result, got %+v", result)
 	}
@@ -95,7 +95,7 @@ func TestCaptureOutputPanic(t *testing.T) {
 	out, result := captureOutput(func(ctx StepContext) *StepResult {
 		fmt.Print("before panic")
 		panic("boom")
-	}, StepContext{})
+	}, StepContext{}, nil)
 	if result == nil || result.Status != StatusError {
 		t.Fatalf("expected error result from panic, got %+v", result)
 	}
@@ -110,7 +110,7 @@ func TestCaptureOutputPanic(t *testing.T) {
 func TestCaptureOutputWarning(t *testing.T) {
 	_, result := captureOutput(func(ctx StepContext) *StepResult {
 		return Warn("heads up")
-	}, StepContext{})
+	}, StepContext{}, nil)
 	if result == nil || result.Status != StatusWarning {
 		t.Fatalf("expected warning result, got %+v", result)
 	}
@@ -122,7 +122,7 @@ func TestCaptureOutputWarning(t *testing.T) {
 func TestCaptureOutputInfo(t *testing.T) {
 	_, result := captureOutput(func(ctx StepContext) *StepResult {
 		return Info("FYI")
-	}, StepContext{})
+	}, StepContext{}, nil)
 	if result == nil || result.Status != StatusInfo {
 		t.Fatalf("expected info result, got %+v", result)
 	}
