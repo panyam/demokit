@@ -1,5 +1,7 @@
 package demokit
 
+import "time"
+
 // ActorDef defines a participant in the sequence diagram.
 type ActorDef struct {
 	ID    string `json:"id"`    // Short identifier used in arrows (e.g., "AS")
@@ -24,14 +26,16 @@ type item interface {
 
 // StepDef defines one executable step in the demo.
 type StepDef struct {
-	id       string
-	title    string
-	arrows   []arrowDef
-	refs     []Ref
-	note     string
-	inputs   []InputDef
-	coalesce func(map[string]any) any
-	runFn    func(StepContext) *StepResult
+	id          string
+	title       string
+	arrows      []arrowDef
+	refs        []Ref
+	note        string
+	inputs      []InputDef
+	coalesce    func(map[string]any) any
+	runFn       func(StepContext) *StepResult
+	timeout     time.Duration // 0 = no timeout
+	cancellable bool          // press-Enter cancels in interactive mode
 }
 
 type arrowDef struct {
@@ -114,6 +118,43 @@ func (s *StepDef) Inputs() []InputDef {
 	out := make([]InputDef, len(s.inputs))
 	copy(out, s.inputs)
 	return out
+}
+
+// Timeout sets a deadline for this step's Run. After the duration
+// elapses, ctx.Ctx fires its Done() channel; Run is expected to
+// notice and return. demokit does NOT abandon a Run that ignores
+// the context — the demo will block until Run returns. Zero
+// duration (default) means no timeout.
+//
+// Common pattern for long-running event watchers:
+//
+//	demo.Step("Watch events").
+//	    Timeout(5 * time.Minute).
+//	    Run(func(ctx demokit.StepContext) *demokit.StepResult {
+//	        for {
+//	            select {
+//	            case ev := <-events:
+//	                fmt.Printf("[event] %v\n", ev)
+//	            case <-ctx.Ctx.Done():
+//	                return demokit.Info("watched")
+//	            }
+//	        }
+//	    })
+func (s *StepDef) Timeout(d time.Duration) *StepDef {
+	s.timeout = d
+	return s
+}
+
+// Cancellable, when true, lets the user press Enter during Run to
+// cancel the step's context (in interactive mode only). Run must
+// select on ctx.Ctx.Done() to honor the cancellation. Has no effect
+// in --non-interactive mode or replay mode.
+//
+// Combine with Timeout to set both an upper bound and a manual
+// escape hatch — whichever fires first cancels the context.
+func (s *StepDef) Cancellable(b bool) *StepDef {
+	s.cancellable = b
+	return s
 }
 
 // Run sets the function to execute for this step. The function receives a

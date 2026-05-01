@@ -135,6 +135,38 @@ func main() {
 		return nil
 	})
 
+	// A cancellable streaming step: the cave whispers a few hints
+	// over the course of a few seconds. Press Enter to move on
+	// early; otherwise the whispers stop on their own. Timeout is a
+	// safety limit (loop completes well before it fires).
+	demo.Bind("listen").Timeout(8 * time.Second).Cancellable(true).
+		Run(func(ctx demokit.StepContext) *demokit.StepResult {
+			// On revisits (death loop, "try again"), skip the whispers
+			// so the demo doesn't drag every reset.
+			if ctx.Visits > 1 {
+				fmt.Println("(You keep walking. The cave has nothing new to say.)")
+				return nil
+			}
+			whispers := []string{
+				ansiSmoke + "    drip... drip..." + ansiReset,
+				ansiSmoke + "    (faint scrabbling — claws on stone, somewhere west)" + ansiReset,
+				ansiSmoke + "    (a slow leathery breath, deep in the rock)" + ansiReset,
+				ansiSmoke + "    (coins shifting; the dragon is restless tonight)" + ansiReset,
+				ansiSmoke + "    (a dragonfly bumps into a stalactite and apologizes)" + ansiReset,
+			}
+			for _, w := range whispers {
+				select {
+				case <-ctx.Ctx.Done():
+					fmt.Println(ansiDim + "(You shake your head and step away.)" + ansiReset)
+					return nil
+				case <-time.After(700 * time.Millisecond):
+					fmt.Println(w)
+				}
+			}
+			fmt.Println(ansiDim + "(The cave seems to forget about you.)" + ansiReset)
+			return nil
+		})
+
 	demo.Bind("name").Run(func(ctx demokit.StepContext) *demokit.StepResult {
 		name := ctx.Inputs["name"].(string)
 		if epithet == "" {

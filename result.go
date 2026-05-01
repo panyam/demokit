@@ -1,6 +1,7 @@
 package demokit
 
 import (
+	"context"
 	"fmt"
 	"time"
 )
@@ -49,7 +50,7 @@ func (r *StepResult) DisplayLabel() string {
 }
 
 // StepContext is passed to a step's run function. It carries the resolved
-// input payload and visit count. Future fields may include trace metadata.
+// input payload, visit count, and a cancellation context.
 type StepContext struct {
 	// Inputs holds the raw map payload collected from the renderer.
 	// Values are typed (e.g. int, string) according to each InputDef's Parse.
@@ -61,6 +62,15 @@ type StepContext struct {
 	// Visits is the number of times this step has been entered, including
 	// the current visit (so the first visit is 1).
 	Visits int
+	// Ctx is cancelled when the step's Timeout (if set) elapses, or
+	// when the user presses Enter on a Cancellable step in interactive
+	// mode. Long-running Run functions should select on Ctx.Done() to
+	// honor cancellation; demokit does NOT abandon a Run that ignores
+	// the context — the demo will block until Run returns.
+	//
+	// For steps without Timeout or Cancellable, Ctx is a never-cancelled
+	// background context (always safe to read; never fires).
+	Ctx context.Context
 }
 
 // WaitOpts configures the renderer's WaitForStep prompt.

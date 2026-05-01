@@ -111,9 +111,44 @@ B -->> A: dashed arrow
 |---|---|---|
 | `examples/basic/` | inline | inline-only API; regression check that the Go-only path keeps working |
 | `examples/graph/` | inline | branching state machine, `Coalesce`, `AutoAcceptAfter` countdown |
-| `examples/dungeon/` | sidecar | `FromMarkdownBytes` + `go:embed`, `Bind`, multiple cycles, `MaxVisits` guard, `int` input, Go-side state (the magic ring) |
+| `examples/dungeon/` | sidecar | `FromMarkdownBytes` + `go:embed`, `Bind`, multiple cycles, `MaxVisits` guard, `int` input, Go-side state (the magic ring), cancellable streaming step (`listen`), live ANSI dragon scene |
 
-### Errors
+## Long-running steps: timeout + cancellation
+
+Steps that consume infinite or near-infinite streams (event listeners, polling loops, "wait for press-Enter") need a way to end. `StepDef.Timeout(d)` and `StepDef.Cancellable(b)` are two orthogonal knobs:
+
+| Setter | Effect |
+|---|---|
+| `Timeout(d)` | After `d` elapses, `ctx.Ctx` fires `Done()`. Run notices and returns. |
+| `Cancellable(true)` | In interactive mode, an Enter keypress cancels `ctx.Ctx`. Has no effect in `--non-interactive` or replay mode. |
+| both | Whichever fires first cancels — Enter wins if pressed early; timeout wins otherwise. |
+| neither (default) | `ctx.Ctx` is a never-cancelled background context. Run executes uninterrupted. |
+
+**Run is responsible for honoring cancellation.** demokit does NOT abandon a Run that ignores the context — the demo blocks until Run returns. The standard pattern:
+
+```go
+demo.Step("Watch events").
+    Timeout(5 * time.Minute).
+    Cancellable(true).
+    Run(func(ctx demokit.StepContext) *demokit.StepResult {
+        for {
+            select {
+            case ev := <-events:
+                fmt.Printf("[event] %v\n", ev)  // streams live
+            case <-ctx.Ctx.Done():
+                fmt.Println("flushing...")     // cleanup also streams
+                saveSummary()
+                return demokit.Info("watched")
+            }
+        }
+    })
+```
+
+Practical implication: the user sees the demo paused for however long Run's cleanup phase takes after `<-ctx.Done()` fires. Keep cleanup fast or print progress chunks during it.
+
+If Run returns with no result and the context fired during execution, demokit synthesizes an `Info` with `"step timed out"` or `"step cancelled"` so the trace records why the step ended.
+
+## Sidecar load errors
 
 `FromMarkdown` never panics or returns an error directly — it stores any failure on the `Demo` and the chained-call surface stays clean. `Demo.Execute()` checks for stored errors at startup and aborts with a clear stderr message before any step runs:
 

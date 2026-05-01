@@ -24,6 +24,7 @@
 package demokit
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"os"
@@ -433,9 +434,25 @@ walk:
 			} else {
 				inputs = collectInputs(r, v, interactive)
 			}
+			// Build a per-step context for cancellation. Steps without
+			// Timeout or Cancellable get a never-cancelled background
+			// context (always safe to read). Cancellable + interactive
+			// starts a stdin watcher that fires cancel on Enter.
+			runCtx, cancelRun := context.WithCancel(context.Background())
+			if v.timeout > 0 {
+				var stopTimeout context.CancelFunc
+				runCtx, stopTimeout = context.WithTimeout(runCtx, v.timeout)
+				defer stopTimeout()
+			}
+			var stopWatcher func()
+			if v.cancellable && interactive && !replaying {
+				stopWatcher = watchCancelKey(cancelRun)
+			}
+
 			ctx := StepContext{
 				Inputs: inputs,
 				Visits: visits[v.id],
+				Ctx:    runCtx,
 			}
 			if v.coalesce != nil {
 				ctx.Input = v.coalesce(inputs)
@@ -464,6 +481,24 @@ walk:
 			}
 			if v.runFn != nil {
 				output, result = captureOutput(v.runFn, ctx, onChunk)
+			}
+			// Capture whether the context fired during Run BEFORE the
+			// cleanup-cancel below, otherwise we can't distinguish
+			// "Run ran to completion" from "Run was externally
+			// cancelled" — both end up with runCtx.Err() != nil.
+			ctxFiredDuringRun := runCtx.Err() != nil
+			ctxErr := runCtx.Err()
+			if stopWatcher != nil {
+				stopWatcher()
+			}
+			cancelRun()
+
+			// If the context fired before Run returned a result of its
+			// own, surface that as an Info so the user sees why the
+			// step ended. A user-supplied result wins (Run noticed the
+			// cancel and returned its own message).
+			if result == nil && ctxFiredDuringRun {
+				result = Info(cancelReason(ctxErr))
 			}
 
 			// In replay mode, the recorded path wins over what the user's

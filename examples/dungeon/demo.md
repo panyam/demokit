@@ -33,6 +33,13 @@ suspiciously generous about second chances.
   default: Wanderer
 ```
 
+## Listen for a moment {#listen}
+
+> The cave is full of small sounds. If you stand still and listen,
+> you might catch a hint of what waits inside.
+>
+> (Press Enter to move on whenever you're ready.)
+
 ## Which way? {#choose-dir}
 
 > A faded sign reads: NORTH — passages, SOUTH — meadow, EAST — see manager.

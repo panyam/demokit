@@ -28,10 +28,26 @@ before letting you any further in.
 - `name` = `Wanderer`
 
 ```
-(The cave murmurs: "Welcome, Wanderer the Surprisingly Tall.")
+(The cave murmurs: "Welcome, Wanderer the Reluctant.")
 ```
 
-### 3. Which way?
+### 3. Listen for a moment
+
+The cave is full of small sounds. If you stand still and listen,
+you might catch a hint of what waits inside.
+
+(Press Enter to move on whenever you're ready.)
+
+```
+[38;5;245m    drip... drip...[0m
+[38;5;245m    (faint scrabbling — claws on stone, somewhere west)[0m
+[38;5;245m    (a slow leathery breath, deep in the rock)[0m
+[38;5;245m    (coins shifting; the dragon is restless tonight)[0m
+[38;5;245m    (a dragonfly bumps into a stalactite and apologizes)[0m
+[2m(The cave seems to forget about you.)[0m
+```
+
+### 4. Which way?
 
 A faded sign reads: NORTH — passages, SOUTH — meadow, EAST — see manager.
 
@@ -41,7 +57,7 @@ A faded sign reads: NORTH — passages, SOUTH — meadow, EAST — see manager.
 
 → jumped to `cave-fork`
 
-### 4. The forked passage
+### 5. The forked passage
 
 The northern passage forks. The left tunnel is dark and silent.
 The right tunnel has cool air and faint scratching noises.
@@ -52,7 +68,7 @@ The right tunnel has cool air and faint scratching noises.
 
 → jumped to `dark-passage`
 
-### 5. The dark passage
+### 6. The dark passage
 
 You stumble through the dark. Your hand finds wet stone. Somewhere
 ahead, something that is definitely not a small mouse is breathing.
@@ -63,16 +79,47 @@ ahead, something that is definitely not a small mouse is breathing.
 
 → jumped to `dragon`
 
-### 6. The dragon's lair
+### 7. The dragon's lair
 
 A red dragon reclines on a heap of gold, flipping through a magazine
 titled *Hoard Quarterly*. It glances up at you.
 
 "Oh good. Lunch."
 
+```
+[38;5;245m      The cave widens. Your torch flickers and gives up entirely.[0m
+[38;5;245m      Something else takes over the lighting.[0m
+
+[36m                    /\        /\        /\        /\[0m
+[36m                   /  \      /  \      /  \      /  \[0m
+[36m                  /    \    /    \    /    \    /    \[0m
+[36m                 /______\  /______\  /______\  /______\[0m
+
+[38;5;88m                              \||/[0m
+[38;5;88m                              |  [1;33m@[38;5;88m___oo[0m
+[38;5;88m                    /\  /\   / (__,,,,|[0m
+[38;5;88m                   ) /^\) ^\/ _)[0m
+[38;5;88m                   )   /^\/   _)[0m
+[38;5;88m                   )   _ /  / _)[0m
+[38;5;88m                  /\  )/\/ ||  | )_)[0m
+[38;5;88m                 <  >      |(,,) )__)[0m
+[38;5;88m                  ||      /    \)___)\[0m
+[38;5;88m                  | \____(      )___) )___[0m
+[38;5;88m                   \______(_______;;; __;;;[0m
+
+[38;5;220m      Around him: rivers of gold, sparkling like dirty fountains.[0m
+[2m      A magazine titled "[0m[1mHoard Quarterly[0m[2m" rests across one claw.[0m
+[2m      He licks a page with a forked tongue and turns it.[0m
+[2m      The article is a six-page spread on adamantine polishing.[0m
+
+[1;33m      Slowly, two enormous yellow eyes lift to meet yours.[0m
+
+[1;31m      "Oh good,"[0m[31m he says, conversationally. [1;31m"Lunch."[0m
+```
+
 → jumped to `death`
 
-### 7. You died (sort of)
+### 8. You died (sort of)
 
 The dragon yawns, exhales, and you become a statistic.
 
@@ -82,13 +129,13 @@ adventurer.
 
 → jumped to `entrance`
 
-### 8. The entrance _(visit 2)_
+### 9. The entrance _(visit 2)_
 
 The cave mouth yawns dark. A breeze stirs the tall grass behind you.
 Three paths lead onward. Your boots crunch on something that might
 have been a previous adventurer.
 
-### 9. A formal introduction _(visit 2)_
+### 10. A formal introduction _(visit 2)_
 
 The cave breeze coils around you. It seems to want a formal greeting
 before letting you any further in.
@@ -98,10 +145,21 @@ before letting you any further in.
 - `name` = `Wanderer`
 
 ```
-(The cave murmurs: "Back so soon, Wanderer the Surprisingly Tall?")
+(The cave murmurs: "Back so soon, Wanderer the Reluctant?")
 ```
 
-### 10. Which way? _(visit 2)_
+### 11. Listen for a moment _(visit 2)_
+
+The cave is full of small sounds. If you stand still and listen,
+you might catch a hint of what waits inside.
+
+(Press Enter to move on whenever you're ready.)
+
+```
+(You keep walking. The cave has nothing new to say.)
+```
+
+### 12. Which way? _(visit 2)_
 
 A faded sign reads: NORTH — passages, SOUTH — meadow, EAST — see manager.
 
@@ -111,7 +169,7 @@ A faded sign reads: NORTH — passages, SOUTH — meadow, EAST — see manager.
 
 → jumped to `cave-fork`
 
-### 11. The forked passage _(visit 2)_
+### 13. The forked passage _(visit 2)_
 
 The northern passage forks. The left tunnel is dark and silent.
 The right tunnel has cool air and faint scratching noises.
@@ -122,7 +180,7 @@ The right tunnel has cool air and faint scratching noises.
 
 → jumped to `dark-passage`
 
-### 12. The dark passage _(visit 2)_
+### 14. The dark passage _(visit 2)_
 
 You stumble through the dark. Your hand finds wet stone. Somewhere
 ahead, something that is definitely not a small mouse is breathing.
@@ -133,16 +191,47 @@ ahead, something that is definitely not a small mouse is breathing.
 
 → jumped to `dragon`
 
-### 13. The dragon's lair _(visit 2)_
+### 15. The dragon's lair _(visit 2)_
 
 A red dragon reclines on a heap of gold, flipping through a magazine
 titled *Hoard Quarterly*. It glances up at you.
 
 "Oh good. Lunch."
 
+```
+[38;5;245m      The cave widens. Your torch flickers and gives up entirely.[0m
+[38;5;245m      Something else takes over the lighting.[0m
+
+[36m                    /\        /\        /\        /\[0m
+[36m                   /  \      /  \      /  \      /  \[0m
+[36m                  /    \    /    \    /    \    /    \[0m
+[36m                 /______\  /______\  /______\  /______\[0m
+
+[38;5;88m                              \||/[0m
+[38;5;88m                              |  [1;33m@[38;5;88m___oo[0m
+[38;5;88m                    /\  /\   / (__,,,,|[0m
+[38;5;88m                   ) /^\) ^\/ _)[0m
+[38;5;88m                   )   /^\/   _)[0m
+[38;5;88m                   )   _ /  / _)[0m
+[38;5;88m                  /\  )/\/ ||  | )_)[0m
+[38;5;88m                 <  >      |(,,) )__)[0m
+[38;5;88m                  ||      /    \)___)\[0m
+[38;5;88m                  | \____(      )___) )___[0m
+[38;5;88m                   \______(_______;;; __;;;[0m
+
+[38;5;220m      Around him: rivers of gold, sparkling like dirty fountains.[0m
+[2m      A magazine titled "[0m[1mHoard Quarterly[0m[2m" rests across one claw.[0m
+[2m      He licks a page with a forked tongue and turns it.[0m
+[2m      The article is a six-page spread on adamantine polishing.[0m
+
+[1;33m      Slowly, two enormous yellow eyes lift to meet yours.[0m
+
+[1;31m      "Oh good,"[0m[31m he says, conversationally. [1;31m"Lunch."[0m
+```
+
 → jumped to `death`
 
-### 14. You died (sort of) _(visit 2)_
+### 16. You died (sort of) _(visit 2)_
 
 The dragon yawns, exhales, and you become a statistic.
 
@@ -152,13 +241,13 @@ adventurer.
 
 → jumped to `entrance`
 
-### 15. The entrance _(visit 3)_
+### 17. The entrance _(visit 3)_
 
 The cave mouth yawns dark. A breeze stirs the tall grass behind you.
 Three paths lead onward. Your boots crunch on something that might
 have been a previous adventurer.
 
-### 16. A formal introduction _(visit 3)_
+### 18. A formal introduction _(visit 3)_
 
 The cave breeze coils around you. It seems to want a formal greeting
 before letting you any further in.
@@ -168,10 +257,21 @@ before letting you any further in.
 - `name` = `Wanderer`
 
 ```
-(The cave murmurs: "Back so soon, Wanderer the Surprisingly Tall?")
+(The cave murmurs: "Back so soon, Wanderer the Reluctant?")
 ```
 
-### 17. Which way? _(visit 3)_
+### 19. Listen for a moment _(visit 3)_
+
+The cave is full of small sounds. If you stand still and listen,
+you might catch a hint of what waits inside.
+
+(Press Enter to move on whenever you're ready.)
+
+```
+(You keep walking. The cave has nothing new to say.)
+```
+
+### 20. Which way? _(visit 3)_
 
 A faded sign reads: NORTH — passages, SOUTH — meadow, EAST — see manager.
 
@@ -181,7 +281,7 @@ A faded sign reads: NORTH — passages, SOUTH — meadow, EAST — see manager.
 
 → jumped to `cave-fork`
 
-### 18. The forked passage _(visit 3)_
+### 21. The forked passage _(visit 3)_
 
 The northern passage forks. The left tunnel is dark and silent.
 The right tunnel has cool air and faint scratching noises.
@@ -192,7 +292,7 @@ The right tunnel has cool air and faint scratching noises.
 
 → jumped to `dark-passage`
 
-### 19. The dark passage _(visit 3)_
+### 22. The dark passage _(visit 3)_
 
 You stumble through the dark. Your hand finds wet stone. Somewhere
 ahead, something that is definitely not a small mouse is breathing.
@@ -203,16 +303,47 @@ ahead, something that is definitely not a small mouse is breathing.
 
 → jumped to `dragon`
 
-### 20. The dragon's lair _(visit 3)_
+### 23. The dragon's lair _(visit 3)_
 
 A red dragon reclines on a heap of gold, flipping through a magazine
 titled *Hoard Quarterly*. It glances up at you.
 
 "Oh good. Lunch."
 
+```
+[38;5;245m      The cave widens. Your torch flickers and gives up entirely.[0m
+[38;5;245m      Something else takes over the lighting.[0m
+
+[36m                    /\        /\        /\        /\[0m
+[36m                   /  \      /  \      /  \      /  \[0m
+[36m                  /    \    /    \    /    \    /    \[0m
+[36m                 /______\  /______\  /______\  /______\[0m
+
+[38;5;88m                              \||/[0m
+[38;5;88m                              |  [1;33m@[38;5;88m___oo[0m
+[38;5;88m                    /\  /\   / (__,,,,|[0m
+[38;5;88m                   ) /^\) ^\/ _)[0m
+[38;5;88m                   )   /^\/   _)[0m
+[38;5;88m                   )   _ /  / _)[0m
+[38;5;88m                  /\  )/\/ ||  | )_)[0m
+[38;5;88m                 <  >      |(,,) )__)[0m
+[38;5;88m                  ||      /    \)___)\[0m
+[38;5;88m                  | \____(      )___) )___[0m
+[38;5;88m                   \______(_______;;; __;;;[0m
+
+[38;5;220m      Around him: rivers of gold, sparkling like dirty fountains.[0m
+[2m      A magazine titled "[0m[1mHoard Quarterly[0m[2m" rests across one claw.[0m
+[2m      He licks a page with a forked tongue and turns it.[0m
+[2m      The article is a six-page spread on adamantine polishing.[0m
+
+[1;33m      Slowly, two enormous yellow eyes lift to meet yours.[0m
+
+[1;31m      "Oh good,"[0m[31m he says, conversationally. [1;31m"Lunch."[0m
+```
+
 → jumped to `death`
 
-### 21. You died (sort of) _(visit 3)_
+### 24. You died (sort of) _(visit 3)_
 
 The dragon yawns, exhales, and you become a statistic.
 

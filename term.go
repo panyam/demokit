@@ -1,12 +1,16 @@
 package demokit
 
 import (
+	"bufio"
 	"bytes"
+	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 
 	"github.com/charmbracelet/x/term"
+	"github.com/muesli/cancelreader"
 )
 
 // TermWidth returns the current terminal width, or 80 as fallback.
@@ -27,6 +31,44 @@ func isTerminal() bool {
 		return false
 	}
 	return fi.Mode()&os.ModeCharDevice != 0
+}
+
+// watchCancelKey starts a stdin reader in a goroutine; when the user
+// presses Enter, it calls cancel. Returns a stop function the caller
+// must invoke when the run ends (whether the watcher fired or not).
+//
+// Uses muesli/cancelreader so the goroutine doesn't leak across
+// successive steps — the same pattern WaitForEnterOrTimeout uses.
+// On platforms where cancelreader fails (rare), the watcher falls
+// back to a no-op so the demo still progresses.
+func watchCancelKey(cancel context.CancelFunc) (stop func()) {
+	cr, err := cancelreader.NewReader(os.Stdin)
+	if err != nil {
+		return func() {}
+	}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_, _ = bufio.NewReader(cr).ReadString('\n')
+		cancel()
+	}()
+	return func() {
+		cr.Cancel()
+		<-done
+		_ = cr.Close()
+	}
+}
+
+// cancelReason maps a context.Err() to a user-visible message.
+func cancelReason(err error) string {
+	switch {
+	case errors.Is(err, context.DeadlineExceeded):
+		return "step timed out"
+	case errors.Is(err, context.Canceled):
+		return "step cancelled"
+	default:
+		return err.Error()
+	}
 }
 
 // captureOutput runs fn with both os.Stdout AND os.Stderr redirected
