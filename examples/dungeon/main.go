@@ -33,6 +33,9 @@ import (
 
 	"github.com/panyam/demokit"
 	"github.com/panyam/demokit/tui"
+
+	// Enables `--doc bundle` for self-contained HTML embed output.
+	_ "github.com/panyam/demokit/web"
 )
 
 // Random honorifics for the cave's introductory greeting. Picked once

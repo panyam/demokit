@@ -1,4 +1,4 @@
-.PHONY: run demo runquiet record replay gen-readme doc-md doc-html doc-json
+.PHONY: run demo runquiet record replay gen-readme doc-md doc-html doc-json doc-bundle
 
 TRACE := /tmp/demokit-graph-trace.json
 
@@ -42,3 +42,9 @@ doc-html: record
 # the recorded trace.
 doc-json: record
 	go run . --doc json --from $(TRACE)
+
+# Self-contained HTML bundle (player + CSS + trace, all inlined).
+# Open the resulting file in any browser; works from file://.
+doc-bundle: record
+	go run . --doc bundle --from $(TRACE) --out /tmp/graph.html
+	@echo "Bundle: /tmp/graph.html — open in browser"

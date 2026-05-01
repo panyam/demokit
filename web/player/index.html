@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>demokit-player dev harness</title>
+<link rel="stylesheet" href="demokit-player.css">
+<style>
+  body { margin: 2em auto; max-width: 900px; padding: 0 1em; font-family: -apple-system, BlinkMacSystemFont, sans-serif; }
+  h1 { margin: 0 0 0.5em; }
+  .grid { display: grid; gap: 2em; }
+  .panel { padding: 8px; border: 1px dashed #999; border-radius: 4px; }
+  .panel small { color: #777; }
+  code { background: #f0f0f0; padding: 2px 4px; border-radius: 2px; }
+</style>
+</head>
+<body>
+
+<h1>demokit-player — dev harness</h1>
+<p>Three source modes, all rendering the same player. Open this file from <code>file://</code> or via <code>python -m http.server</code>.</p>
+
+<div class="grid">
+
+  <div class="panel">
+    <small>Mode 1: <code>data-src</code> URL</small>
+    <demokit-demo data-src="sample-trace.json"></demokit-demo>
+  </div>
+
+  <div class="panel">
+    <small>Mode 2: inline JSON blob</small>
+    <demokit-demo>{
+      "demo": {
+        "title": "Inline blob demo",
+        "description": "Trace JSON sits inside the element."
+      },
+      "trace": [
+        { "kind": "section", "title": "Setup", "body": "Pretend this is your intro." },
+        { "kind": "step", "title": "Press a key", "step_id": "a", "visit": 1, "output": "key pressed: hello" },
+        { "kind": "step", "title": "Done", "step_id": "b", "visit": 1, "status": 3, "message": "ok" }
+      ]
+    }</demokit-demo>
+  </div>
+
+  <div class="panel">
+    <small>Mode 3: programmatic <code>el.trace = obj</code></small>
+    <demokit-demo id="prog"></demokit-demo>
+    <button onclick="document.getElementById('prog').trace = window.SAMPLE_TRACE;">Inject trace</button>
+  </div>
+
+  <div class="panel">
+    <small>Mode 4: live (PR #3 wires; today shows the placeholder error)</small>
+    <demokit-demo data-src="http://example.invalid/events" data-mode="live"></demokit-demo>
+  </div>
+
+</div>
+
+<script>
+  window.SAMPLE_TRACE = {
+    demo: { title: "Programmatic trace", description: "Injected via JS property." },
+    trace: [
+      { kind: "step", title: "Click handler fired", step_id: "x", visit: 1, output: "ran in 12 ms" },
+      { kind: "step", title: "All done", step_id: "y", visit: 1 }
+    ]
+  };
+</script>
+<script src="demokit-player.js"></script>
+</body>
+</html>

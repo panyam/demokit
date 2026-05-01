@@ -17,6 +17,8 @@ This document describes how demokit is wired together internally — the files, 
 | `render_trace.go` | `RenderEntryMD/HTML`, `RenderDocumentMD/HTML` |
 | `render_json.go` | `RenderDocumentJSON`, `JSONFromTrace`, `Demo.JSON()` + projection view structs |
 | `markdown_load.go` | `Demo.FromMarkdown(path)` + `Demo.FromMarkdownBytes` + `Demo.Bind(id)` — sidecar markdown loader |
+| `web/` | Subpackage `package web`. Go-side embed surface (`TraceFragment`, `WriteBundle`, `PlayerJS`, `PlayerCSS`); registers `--doc bundle` with core via `init()`. Imported via `_ "github.com/panyam/demokit/web"` to enable bundle output. |
+| `web/player/` | Vanilla-JS Custom Element (`<demokit-demo>`) + scoped CSS, embedded into the `web` package binary via `//go:embed`. |
 | `term.go` | Terminal width detection with stdout/stderr fallback |
 | `logger.go` | Internal `print()` helper (writes to stderr — see gotchas) |
 | `tui/` | Lipgloss-based renderer + `FormPrompter` interface |
@@ -169,8 +171,61 @@ Load warnings (unsupported mermaid syntax, content before the first heading) pri
 | `--doc html` | yes | `RenderDocumentHTML(ctx)` |
 | `--doc json` | no | `RenderDocumentJSON(ctx)` (definition only) |
 | `--doc json` | yes | `RenderDocumentJSON(ctx)` (definition + trace) |
+| `--doc bundle [--out path]` | either | `web.WriteBundle(d, entries, path)` — self-contained HTML with player + CSS + trace inlined. Requires `_ "github.com/panyam/demokit/web"` import (registers via `RegisterDocFormat`). |
 
 Static-md and trace-md route to **different renderers** because they walk fundamentally different sources (declarations vs. recorded entries) and produce intentionally different shapes. The static visitor includes a "What you'll learn" notes summary, a consolidated mermaid sequence diagram, and a Run-it footer; the trace renderer produces a per-step walkthrough with captured outputs and inputs.
+
+### Doc-format registry (`RegisterDocFormat`)
+
+Built-in formats (`md`/`html`/`json`) are hard-coded in core. Additional formats register themselves at `init()` time so demos opt in via blank import:
+
+```go
+// in demokit/web/web.go
+func init() {
+    demokit.RegisterDocFormat("bundle", func(d *demokit.Demo, entries []demokit.TraceEntry, out string) error {
+        return WriteBundle(d, entries, out)
+    })
+}
+
+// in your demo's main.go
+import _ "github.com/panyam/demokit/web"
+```
+
+Demos that don't import the package see a clear stderr error if they invoke `--doc bundle`: `"demokit: --doc bundle is not enabled. Add `_ \"github.com/panyam/demokit/web\"` to your imports."`. Names `md`, `html`, `json` are reserved; reusing them panics.
+
+Reasoning for the indirection: keeping the Go-side embed code (TraceFragment, WriteBundle, PlayerJS) in its own subpackage matches the layout of the JS/CSS assets under `web/player/`. The `tui/` subpackage uses the same shape (separate package; demos opt in via explicit `tui.New()`). Without the registry, `--doc bundle` would have to leave core CLI; with it, the unified `--doc <format>` surface stays intact.
+
+## Embed surface — `<demokit-demo>` web player
+
+The player is a vanilla-JS Custom Element shipped under `web/player/` and embedded into the demokit binary via `//go:embed`. It consumes the same JSON shape `--doc json` produces — there's one trace contract for terminal renders, doc gen, and embeds.
+
+Three (soon four) source modes, in priority order:
+
+| Mode | Host invokes via | Use case |
+|---|---|---|
+| Programmatic | `el.trace = traceObject` (JS property) | Dynamic insertion, framework integrations |
+| URL static | `<demokit-demo data-src="trace.json">` | Published demos, demokit.com/traces/xyz, slide CDNs |
+| Inline blob | `<demokit-demo>{...JSON...}</demokit-demo>` | Self-contained HTML, file://, copy-paste embeds |
+| URL live *(reserved; PR for issue #3)* | `<demokit-demo data-src="..." data-mode="live">` | Live presentations served by `demokit --serve` |
+
+Four Go entry points in the `web` subpackage:
+
+```go
+import "github.com/panyam/demokit/web"
+
+web.WriteBundle(d, entries, "/path/out.html")  // self-contained HTML
+web.TraceFragment(d, entries)                  // <demokit-demo>{...}</demokit-demo>
+web.PlayerJS()                                 // raw bundled player JS for hosting at your own URL
+web.PlayerCSS()
+```
+
+A blank import `import _ "github.com/panyam/demokit/web"` is enough to enable `--doc bundle` on the CLI side without exposing the package's symbols.
+
+The player events / public methods are documented at the top of `web/player/demokit-player.js`.
+
+### Why no shadow DOM
+
+Hosts (notably slide tools that retheme) rely on CSS custom-property inheritance. Shadow DOM would block that. The player uses BEM-ish scoped class names plus `--demokit-*` CSS variables; revisit if real style-bleed reports appear.
 
 
 ## Gotchas

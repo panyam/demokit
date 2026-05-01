@@ -1,0 +1,453 @@
+// demokit-player — vanilla-JS web component for playing back demokit
+// traces in any HTML host. Registers <demokit-demo> as a Custom
+// Element. No framework dependencies.
+//
+// Data sources, in priority order:
+//   1. Programmatic: el.trace = traceObject (assigning the property
+//      triggers a re-render).
+//   2. data-src URL: fetch JSON; render as static playback.
+//   3. data-src URL with data-mode="live": connect via SSE (PR #3
+//      wires this; today it surfaces a clear "live mode requires
+//      demokit --serve" error).
+//   4. Inline blob: <demokit-demo>{...JSON...}</demokit-demo>.
+//
+// Public API on the element:
+//   .trace = obj            // programmatic data injection
+//   .play(), .pause(), .reset(), .step(), .goTo(n)
+//   .currentStep (read), .totalEntries (read), .isPlaying (read)
+//
+// Events dispatched on the element:
+//   demokit:loaded   — once trace data is available
+//   demokit:step     — each time the visible step advances
+//   demokit:done     — last entry shown
+//   demokit:error    — fatal load/render error
+//
+// Events listened for (so any host can drive the widget without
+// knowing the player's class name):
+//   demokit:play, demokit:pause, demokit:reset, demokit:step
+//
+// Keyboard (when the element is focused):
+//   Space / ArrowRight  — next step
+//   ArrowLeft           — previous step (rewinds the visible feed)
+//   P                   — play/pause toggle
+//   R                   — reset to first entry
+
+(function () {
+  'use strict';
+
+  const PLAY_INTERVAL_MS = 1500; // tune via Demo author later if needed
+
+  class DemokitDemoElement extends HTMLElement {
+    constructor() {
+      super();
+      this._trace = null;
+      this._programmaticTrace = null;
+      this._currentStep = 0; // index of next entry to reveal
+      this._isPlaying = false;
+      this._timer = null;
+      this._kbHandler = null;
+      this._evtHandlers = {};
+    }
+
+    connectedCallback() {
+      this.classList.add('demokit-player');
+      if (!this.hasAttribute('tabindex')) {
+        this.setAttribute('tabindex', '0'); // make focusable for keyboard
+      }
+      this._renderShell();
+      this._bindKeyboard();
+      this._bindHostEvents();
+      this._loadTrace();
+    }
+
+    disconnectedCallback() {
+      this._stopPlayback();
+      this._unbindKeyboard();
+      this._unbindHostEvents();
+    }
+
+    // --- Programmatic data source ---
+
+    set trace(obj) {
+      this._programmaticTrace = obj;
+      this._loadTrace();
+    }
+    get trace() {
+      return this._trace;
+    }
+
+    // --- Public controls ---
+
+    play() {
+      if (this._isPlaying || !this._trace) return;
+      this._isPlaying = true;
+      this._updateControls();
+      this._timer = setInterval(() => {
+        this.step();
+        if (this._currentStep >= this._entries().length) {
+          this._stopPlayback();
+        }
+      }, PLAY_INTERVAL_MS);
+    }
+
+    pause() {
+      this._stopPlayback();
+    }
+
+    reset() {
+      this._stopPlayback();
+      this._currentStep = 0;
+      this._feedEl.replaceChildren();
+      this._updateControls();
+    }
+
+    step() {
+      const entries = this._entries();
+      if (this._currentStep >= entries.length) return;
+      const e = entries[this._currentStep];
+      this._renderEntry(e, this._currentStep + 1);
+      this._currentStep++;
+      this._updateControls();
+      this.dispatchEvent(new CustomEvent('demokit:step', {
+        detail: { index: this._currentStep, entry: e },
+      }));
+      if (this._currentStep >= entries.length) {
+        this.dispatchEvent(new CustomEvent('demokit:done'));
+      }
+    }
+
+    goTo(n) {
+      const entries = this._entries();
+      this._stopPlayback();
+      this._feedEl.replaceChildren();
+      this._currentStep = 0;
+      const target = Math.max(0, Math.min(n, entries.length));
+      for (let i = 0; i < target; i++) {
+        this.step();
+      }
+    }
+
+    get currentStep() { return this._currentStep; }
+    get totalEntries() { return this._entries().length; }
+    get isPlaying() { return this._isPlaying; }
+
+    // --- Internals ---
+
+    _entries() {
+      if (!this._trace) return [];
+      // The trace JSON shipped by --doc json wraps trace entries
+      // under a "trace" key alongside the demo definition. Inline
+      // blobs may carry just the entries array directly.
+      if (Array.isArray(this._trace)) return this._trace;
+      return this._trace.trace || [];
+    }
+
+    _demo() {
+      if (!this._trace || Array.isArray(this._trace)) return null;
+      return this._trace.demo || null;
+    }
+
+    _renderShell() {
+      this.replaceChildren();
+      const header = document.createElement('div');
+      header.className = 'demokit-player__header';
+      this._titleEl = document.createElement('h2');
+      this._titleEl.className = 'demokit-player__title';
+      this._descEl = document.createElement('p');
+      this._descEl.className = 'demokit-player__description';
+      header.appendChild(this._titleEl);
+      header.appendChild(this._descEl);
+
+      this._feedEl = document.createElement('div');
+      this._feedEl.className = 'demokit-player__feed';
+
+      const controls = document.createElement('div');
+      controls.className = 'demokit-player__controls';
+      this._prevBtn = this._mkBtn('◀', 'Previous (←)', () => this.goTo(this._currentStep - 1));
+      this._stepBtn = this._mkBtn('▶ Next', 'Next step (Space)', () => this.step());
+      this._playBtn = this._mkBtn('▶▶ Play', 'Play (P)', () => this.play());
+      this._pauseBtn = this._mkBtn('❚❚ Pause', 'Pause (P)', () => this.pause());
+      this._resetBtn = this._mkBtn('⟲ Reset', 'Reset (R)', () => this.reset());
+      this._counterEl = document.createElement('span');
+      this._counterEl.className = 'demokit-player__counter';
+      controls.append(this._prevBtn, this._stepBtn, this._playBtn, this._pauseBtn, this._resetBtn, this._counterEl);
+
+      this.appendChild(header);
+      this.appendChild(this._feedEl);
+      this.appendChild(controls);
+    }
+
+    _mkBtn(label, title, onClick) {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'demokit-player__btn';
+      b.textContent = label;
+      b.title = title;
+      b.addEventListener('click', (e) => { e.stopPropagation(); onClick(); });
+      return b;
+    }
+
+    _updateControls() {
+      const total = this.totalEntries;
+      this._counterEl.textContent = `${this._currentStep} / ${total}`;
+      this._prevBtn.disabled = this._currentStep <= 0;
+      this._stepBtn.disabled = this._currentStep >= total;
+      this._playBtn.style.display = this._isPlaying ? 'none' : '';
+      this._pauseBtn.style.display = this._isPlaying ? '' : 'none';
+    }
+
+    async _loadTrace() {
+      const mode = this.dataset.mode || 'static';
+      const src = this.dataset.src;
+
+      try {
+        if (this._programmaticTrace) {
+          this._trace = this._programmaticTrace;
+        } else if (src && mode === 'live') {
+          throw new Error(
+            'demokit-player: live mode requires demokit --serve and is not enabled in this build.',
+          );
+        } else if (src) {
+          const res = await fetch(src);
+          if (!res.ok) {
+            throw new Error(`demokit-player: fetch ${src} → HTTP ${res.status}`);
+          }
+          this._trace = await res.json();
+        } else {
+          const text = (this.textContent || '').trim();
+          if (!text) {
+            this._renderError(
+              'demokit-player: no trace data. Provide data-src, inline JSON, or set the .trace property.',
+            );
+            return;
+          }
+          this._trace = JSON.parse(text);
+        }
+
+        this._renderHeader();
+        this._currentStep = 0;
+        this._feedEl.replaceChildren();
+        this._updateControls();
+        this.dispatchEvent(new CustomEvent('demokit:loaded', {
+          detail: { totalEntries: this.totalEntries },
+        }));
+      } catch (err) {
+        this._renderError(err && err.message ? err.message : String(err));
+        this.dispatchEvent(new CustomEvent('demokit:error', {
+          detail: { message: err && err.message ? err.message : String(err) },
+        }));
+      }
+    }
+
+    _renderHeader() {
+      const demo = this._demo();
+      this._titleEl.textContent = demo && demo.title ? demo.title : '';
+      this._descEl.textContent = demo && demo.description ? demo.description : '';
+      this._descEl.style.display = this._descEl.textContent ? '' : 'none';
+    }
+
+    _renderError(message) {
+      this._feedEl.replaceChildren();
+      const box = document.createElement('div');
+      box.className = 'demokit-player__error';
+      box.textContent = message;
+      this._feedEl.appendChild(box);
+    }
+
+    _renderEntry(entry, indexOneBased) {
+      if (entry.kind === 'section') {
+        this._renderSection(entry);
+      } else {
+        this._renderStep(entry, indexOneBased);
+      }
+      this._feedEl.lastElementChild.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    }
+
+    _renderSection(entry) {
+      const sec = document.createElement('section');
+      sec.className = 'demokit-section';
+      const h = document.createElement('h3');
+      h.className = 'demokit-section__title';
+      h.textContent = entry.title || '';
+      sec.appendChild(h);
+      if (entry.body) {
+        const p = document.createElement('p');
+        p.className = 'demokit-section__body';
+        p.textContent = entry.body;
+        sec.appendChild(p);
+      }
+      this._feedEl.appendChild(sec);
+    }
+
+    _renderStep(entry, indexOneBased) {
+      const art = document.createElement('article');
+      const status = entry.status || 0; // 0 = success
+      art.className = `demokit-step demokit-step--status-${status}`;
+      const h = document.createElement('h3');
+      h.className = 'demokit-step__title';
+      h.textContent = `${indexOneBased}. ${entry.title || entry.step_id || ''}`;
+      if (entry.visit && entry.visit > 1) {
+        const v = document.createElement('span');
+        v.className = 'demokit-step__visit';
+        v.textContent = ` (visit ${entry.visit})`;
+        h.appendChild(v);
+      }
+      art.appendChild(h);
+
+      // Note from the demo definition (if available)
+      const stepDef = this._lookupStepDef(entry.step_id);
+      if (stepDef && stepDef.note) {
+        const blk = document.createElement('blockquote');
+        blk.className = 'demokit-step__note';
+        blk.textContent = stepDef.note;
+        art.appendChild(blk);
+      }
+      if (stepDef && stepDef.refs && stepDef.refs.length > 0) {
+        const refs = document.createElement('p');
+        refs.className = 'demokit-step__refs';
+        refs.appendChild(document.createTextNode('References: '));
+        stepDef.refs.forEach((ref, i) => {
+          if (i > 0) refs.appendChild(document.createTextNode(', '));
+          const a = document.createElement('a');
+          a.href = ref.url;
+          a.textContent = ref.name;
+          a.target = '_blank';
+          a.rel = 'noopener noreferrer';
+          refs.appendChild(a);
+        });
+        art.appendChild(refs);
+      }
+
+      // Inputs collected for this entry (read-only)
+      if (entry.inputs && Object.keys(entry.inputs).length > 0) {
+        const wrap = document.createElement('dl');
+        wrap.className = 'demokit-step__inputs';
+        Object.keys(entry.inputs).sort().forEach((k) => {
+          const dt = document.createElement('dt');
+          dt.textContent = k;
+          const dd = document.createElement('dd');
+          dd.textContent = String(entry.inputs[k]);
+          wrap.appendChild(dt);
+          wrap.appendChild(dd);
+        });
+        art.appendChild(wrap);
+      }
+
+      // Captured output
+      if (entry.output) {
+        const pre = document.createElement('pre');
+        pre.className = 'demokit-step__output';
+        pre.textContent = entry.output.replace(/\n+$/, '');
+        art.appendChild(pre);
+      }
+
+      // Status footer (error/warning/info messages)
+      if (status !== 0 && (entry.message || entry.label)) {
+        const foot = document.createElement('p');
+        foot.className = 'demokit-step__status';
+        const label = entry.label || statusLabel(status);
+        foot.textContent = `${label}: ${entry.message || ''}`;
+        art.appendChild(foot);
+      }
+
+      // Jump arrow
+      if (entry.next) {
+        const j = document.createElement('p');
+        j.className = 'demokit-step__jump';
+        j.textContent = `→ jumped to ${entry.next}`;
+        art.appendChild(j);
+      }
+
+      this._feedEl.appendChild(art);
+    }
+
+    _lookupStepDef(stepId) {
+      const demo = this._demo();
+      if (!demo || !demo.items || !stepId) return null;
+      for (const it of demo.items) {
+        if (it.kind === 'step' && it.id === stepId) return it;
+      }
+      return null;
+    }
+
+    _stopPlayback() {
+      if (this._timer) {
+        clearInterval(this._timer);
+        this._timer = null;
+      }
+      this._isPlaying = false;
+      if (this._counterEl) this._updateControls();
+    }
+
+    _bindKeyboard() {
+      this._kbHandler = (e) => {
+        if (document.activeElement !== this) return;
+        switch (e.key) {
+          case ' ':
+          case 'ArrowRight':
+            e.preventDefault();
+            this.step();
+            break;
+          case 'ArrowLeft':
+            e.preventDefault();
+            this.goTo(this._currentStep - 1);
+            break;
+          case 'p':
+          case 'P':
+            e.preventDefault();
+            if (this._isPlaying) this.pause(); else this.play();
+            break;
+          case 'r':
+          case 'R':
+            e.preventDefault();
+            this.reset();
+            break;
+        }
+      };
+      this.addEventListener('keydown', this._kbHandler);
+    }
+
+    _unbindKeyboard() {
+      if (this._kbHandler) {
+        this.removeEventListener('keydown', this._kbHandler);
+        this._kbHandler = null;
+      }
+    }
+
+    _bindHostEvents() {
+      const evts = ['demokit:play', 'demokit:pause', 'demokit:reset', 'demokit:step'];
+      evts.forEach((name) => {
+        const handler = () => {
+          switch (name) {
+            case 'demokit:play':  this.play();  break;
+            case 'demokit:pause': this.pause(); break;
+            case 'demokit:reset': this.reset(); break;
+            case 'demokit:step':  this.step();  break;
+          }
+        };
+        this._evtHandlers[name] = handler;
+        this.addEventListener(name, handler);
+      });
+    }
+
+    _unbindHostEvents() {
+      Object.keys(this._evtHandlers).forEach((name) => {
+        this.removeEventListener(name, this._evtHandlers[name]);
+      });
+      this._evtHandlers = {};
+    }
+  }
+
+  function statusLabel(status) {
+    switch (status) {
+      case 1: return 'Error';
+      case 2: return 'Warning';
+      case 3: return 'Info';
+      default: return 'Result';
+    }
+  }
+
+  if (!customElements.get('demokit-demo')) {
+    customElements.define('demokit-demo', DemokitDemoElement);
+  }
+})();

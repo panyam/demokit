@@ -58,8 +58,9 @@ type Demo struct {
 	flagNonInteractive bool
 	flagRecordPath     string
 	flagReplayPath     string
-	flagDoc            string // md|html|json (empty = not requested)
+	flagDoc            string // md|html|json|bundle (empty = not requested)
 	flagFrom           string // optional trace path used with --doc
+	flagOut            string // output file for --doc bundle (else stdout)
 
 	// Sidecar-markdown loader state. Errors are stored rather than
 	// returned so FromMarkdown stays chainable; surfaced at Execute.
@@ -71,6 +72,36 @@ type Demo struct {
 // New creates a new Demo with the given title.
 func New(title string) *Demo {
 	return &Demo{title: title, runPrefix: "examples"}
+}
+
+// Title returns the demo's title (set via New).
+func (d *Demo) Title() string { return d.title }
+
+// DocHandler renders a documentation format. demokit core comes with
+// md/html/json built in; additional formats register themselves at
+// init time so demos opt in by blank-importing the package.
+//
+// out is the path passed via --out (empty string = stdout).
+type DocHandler func(d *Demo, entries []TraceEntry, out string) error
+
+var docHandlers = map[string]DocHandler{}
+
+// RegisterDocFormat installs a handler for a --doc <name> format.
+// Typical pattern — a separate package registers itself in init():
+//
+//	func init() {
+//	    demokit.RegisterDocFormat("bundle", func(d *demokit.Demo, entries []demokit.TraceEntry, out string) error {
+//	        return WriteBundle(d, entries, out)
+//	    })
+//	}
+//
+// Names "md", "html", "json" are reserved by core; reusing them panics.
+func RegisterDocFormat(name string, h DocHandler) {
+	switch name {
+	case "md", "html", "json":
+		panic("demokit: cannot override built-in doc format " + name)
+	}
+	docHandlers[name] = h
 }
 
 // MaxSteps caps the total number of step visits per Execute, preventing
@@ -232,9 +263,11 @@ func (d *Demo) RegisterFlags(fs *flag.FlagSet) {
 	fs.StringVar(&d.flagReplayPath, "replay", "",
 		"replay from the given trace file (forces deterministic Next)")
 	fs.StringVar(&d.flagDoc, "doc", "",
-		"emit documentation in the given format (md|html|json) and exit")
+		"emit documentation in the given format (md|html|json|bundle) and exit")
 	fs.StringVar(&d.flagFrom, "from", "",
 		"trace file to render with --doc (omit for static-definition output)")
+	fs.StringVar(&d.flagOut, "out", "",
+		"output file for --doc bundle (else writes to stdout)")
 }
 
 // scanOwnArgs is the default flag scanner used when RegisterFlags is
@@ -267,6 +300,11 @@ func (d *Demo) scanOwnArgs(args []string) {
 			i++
 		case strings.HasPrefix(arg, "--from="):
 			d.flagFrom = strings.TrimPrefix(arg, "--from=")
+		case arg == "--out" && i+1 < len(args):
+			d.flagOut = args[i+1]
+			i++
+		case strings.HasPrefix(arg, "--out="):
+			d.flagOut = strings.TrimPrefix(arg, "--out=")
 		}
 	}
 }
@@ -546,10 +584,11 @@ walk:
 	r.RenderDone()
 }
 
-// emitDoc writes one documentation render to stdout and returns. The
-// format argument selects the renderer (md, html, json); from selects
-// the source — empty means static (definition only) and a non-empty
-// path is loaded as a trace. Errors are written to stderr; a malformed
+// emitDoc writes one documentation render to stdout (or, for the
+// bundle format, to --out if set). The format argument selects the
+// renderer (md, html, json, bundle); from selects the source —
+// empty means static (definition only) and a non-empty path is
+// loaded as a trace. Errors are written to stderr; a malformed
 // trace or unknown format produces no stdout output.
 func (d *Demo) emitDoc(format, from string) {
 	var entries []TraceEntry
@@ -578,7 +617,20 @@ func (d *Demo) emitDoc(format, from string) {
 	case "json":
 		fmt.Print(RenderDocumentJSON(RenderContext{Demo: d, Trace: entries}))
 	default:
-		fmt.Fprintf(os.Stderr, "demokit: unknown --doc format %q (want md|html|json)\n", format)
+		// Registered formats (e.g. "bundle" via demokit/web). Hint
+		// at the most common case if it's missing.
+		if h, ok := docHandlers[format]; ok {
+			if err := h(d, entries, d.flagOut); err != nil {
+				fmt.Fprintf(os.Stderr, "demokit: --doc %s: %v\n", format, err)
+			}
+			return
+		}
+		if format == "bundle" {
+			fmt.Fprintln(os.Stderr,
+				"demokit: --doc bundle is not enabled. Add `_ \"github.com/panyam/demokit/web\"` to your imports.")
+			return
+		}
+		fmt.Fprintf(os.Stderr, "demokit: unknown --doc format %q (want md|html|json or registered format)\n", format)
 	}
 }
 

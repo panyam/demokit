@@ -1,0 +1,63 @@
+{
+  "demo": {
+    "title": "Sample Demo",
+    "description": "A 4-step trace for the player dev harness.",
+    "actors": [
+      { "id": "App", "label": "App" },
+      { "id": "AS",  "label": "Auth Server" }
+    ],
+    "items": [
+      {
+        "kind": "step",
+        "id": "triage",
+        "title": "Pick a path",
+        "note": "First decision in the flow.",
+        "refs": [
+          { "name": "RFC 9999", "url": "https://example.com/rfc9999" }
+        ]
+      },
+      {
+        "kind": "step",
+        "id": "happy",
+        "title": "Happy path"
+      },
+      {
+        "kind": "step",
+        "id": "error",
+        "title": "Error path"
+      }
+    ]
+  },
+  "trace": [
+    {
+      "kind": "section",
+      "title": "Welcome",
+      "body": "This trace shows three step kinds back-to-back: a step with inputs and a jump, a successful step, and an error step."
+    },
+    {
+      "kind": "step",
+      "title": "Pick a path",
+      "step_id": "triage",
+      "visit": 1,
+      "inputs": { "choice": "happy" },
+      "output": "Investigating: happy",
+      "next": "happy"
+    },
+    {
+      "kind": "step",
+      "title": "Happy path",
+      "step_id": "happy",
+      "visit": 1,
+      "output": "All systems normal.\nTook 42 ms."
+    },
+    {
+      "kind": "step",
+      "title": "Error path",
+      "step_id": "error",
+      "visit": 1,
+      "status": 1,
+      "message": "something broke",
+      "output": "stack trace omitted"
+    }
+  ]
+}

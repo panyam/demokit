@@ -1,4 +1,4 @@
-.PHONY: run demo runquiet record replay doc-md doc-html doc-json gen-readme
+.PHONY: run demo runquiet record replay doc-md doc-html doc-json doc-bundle gen-readme
 
 TRACE := /tmp/demokit-dungeon-trace.json
 
@@ -39,6 +39,12 @@ doc-html: record
 # the recorded trace.
 doc-json: record
 	go run . --doc json --from $(TRACE)
+
+# Self-contained HTML bundle (player + CSS + trace, all inlined).
+# Open the resulting file in any browser; works from file://.
+doc-bundle: record
+	go run . --doc bundle --from $(TRACE) --out /tmp/dungeon.html
+	@echo "Bundle: /tmp/dungeon.html — open in browser"
 
 # Regenerate this example's README.md from a recorded trace. The
 # default-input run captures the no-ring → death loop, which makes

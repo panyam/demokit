@@ -81,6 +81,28 @@ demo.Bind("triage").Run(func(ctx demokit.StepContext) *demokit.StepResult {
 
 Sidecar is **optional**. Every feature works inline via `Step()`/`Note()`/`Run()` — sidecar is just a content layer for demos where prose dominates. See [ARCHITECTURE.md](ARCHITECTURE.md#sidecar-markdown) for the file format and override semantics.
 
+**Embed in any HTML host.** demokit ships a `<demokit-demo>` web component (vanilla JS, no framework). Three ways to embed:
+
+```html
+<!-- 1. Self-contained HTML bundle (offline-safe, file:// works) -->
+<iframe src="my-demo.html" width="800" height="600"></iframe>
+
+<!-- 2. Inline custom element (host theme flows through via CSS variables) -->
+<script src="demokit-player.js"></script>
+<demokit-demo data-src="trace.json"></demokit-demo>
+
+<!-- 3. Programmatic — Go-emitted fragment with inline JSON -->
+<demokit-demo>{"demo": {...}, "trace": [...]}</demokit-demo>
+```
+
+Generate a self-contained bundle with `go run ./mydemo --doc bundle --from /tmp/run.json --out /tmp/demo.html`. Bundle support is opt-in via a blank import — examples that want it add:
+
+```go
+import _ "github.com/panyam/demokit/web"
+```
+
+For programmatic embedding, the same package exposes `web.TraceFragment(d, entries) string` and `web.WriteBundle(d, entries, outPath) error`. See [ARCHITECTURE.md](ARCHITECTURE.md#embed-surface--demokit-demo-web-player) for the full data-source model (URL static, inline blob, programmatic, and the live URL mode reserved for `--serve`).
+
 **Two renderers.** `PlainRenderer` (zero deps) for plain stdout. `tui.Renderer` (via the `tui/` subpackage, Lipgloss-backed) for styled boxes. Both implement the same `Renderer` interface; you can swap your own in if you want HTML, JSON, or a TUI Bubble app.
 
 **Pluggable form prompts.** `tui.Renderer.WithPrompter(myPrompter)` swaps the input collection step. The default is a sequential readline; richer impls (e.g. one backed by `huh.Select` for arrow-key choices) are a small interface away.
