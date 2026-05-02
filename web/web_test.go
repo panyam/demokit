@@ -67,63 +67,86 @@ func TestTraceFragmentInlinesJSON(t *testing.T) {
 	}
 }
 
-// TestWriteBundleSelfContained verifies the bundle is a complete
-// HTML document with the player CSS and JS inlined and the trace
-// JSON inside a <demokit-demo> element. No external <script src>
-// or <link href> — the bundle must work from file:// alone.
-func TestWriteBundleSelfContained(t *testing.T) {
-	tmp, err := os.CreateTemp("", "demokit-bundle-*.html")
-	if err != nil {
-		t.Fatal(err)
-	}
-	tmp.Close()
-	defer os.Remove(tmp.Name())
+// TestWriteBundleLocalWritesThreeFiles verifies WriteBundle with an
+// out path drops three sibling files (HTML + JS + CSS) and that the
+// HTML references the assets via relative paths so the bundle works
+// from file:// without network. Inlining the player bytes into the
+// HTML would bloat every bundle; the asset-trio shape keeps the
+// HTML small and lets the JS/CSS cache across pages.
+func TestWriteBundleLocalWritesThreeFiles(t *testing.T) {
+	tmp := t.TempDir()
+	htmlPath := tmp + "/bundle.html"
+	jsPath := tmp + "/demokit-player.js"
+	cssPath := tmp + "/demokit-player.css"
 
 	d, trace := fixtureDemoForBundle()
-	if err := WriteBundle(d, trace, tmp.Name()); err != nil {
+	if err := WriteBundle(d, trace, htmlPath); err != nil {
 		t.Fatalf("WriteBundle: %v", err)
 	}
 
-	body, err := os.ReadFile(tmp.Name())
+	html, err := os.ReadFile(htmlPath)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("HTML not written: %v", err)
 	}
-	out := string(body)
-
 	for _, want := range []string{
 		"<!doctype html>",
 		"<title>Bundle Test</title>",
-		".demokit-player",       // CSS inlined
-		"customElements.define", // JS inlined
+		"<link rel=\"stylesheet\" href=\"./demokit-player.css\">",
+		"<script type=\"module\" src=\"./demokit-player.js\">",
 		"<demokit-demo>",
 		"\"trace\"", // JSON payload
 	} {
-		if !strings.Contains(out, want) {
-			t.Errorf("bundle missing %q", want)
+		if !strings.Contains(string(html), want) {
+			t.Errorf("bundle HTML missing %q", want)
+		}
+	}
+	// Player bytes must NOT be inlined into the HTML — that's the
+	// regression this test guards against.
+	for _, banned := range []string{".demokit-player {", "customElements.define"} {
+		if strings.Contains(string(html), banned) {
+			t.Errorf("bundle HTML should not inline %q (the player files are siblings now)", banned)
 		}
 	}
 
-	for _, banned := range []string{"<script src=", "<link "} {
-		if strings.Contains(out, banned) {
-			t.Errorf("bundle should not reference external asset: contains %q", banned)
-		}
+	js, err := os.ReadFile(jsPath)
+	if err != nil {
+		t.Fatalf("player JS not written: %v", err)
+	}
+	if !strings.Contains(string(js), "customElements.define") {
+		t.Errorf("sibling demokit-player.js doesn't look like the player; got %d bytes", len(js))
+	}
+
+	css, err := os.ReadFile(cssPath)
+	if err != nil {
+		t.Fatalf("player CSS not written: %v", err)
+	}
+	if !strings.Contains(string(css), ".demokit-player") {
+		t.Errorf("sibling demokit-player.css doesn't look like the stylesheet; got %d bytes", len(css))
 	}
 }
 
-// TestWriteBundleStdoutWhenNoOutPath verifies WriteBundle("", ...)
-// writes to stdout — the path other --doc formats use when --out is
-// not specified.
-func TestWriteBundleStdoutWhenNoOutPath(t *testing.T) {
+// TestWriteBundleStdoutUsesCDN verifies WriteBundle("") produces a
+// single-file shell that references the player from a pinned CDN
+// URL. Stdout-mode is for piping to a single file or another tool;
+// the local-asset trio doesn't fit that shape.
+func TestWriteBundleStdoutUsesCDN(t *testing.T) {
 	d, trace := fixtureDemoForBundle()
-
 	out := captureStdout(t, func() {
 		if err := WriteBundle(d, trace, ""); err != nil {
 			t.Fatalf("WriteBundle: %v", err)
 		}
 	})
 
-	if !strings.Contains(out, "<!doctype html>") || !strings.Contains(out, "<demokit-demo>") {
-		t.Errorf("bundle to stdout missing structure:\n%s", out[:min(300, len(out))])
+	for _, want := range []string{
+		"<!doctype html>",
+		"https://cdn.jsdelivr.net/gh/panyam/demokit@" + PlayerCDNVersion + "/web/player/demokit-player.css",
+		"https://cdn.jsdelivr.net/gh/panyam/demokit@" + PlayerCDNVersion + "/web/player/demokit-player.js",
+		"<demokit-demo>",
+		"\"trace\"",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("stdout bundle missing %q", want)
+		}
 	}
 }
 

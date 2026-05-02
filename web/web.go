@@ -1,8 +1,8 @@
 // Package web is the embed surface for demokit's <demokit-demo>
 // player. It provides Go entry points hosts use to ship traces into
-// browsers — TraceFragment for inline embeds, WriteBundle for
-// self-contained HTML, PlayerJS/PlayerCSS for hosts that prefer to
-// serve the assets from their own origin.
+// browsers — TraceFragment for inline embeds, WriteBundle for an
+// HTML shell that links the player from sibling files (when --out
+// is set) or from a CDN (when written to stdout).
 //
 // Importing this package (even via blank import) registers the
 // "bundle" doc format with demokit core, so `--doc bundle` becomes
@@ -10,18 +10,24 @@
 //
 //	import _ "github.com/panyam/demokit/web"
 //
-// The player is committed under web/player/ as hand-written vanilla
-// JS + CSS, embedded into the binary via go:embed.
+// The player files are committed under web/player/ and the HTML
+// shell is rendered from a templar template under web/templates/.
+// We never inline the player bytes into the bundle — local --out
+// writes them as siblings; stdout-mode references the CDN copy
+// pinned to a release tag.
 package web
 
 import (
 	"bytes"
 	_ "embed"
+	"embed"
 	"fmt"
-	"html"
+	"html/template"
 	"os"
+	"path/filepath"
 
 	"github.com/panyam/demokit"
+	"github.com/panyam/templar"
 )
 
 //go:embed player/demokit-player.js
@@ -29,6 +35,24 @@ var playerJS string
 
 //go:embed player/demokit-player.css
 var playerCSS string
+
+//go:embed templates/*.html
+var tmplFS embed.FS
+
+// CDN URLs that the stdout-mode bundle references when the user
+// pipes --doc bundle without --out. We pin by version (not by
+// branch or `latest`) for reproducibility — bundles built with an
+// older demokit binary keep pointing at their pinned tag's player.
+//
+//   - PlayerCDNVersion is the demokit release tag this code targets.
+//     Bump on release; `replace github.com/panyam/demokit => ...` in
+//     downstream go.mod files keeps in step.
+//   - The ansi_up library handles the SGR → HTML conversion. Pinned
+//     to its v6.0.6 release commit. Imported by the player module.
+const (
+	PlayerCDNVersion = "v0.0.10"
+	playerCDNBase    = "https://cdn.jsdelivr.net/gh/panyam/demokit@" + PlayerCDNVersion + "/web/player"
+)
 
 func init() {
 	demokit.RegisterDocFormat("bundle", func(d *demokit.Demo, entries []demokit.TraceEntry, out string) error {
@@ -46,12 +70,11 @@ func PlayerCSS() string { return playerCSS }
 
 // TraceFragment returns an HTML element string with the trace JSON
 // inlined inside a <demokit-demo> tag. Hosts include the player
-// script separately (e.g. via <script src=".../demokit-player.js">)
-// or through WriteBundle for a self-contained page.
+// script separately (typically via the CDN URL or by self-hosting
+// the file PlayerJS() returns).
 //
-// The fragment is safe to inline in markdown/blog posts as long as
-// the host page also includes the player JS. Without the player,
-// the element renders as inert text — graceful degradation.
+// Without the player loaded, the element renders as inert text —
+// graceful degradation.
 func TraceFragment(d *demokit.Demo, entries []demokit.TraceEntry) string {
 	jsonBody := demokit.RenderDocumentJSON(demokit.RenderContext{Demo: d, Trace: entries})
 	var b bytes.Buffer
@@ -61,47 +84,108 @@ func TraceFragment(d *demokit.Demo, entries []demokit.TraceEntry) string {
 	return b.String()
 }
 
-// WriteBundle writes a self-contained HTML document to outPath:
-// player JS + CSS embedded inline, trace JSON inline, ready to open
-// from file:// without a server. If outPath is empty, the bundle
-// is written to stdout.
+// WriteBundle writes the bundle to outPath as an HTML shell and
+// drops the player JS + CSS as siblings in the same directory:
 //
-// The bundle has no external <script src> or <link href> references
-// and works from file:// — useful for shipping single-file demo
-// archives, attaching to bug reports, or copying into slide decks.
+//	<outPath>
+//	<dir>/demokit-player.js
+//	<dir>/demokit-player.css
+//
+// The HTML's <link> and <script> tags reference the siblings via
+// relative paths so the bundle works from file:// without network.
+//
+// If outPath is empty, the bundle is written to stdout with CDN URLs
+// for the player files (single-file form, requires network on first
+// open). For air-gapped distribution, use the file form.
 func WriteBundle(d *demokit.Demo, entries []demokit.TraceEntry, outPath string) error {
-	bundle := bundleHTML(d, entries)
 	if outPath == "" {
-		_, err := os.Stdout.WriteString(bundle)
-		return err
+		return writeBundleStdout(d, entries)
 	}
-	return os.WriteFile(outPath, []byte(bundle), 0o644)
+	return writeBundleLocal(d, entries, outPath)
 }
 
-// bundleHTML assembles the self-contained page.
-func bundleHTML(d *demokit.Demo, entries []demokit.TraceEntry) string {
+func writeBundleStdout(d *demokit.Demo, entries []demokit.TraceEntry) error {
+	html, err := renderBundleHTML(d, entries,
+		playerCDNBase+"/demokit-player.css",
+		playerCDNBase+"/demokit-player.js",
+	)
+	if err != nil {
+		return err
+	}
+	_, err = os.Stdout.WriteString(html)
+	return err
+}
+
+func writeBundleLocal(d *demokit.Demo, entries []demokit.TraceEntry, outPath string) error {
+	dir := filepath.Dir(outPath)
+	cssPath := filepath.Join(dir, "demokit-player.css")
+	jsPath := filepath.Join(dir, "demokit-player.js")
+
+	html, err := renderBundleHTML(d, entries,
+		"./demokit-player.css",
+		"./demokit-player.js",
+	)
+	if err != nil {
+		return fmt.Errorf("render bundle template: %w", err)
+	}
+	if err := os.WriteFile(outPath, []byte(html), 0o644); err != nil {
+		return fmt.Errorf("write %s: %w", outPath, err)
+	}
+	if err := os.WriteFile(cssPath, []byte(playerCSS), 0o644); err != nil {
+		return fmt.Errorf("write %s: %w", cssPath, err)
+	}
+	if err := os.WriteFile(jsPath, []byte(playerJS), 0o644); err != nil {
+		return fmt.Errorf("write %s: %w", jsPath, err)
+	}
+	return nil
+}
+
+// renderBundleHTML loads the bundle template via templar and
+// renders it with the given asset hrefs. Templar lets us compose
+// includes/inheritance later if the templates grow; for now it's
+// just a thin wrapper around html/template that loads from our
+// embedded FS.
+func renderBundleHTML(d *demokit.Demo, entries []demokit.TraceEntry, cssHref, jsSrc string) (string, error) {
 	title := "Demo"
 	if d != nil && d.Title() != "" {
 		title = d.Title()
 	}
 	traceJSON := demokit.RenderDocumentJSON(demokit.RenderContext{Demo: d, Trace: entries})
 
-	var b bytes.Buffer
-	b.WriteString("<!doctype html>\n<html lang=\"en\">\n<head>\n")
-	b.WriteString("<meta charset=\"utf-8\">\n")
-	b.WriteString("<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n")
-	fmt.Fprintf(&b, "<title>%s</title>\n", html.EscapeString(title))
-	b.WriteString("<style>\n")
-	b.WriteString("body { margin: 2em auto; max-width: 900px; padding: 0 1em; font-family: -apple-system, BlinkMacSystemFont, sans-serif; }\n")
-	b.WriteString(playerCSS)
-	b.WriteString("\n</style>\n")
-	b.WriteString("</head>\n<body>\n")
-	b.WriteString("<demokit-demo>")
-	b.WriteString(traceJSON)
-	b.WriteString("</demokit-demo>\n")
-	b.WriteString("<script>\n")
-	b.WriteString(playerJS)
-	b.WriteString("\n</script>\n")
-	b.WriteString("</body>\n</html>\n")
-	return b.String()
+	group := templar.NewTemplateGroup()
+	group.Loader = templar.NewFileSystemLoader(templar.FSFolder{FS: tmplFS, Path: "templates"})
+	tmpls, err := group.Loader.Load("bundle.html", "")
+	if err != nil {
+		return "", fmt.Errorf("load bundle.html: %w", err)
+	}
+	if len(tmpls) == 0 {
+		return "", fmt.Errorf("bundle.html template not found")
+	}
+
+	var buf bytes.Buffer
+	data := bundleData{
+		Title:         title,
+		PlayerCSSHref: cssHref,
+		PlayerJSSrc:   jsSrc,
+		// template.HTML opts the JSON out of html/template's auto
+		// escaping. JSON itself is already HTML-injection-safe —
+		// encoding/json's default SetEscapeHTML(true) turns "<", ">",
+		// "&" into "<" / ">" / "&" before they reach
+		// us. Letting html/template escape AGAIN would just bloat
+		// the bundle (every `"` becomes `&#34;`).
+		TraceJSON: template.HTML(traceJSON),
+	}
+	if err := group.RenderHtmlTemplate(&buf, tmpls[0], "", data, nil); err != nil {
+		return "", fmt.Errorf("render bundle.html: %w", err)
+	}
+	return buf.String(), nil
+}
+
+// bundleData is the variable namespace exposed to bundle.html.
+// Field names mirror what the template expects.
+type bundleData struct {
+	Title         string
+	PlayerCSSHref string
+	PlayerJSSrc   string
+	TraceJSON     template.HTML
 }

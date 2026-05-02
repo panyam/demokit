@@ -16,15 +16,20 @@
 //   .play(), .pause(), .reset(), .step(), .goTo(n)
 //   .currentStep (read), .totalEntries (read), .isPlaying (read)
 //
-// Events dispatched on the element:
+// Events dispatched on the element (notifications, past tense):
 //   demokit:loaded   — once trace data is available
-//   demokit:step     — each time the visible step advances
+//   demokit:stepped  — the visible step just advanced
 //   demokit:done     — last entry shown
 //   demokit:error    — fatal load/render error
 //
-// Events listened for (so any host can drive the widget without
-// knowing the player's class name):
+// Events listened for (commands; host fires these to drive the
+// widget without knowing the player's class name):
 //   demokit:play, demokit:pause, demokit:reset, demokit:step
+//
+// The command/notification names are deliberately distinct
+// (demokit:step vs demokit:stepped) — using one name for both
+// would create a recursion loop the moment a step() advance
+// dispatches the same event the host listener handles.
 //
 // Keyboard (when the element is focused):
 //   Space / ArrowRight  — next step
@@ -32,12 +37,41 @@
 //   P                   — play/pause toggle
 //   R                   — reset to first entry
 
-(function () {
-  'use strict';
+// This file is an ES module. Bundle templates load it via
+// <script type="module" src="...">.
+//
+// ansi_up is pulled in via a dynamic import wrapped in try/catch so
+// the player still loads when the CDN is unreachable — opening the
+// bundle on file:// without internet, behind a strict CSP that
+// blocks third-party scripts, or in air-gapped contexts. The
+// fallback strips ANSI escapes to plain text rather than failing
+// the whole module.
 
-  const PLAY_INTERVAL_MS = 1500; // tune via Demo author later if needed
+let AnsiUp;
+try {
+  const mod = await import(
+    'https://cdn.jsdelivr.net/gh/drudru/ansi_up@07a4824757d4dfbb41236a4245a6ce37f21aeb91/ansi_up.js'
+  );
+  AnsiUp = mod.AnsiUp;
+} catch (err) {
+  console.warn(
+    'demokit-player: ansi_up failed to load — captured ANSI escapes will render as plain text:',
+    err && err.message ? err.message : err,
+  );
+  AnsiUp = class {
+    constructor() { this.use_classes = false; }
+    ansi_to_html(text) {
+      // ANSI SGR escape stripper. Without ansi_up we can't render
+      // colour, but at least the visible text isn't littered with
+      // the literal escape codes.
+      return String(text).replace(/\x1b\[[0-9;]*m/g, '');
+    }
+  };
+}
 
-  class DemokitDemoElement extends HTMLElement {
+const PLAY_INTERVAL_MS = 1500; // tune via Demo author later if needed
+
+class DemokitDemoElement extends HTMLElement {
     constructor() {
       super();
       this._trace = null;
@@ -54,6 +88,10 @@
       if (!this.hasAttribute('tabindex')) {
         this.setAttribute('tabindex', '0'); // make focusable for keyboard
       }
+      // Snapshot inline JSON before _renderShell() replaces the
+      // element's children — otherwise _loadTrace would read the
+      // rendered button labels as if they were the trace blob.
+      this._inlineText = (this.textContent || '').trim();
       this._renderShell();
       this._bindKeyboard();
       this._bindHostEvents();
@@ -108,7 +146,7 @@
       this._renderEntry(e, this._currentStep + 1);
       this._currentStep++;
       this._updateControls();
-      this.dispatchEvent(new CustomEvent('demokit:step', {
+      this.dispatchEvent(new CustomEvent('demokit:stepped', {
         detail: { index: this._currentStep, entry: e },
       }));
       if (this._currentStep >= entries.length) {
@@ -172,9 +210,22 @@
       this._counterEl.className = 'demokit-player__counter';
       controls.append(this._prevBtn, this._stepBtn, this._playBtn, this._pauseBtn, this._resetBtn, this._counterEl);
 
+      // Controls position is configurable via data-controls
+      // ("top" default, "bottom" for legacy/footer-style layouts).
+      // Top is the default because the feed grows downward; with
+      // controls at the bottom, the user has to scroll past their
+      // own steps to reach Next/Play.
       this.appendChild(header);
-      this.appendChild(this._feedEl);
-      this.appendChild(controls);
+      const controlsAtBottom = (this.dataset.controls || 'top') === 'bottom';
+      if (controlsAtBottom) {
+        this.appendChild(this._feedEl);
+        this.appendChild(controls);
+        controls.classList.add('demokit-player__controls--bottom');
+      } else {
+        this.appendChild(controls);
+        this.appendChild(this._feedEl);
+        controls.classList.add('demokit-player__controls--top');
+      }
     }
 
     _mkBtn(label, title, onClick) {
@@ -214,7 +265,12 @@
           }
           this._trace = await res.json();
         } else {
-          const text = (this.textContent || '').trim();
+          // _inlineText was captured in connectedCallback before the
+          // shell render replaced our children. Falls back to current
+          // textContent if connectedCallback hasn't run yet (rare).
+          const text = (this._inlineText !== undefined
+            ? this._inlineText
+            : (this.textContent || '').trim());
           if (!text) {
             this._renderError(
               'demokit-player: no trace data. Provide data-src, inline JSON, or set the .trace property.',
@@ -333,11 +389,14 @@
         art.appendChild(wrap);
       }
 
-      // Captured output
+      // Captured output — interpret ANSI SGR escapes so streamed
+      // colored output (e.g. the dungeon's dragon scene) renders
+      // with styling instead of leaking the literal "[38;5;245m"
+      // sequences as text.
       if (entry.output) {
         const pre = document.createElement('pre');
         pre.className = 'demokit-step__output';
-        pre.textContent = entry.output.replace(/\n+$/, '');
+        appendANSI(pre, entry.output.replace(/\n+$/, ''));
         art.appendChild(pre);
       }
 
@@ -438,6 +497,35 @@
     }
   }
 
+  // --- ANSI SGR → DOM ---
+  //
+  // Delegates to ansi_up (https://github.com/drudru/ansi_up, MIT;
+  // vendored under web/player/vendor/ — see VENDOR.md for the pin).
+  // The bundle and dev harness load ansi_up.umd.js *before* this
+  // file, so window.AnsiUp is available when appendANSI runs.
+  // Covers the full SGR table: 8-color, 256-color, true-color RGB,
+  // bold/dim/italic/underline/strikethrough.
+  //
+  // ansi_to_html escapes input itself and emits only text plus
+  // <span style=...> wrappers; running its output through DOMParser
+  // and reparenting the resulting nodes is safe and avoids touching
+  // innerHTML on the live document.
+  //
+  // Fallback: if AnsiUp isn't loaded (player JS used standalone
+  // without the vendor bundle), output renders as plain text — the
+  // escape sequences appear as literals but the step still loads.
+
+  function appendANSI(parent, text) {
+    if (text == null) return;
+    const ansiUp = new AnsiUp();
+    ansiUp.use_classes = false;
+    const safeHTML = ansiUp.ansi_to_html(String(text));
+    const parsed = new DOMParser().parseFromString(safeHTML, 'text/html');
+    while (parsed.body.firstChild) {
+      parent.appendChild(parsed.body.firstChild);
+    }
+  }
+
   function statusLabel(status) {
     switch (status) {
       case 1: return 'Error';
@@ -447,7 +535,6 @@
     }
   }
 
-  if (!customElements.get('demokit-demo')) {
-    customElements.define('demokit-demo', DemokitDemoElement);
-  }
-})();
+if (!customElements.get('demokit-demo')) {
+  customElements.define('demokit-demo', DemokitDemoElement);
+}
