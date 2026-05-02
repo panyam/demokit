@@ -397,8 +397,21 @@ walk:
 			totalVisits++
 			visits[v.id]++
 			if d.maxVisits > 0 && visits[v.id] > d.maxVisits {
-				r.RenderResult(totalVisits, "",
-					Errf("max visits (%d) exceeded for step %q", d.maxVisits, v.id))
+				msg := fmt.Sprintf("max visits (%d) exceeded for step %q", d.maxVisits, v.id)
+				// Record the abort as the trace's final entry so doc
+				// renders and embed players show the error rather
+				// than silently truncating mid-loop.
+				if d.recorder != nil {
+					d.recorder.Record(TraceEntry{
+						Kind:    KindStep,
+						Title:   v.title,
+						StepID:  v.id,
+						Visit:   visits[v.id],
+						Status:  StatusError,
+						Message: msg,
+					})
+				}
+				r.RenderResult(totalVisits, "", Errf("%s", msg))
 				break walk
 			}
 
@@ -572,13 +585,28 @@ walk:
 		}
 	}
 
-	if d.recorder != nil {
-		_ = closeRecorder(d.recorder)
+	// Record the MaxSteps abort to the trace BEFORE closing the
+	// recorder so doc renders / embed players show the error as the
+	// final entry rather than truncating silently. The synthesized
+	// step uses a sentinel id so it doesn't collide with author-
+	// defined steps.
+	if totalVisits >= maxSteps && cur < len(d.items) {
+		msg := fmt.Sprintf("max steps (%d) reached; aborting demo", maxSteps)
+		if d.recorder != nil {
+			d.recorder.Record(TraceEntry{
+				Kind:    KindStep,
+				Title:   "Aborted",
+				StepID:  "__demokit_aborted__",
+				Visit:   1,
+				Status:  StatusError,
+				Message: msg,
+			})
+		}
+		r.RenderResult(totalVisits, "", Errf("%s", msg))
 	}
 
-	if totalVisits >= maxSteps && cur < len(d.items) {
-		r.RenderResult(totalVisits, "",
-			Errf("max steps (%d) reached; aborting demo", maxSteps))
+	if d.recorder != nil {
+		_ = closeRecorder(d.recorder)
 	}
 
 	r.RenderDone()

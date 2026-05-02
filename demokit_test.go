@@ -264,6 +264,76 @@ func TestExecuteMaxVisitsPerStep(t *testing.T) {
 	}
 }
 
+// TestMaxVisitsRecordsErrorEntry verifies that when the per-step
+// MaxVisits guard fires, the recorder receives a final TraceEntry
+// flagged StatusError. Without this, doc renders / embed players
+// silently truncate mid-loop with no indication that the demo
+// aborted — what looked like a normal completion was actually a
+// safety-guard trip.
+func TestMaxVisitsRecordsErrorEntry(t *testing.T) {
+	orig := os.Args
+	defer func() { os.Args = orig }()
+	os.Args = []string{"test", "--non-interactive"}
+
+	rec := &MemoryRecorder{}
+	demo := New("Loop").
+		WithRenderer(&recordingRenderer{}).
+		WithRecorder(rec).
+		MaxSteps(100).
+		MaxVisits(2)
+	demo.Step("loop").ID("loop").Run(func(ctx StepContext) *StepResult {
+		return &StepResult{Next: "loop"}
+	})
+	demo.Execute()
+
+	if len(rec.Entries) == 0 {
+		t.Fatal("expected trace entries, got none")
+	}
+	last := rec.Entries[len(rec.Entries)-1]
+	if last.Status != StatusError {
+		t.Errorf("trailing trace entry status = %v, want StatusError", last.Status)
+	}
+	if last.StepID != "loop" {
+		t.Errorf("trailing entry step_id = %q, want %q", last.StepID, "loop")
+	}
+	if !strings.Contains(last.Message, "max visits") {
+		t.Errorf("trailing message = %q, want to mention max visits", last.Message)
+	}
+}
+
+// TestMaxStepsRecordsErrorEntry verifies the same shape for the
+// total-steps guard. The synthesized entry uses a sentinel step id
+// so it doesn't collide with author-defined steps in the trace.
+func TestMaxStepsRecordsErrorEntry(t *testing.T) {
+	orig := os.Args
+	defer func() { os.Args = orig }()
+	os.Args = []string{"test", "--non-interactive"}
+
+	rec := &MemoryRecorder{}
+	demo := New("OverallLoop").
+		WithRenderer(&recordingRenderer{}).
+		WithRecorder(rec).
+		MaxSteps(3) // tiny cap; the loop runs forever otherwise
+	demo.Step("loop").ID("loop").Run(func(ctx StepContext) *StepResult {
+		return &StepResult{Next: "loop"}
+	})
+	demo.Execute()
+
+	if len(rec.Entries) == 0 {
+		t.Fatal("expected trace entries, got none")
+	}
+	last := rec.Entries[len(rec.Entries)-1]
+	if last.Status != StatusError {
+		t.Errorf("trailing trace entry status = %v, want StatusError", last.Status)
+	}
+	if last.StepID != "__demokit_aborted__" {
+		t.Errorf("trailing entry step_id = %q, want sentinel \"__demokit_aborted__\"", last.StepID)
+	}
+	if !strings.Contains(last.Message, "max steps") {
+		t.Errorf("trailing message = %q, want to mention max steps", last.Message)
+	}
+}
+
 // TestExecuteUnknownNext verifies an unknown jump target produces an
 // error result and aborts the demo cleanly.
 func TestExecuteUnknownNext(t *testing.T) {

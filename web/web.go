@@ -50,7 +50,7 @@ var tmplFS embed.FS
 //   - The ansi_up library handles the SGR → HTML conversion. Pinned
 //     to its v6.0.6 release commit. Imported by the player module.
 const (
-	PlayerCDNVersion = "v0.0.10"
+	PlayerCDNVersion = "v0.0.11"
 	playerCDNBase    = "https://cdn.jsdelivr.net/gh/panyam/demokit@" + PlayerCDNVersion + "/web/player"
 )
 

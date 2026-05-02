@@ -47,26 +47,50 @@
 // fallback strips ANSI escapes to plain text rather than failing
 // the whole module.
 
+// AnsiUp is loaded with a chained fallback so the player works
+// across deployment shapes:
+//
+//   1. ./ansi_up.js — sibling file. WriteBundle drops one next to
+//      the bundle HTML so file:// works without internet (the CDN
+//      can't be reached from a null-origin page in Chrome).
+//   2. CDN URL — used when the player itself was loaded from a CDN
+//      (stdout-mode bundles, inline embeds without local hosting).
+//      Same-origin policy lets cdn → cdn imports through.
+//   3. Stripper — final fallback. Strips ANSI escapes and HTML-
+//      escapes the text so the captured output renders cleanly
+//      (just without colour) instead of garbled.
+
 let AnsiUp;
 try {
-  const mod = await import(
-    'https://cdn.jsdelivr.net/gh/drudru/ansi_up@07a4824757d4dfbb41236a4245a6ce37f21aeb91/ansi_up.js'
-  );
+  const mod = await import('./ansi_up.js');
   AnsiUp = mod.AnsiUp;
-} catch (err) {
-  console.warn(
-    'demokit-player: ansi_up failed to load — captured ANSI escapes will render as plain text:',
-    err && err.message ? err.message : err,
-  );
-  AnsiUp = class {
-    constructor() { this.use_classes = false; }
-    ansi_to_html(text) {
-      // ANSI SGR escape stripper. Without ansi_up we can't render
-      // colour, but at least the visible text isn't littered with
-      // the literal escape codes.
-      return String(text).replace(/\x1b\[[0-9;]*m/g, '');
-    }
-  };
+} catch (_localErr) {
+  try {
+    const mod = await import(
+      'https://cdn.jsdelivr.net/gh/drudru/ansi_up@07a4824757d4dfbb41236a4245a6ce37f21aeb91/ansi_up.js'
+    );
+    AnsiUp = mod.AnsiUp;
+  } catch (cdnErr) {
+    console.warn(
+      'demokit-player: ansi_up failed to load — captured ANSI escapes will render as plain text:',
+      cdnErr && cdnErr.message ? cdnErr.message : cdnErr,
+    );
+    AnsiUp = class {
+      constructor() { this.use_classes = false; }
+      ansi_to_html(text) {
+        // Strip ANSI escapes AND HTML-escape `<`, `>`, `&`. Without
+        // the HTML escape, ASCII art with literal `<` `>` (e.g. the
+        // dragon's body) gets parsed as malformed tags downstream
+        // and the output looks garbled. ansi_up's real ansi_to_html
+        // escapes internally; the stripper has to do the same.
+        return String(text)
+          .replace(/\x1b\[[0-9;]*m/g, '')
+          .replace(/&/g, '&amp;')
+          .replace(/</g, '&lt;')
+          .replace(/>/g, '&gt;');
+      }
+    };
+  }
 }
 
 const PLAY_INTERVAL_MS = 1500; // tune via Demo author later if needed
