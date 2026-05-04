@@ -57,7 +57,13 @@ func main() {
 	)
 
 	demo.Step("Pick a symptom").ID("triage").
-		Note("Most auth failures fall into a handful of buckets.").
+		Note(
+			"Most auth failures fall into a handful of buckets:",
+			"",
+			"- **expired** — the access token's TTL has elapsed",
+			"- **scope** — token is valid but lacks the required scope",
+			"- **ratelimit** — auth server is shedding load",
+		).
 		Input(demokit.Choice("expired", "scope", "ratelimit").
 			Named("symptom", "Symptom (expired/scope/ratelimit)").
 			WithDefault("expired")).
