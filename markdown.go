@@ -39,7 +39,15 @@ func (d *Demo) Markdown() string {
 		b.WriteString("## What you'll learn\n\n")
 		for _, s := range steps {
 			if s.note != "" {
-				fmt.Fprintf(&b, "- **%s** — %s\n", s.title, s.note)
+				// Summary is a one-line teaser; multi-line notes
+				// would otherwise spill into sibling top-level
+				// bullets. Full note still renders in the per-step
+				// detail below.
+				teaser := s.note
+				if i := strings.IndexByte(teaser, '\n'); i >= 0 {
+					teaser = teaser[:i]
+				}
+				fmt.Fprintf(&b, "- **%s** — %s\n", s.title, teaser)
 			}
 		}
 		b.WriteString("\n")

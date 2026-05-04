@@ -42,6 +42,35 @@ func TestStepAccessors(t *testing.T) {
 	}
 }
 
+func TestNoteVariadic(t *testing.T) {
+	t.Run("single arg", func(t *testing.T) {
+		s := (&StepDef{}).Note("foo")
+		if s.note != "foo" {
+			t.Errorf("note = %q, want %q", s.note, "foo")
+		}
+	})
+	t.Run("multi arg joins with newline", func(t *testing.T) {
+		s := (&StepDef{}).Note("a", "b")
+		if s.note != "a\nb" {
+			t.Errorf("note = %q, want %q", s.note, "a\nb")
+		}
+	})
+	t.Run("no args leaves empty", func(t *testing.T) {
+		s := (&StepDef{}).Note()
+		if s.note != "" {
+			t.Errorf("note = %q, want empty", s.note)
+		}
+	})
+	t.Run("spread of slice", func(t *testing.T) {
+		parts := []string{"Lead.", "", "- one", "- two"}
+		s := (&StepDef{}).Note(parts...)
+		want := "Lead.\n\n- one\n- two"
+		if s.note != want {
+			t.Errorf("note = %q, want %q", s.note, want)
+		}
+	})
+}
+
 func TestSectionAccessors(t *testing.T) {
 	s := &SectionDef{title: "sec", body: "body text"}
 	if s.Title() != "sec" {

@@ -1,6 +1,9 @@
 package demokit
 
-import "time"
+import (
+	"strings"
+	"time"
+)
 
 // ActorDef defines a participant in the sequence diagram.
 type ActorDef struct {
@@ -80,9 +83,23 @@ func (s *StepDef) Ref(ref Ref) *StepDef {
 	return s
 }
 
-// Note adds explanatory text shown in both CLI and README.
-func (s *StepDef) Note(text string) *StepDef {
-	s.note = text
+// Note adds explanatory text shown in both CLI and README. Accepts
+// either a single string or multiple line/paragraph fragments which
+// are joined with "\n" — handy for assembling bullet lists without
+// hand-rolled string concatenation:
+//
+//	step.Note("One-liner.")
+//	step.Note(
+//	    "Lead sentence.",
+//	    "",
+//	    "- bullet 1",
+//	    "- bullet 2",
+//	)
+//
+// Calling Note() with no args leaves the note empty (so spreading an
+// empty slice via Note(parts...) is a no-op rather than an error).
+func (s *StepDef) Note(text ...string) *StepDef {
+	s.note = strings.Join(text, "\n")
 	return s
 }
 
