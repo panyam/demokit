@@ -590,6 +590,9 @@ class DemokitDemoElement extends HTMLElement {
         case 'input-needed':
           this._renderLiveInputForm(evt.step_id, evt.inputs || []);
           break;
+        case 'input-timeout':
+          this._dismissLiveInputForm(evt.extra && evt.extra.timeout_ms);
+          break;
         case 'done':
           this._renderLiveDone();
           break;
@@ -754,6 +757,24 @@ class DemokitDemoElement extends HTMLElement {
 
       this._feedEl.appendChild(form);
       form.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    }
+
+    _dismissLiveInputForm(timeoutMs) {
+      // Server timed out waiting for input and is continuing with
+      // declared defaults. Find the most recent input form (the one
+      // we just rendered for the current step) and replace it with
+      // a small notice.
+      const forms = this._feedEl.querySelectorAll('form.demokit-input-form');
+      const form = forms[forms.length - 1];
+      if (!form) return;
+      const note = document.createElement('p');
+      note.className = 'demokit-input-form__timeout';
+      const secs = timeoutMs ? (timeoutMs / 1000).toFixed(1) : '';
+      note.textContent = secs
+        ? `(no input after ${secs}s — continuing with defaults)`
+        : '(input timed out — continuing with defaults)';
+      form.replaceWith(note);
+      note.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
     }
 
     _renderLiveDone() {

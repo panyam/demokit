@@ -34,8 +34,9 @@ type StepDef struct {
 	inputs      []InputDef
 	coalesce    func(map[string]any) any
 	runFn       func(StepContext) *StepResult
-	timeout     time.Duration // 0 = no timeout
-	cancellable bool          // press-Enter cancels in interactive mode
+	timeout      time.Duration // 0 = no timeout
+	cancellable  bool          // press-Enter cancels in interactive mode
+	inputTimeout time.Duration // per-step prompt deadline; 0 = inherit Demo.InputTimeout
 }
 
 type arrowDef struct {
@@ -142,6 +143,20 @@ func (s *StepDef) Inputs() []InputDef {
 //	    })
 func (s *StepDef) Timeout(d time.Duration) *StepDef {
 	s.timeout = d
+	return s
+}
+
+// InputTimeout sets a deadline for collecting this step's declared
+// inputs. When the deadline elapses with no submission, renderers
+// that honor the contract (currently `web.webRenderer` for `--serve`
+// mode) fill in declared defaults and continue. Overrides the
+// demo-level Demo.InputTimeout for this one step.
+//
+// Zero (the default) means inherit the demo-level timeout. To
+// explicitly opt out of the demo default for a step, set a very
+// large duration; a future enhancement may add a sentinel.
+func (s *StepDef) InputTimeout(d time.Duration) *StepDef {
+	s.inputTimeout = d
 	return s
 }
 

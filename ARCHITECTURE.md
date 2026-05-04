@@ -238,7 +238,7 @@ The player events / public methods are documented at the top of `web/player/demo
 - `GET /` — `live.html` template, instantiates `<demokit-demo data-src="/events" data-mode="live">` and the embedded player + ansi_up assets.
 - `GET /demokit-player.{js,css}`, `/ansi_up.js` — sibling assets (linked, not inlined; `bundle.html` mode is the inlined sibling).
 - `GET /trace.json` — current run's history as a JSON document for debugging or post-hoc replay.
-- `WS /events` — bidirectional channel. Server pushes structured events (`header` / `section` / `step-start` / `chunk` / `step-end` / `input-needed` / `done` / `reset`); the client posts `{kind:"input", values:{...}}` and `{kind:"reset"}`.
+- `WS /events` — bidirectional channel. Server pushes structured events (`header` / `section` / `step-start` / `chunk` / `step-end` / `input-needed` / `input-timeout` / `done` / `reset`); the client posts `{kind:"input", values:{...}}` and `{kind:"reset"}`.
 
 A few invariants worth knowing:
 
@@ -248,6 +248,8 @@ A few invariants worth knowing:
 - **Aborts surface in the player.** `MaxSteps` / unknown-`Next` paths in `RunLoop` call `RenderResult` without a preceding `RenderStep`. `webRenderer` tracks `stepOpen` and synthesizes a "Aborted" `step-start` so the error is visible in the live UI rather than silently truncating.
 - **Shutdown.** `gohttp.ListenAndServeGraceful` traps SIGINT/SIGTERM; the `WithOnShutdown` callback cancels the demo's run context (which `Prompt` selects on, unblocking it) and force-closes WS connections by calling `liveConn.forceClose()` (closes the underlying `*websocket.Conn` so gorilla's `ReadMessage` returns and the handler unwinds — `BaseConn.OnClose` alone only stops the writer goroutine).
 - **`RunLoop` vs `Execute`.** `runDemo` calls `Demo.RunLoop()` rather than `Demo.Execute()` so the `--serve` flag dispatch isn't re-entered (which would otherwise recurse infinitely).
+- **Reset.** Clients post `{kind:"reset"}`; `liveServer.reset()` cancels the current `runCtx` (unblocking any pending `Prompt` via its select), waits on `runDone` for the goroutine to exit, drains `srv.inputs`, broadcasts a `reset` event, clears `srv.history`, and re-launches `runDemo`. Concurrent resets are serialized via `runMu`. Steps that ignore `ctx.Ctx.Done()` block reset until they return naturally — same contract as `Cancellable`.
+- **Input timeouts.** `Demo.InputTimeout(d)` (or `--input-timeout d`) sets a default deadline; `StepDef.InputTimeout(d)` overrides per-step. `webRenderer.Prompt` adds a `time.After` case to its select; on timeout, declared defaults from each `InputDef` fill the inputs map and an `input-timeout` event broadcasts so the player can dismiss its form. `Demo.EffectiveInputTimeout(stepID)` resolves the effective value (per-step beats demo).
 
 ### Why no shadow DOM
 

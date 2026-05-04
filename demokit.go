@@ -47,6 +47,7 @@ type Demo struct {
 	autoAcceptAfter      time.Duration
 	showCountdown        bool
 	showStepDenominator  bool
+	inputTimeout         time.Duration // default per-prompt deadline; 0 = wait forever. Per-step override via StepDef.InputTimeout.
 	recorder        Recorder
 	replay          []TraceEntry
 	replayCursor    int
@@ -62,6 +63,7 @@ type Demo struct {
 	flagFrom           string // optional trace path used with --doc
 	flagOut            string // output file for --doc bundle (else stdout)
 	flagServe          string // address (e.g. ":8765") to serve the live demo on
+	flagInputTimeout   time.Duration // demo-level prompt deadline; per-step .InputTimeout takes precedence
 
 	// Sidecar-markdown loader state. Errors are stored rather than
 	// returned so FromMarkdown stays chainable; surfaced at Execute.
@@ -126,6 +128,45 @@ type ServeHandler func(d *Demo, addr string) error
 func (d *Demo) RegisterServeHandler(h ServeHandler) *Demo {
 	d.serveHandler = h
 	return d
+}
+
+// InputTimeout sets a default deadline for input prompts across the
+// demo. When the deadline elapses with no submission, renderers that
+// honor the contract (currently `web.webRenderer` for `--serve` mode)
+// fill in declared defaults and continue, broadcasting an
+// "input-timeout" event so embed UIs can dismiss the form.
+//
+// Per-step overrides take precedence — see StepDef.InputTimeout.
+// Zero (the default) means wait forever.
+//
+// PlainRenderer / tui.Renderer don't honor this yet; CLI Prompt is
+// blocking-readline and needs a separate cancelable read to opt in.
+func (d *Demo) InputTimeout(dur time.Duration) *Demo {
+	d.inputTimeout = dur
+	return d
+}
+
+// EffectiveInputTimeout returns the input deadline that applies to
+// the step with the given ID — per-step value if set, else demo
+// default. Renderers call this from inside Prompt to decide how
+// long to wait.
+func (d *Demo) EffectiveInputTimeout(stepID string) time.Duration {
+	if step := d.StepByID(stepID); step != nil && step.inputTimeout > 0 {
+		return step.inputTimeout
+	}
+	return d.inputTimeout
+}
+
+// StepByID returns the step with the given ID, or nil if no step
+// has that ID. Renderers use this to look up step-specific
+// metadata (timeouts, etc.) by the ID handed to Prompt.
+func (d *Demo) StepByID(id string) *StepDef {
+	for _, it := range d.items {
+		if s, ok := it.(*StepDef); ok && s.id == id {
+			return s
+		}
+	}
+	return nil
 }
 
 // MaxSteps caps the total number of step visits per Execute, preventing
@@ -303,6 +344,8 @@ func (d *Demo) RegisterFlags(fs *flag.FlagSet) {
 		"output file for --doc bundle (else writes to stdout)")
 	fs.StringVar(&d.flagServe, "serve", "",
 		"address to serve the live demo (e.g. :8765); requires importing demokit/web")
+	fs.DurationVar(&d.flagInputTimeout, "input-timeout", 0,
+		"default deadline for input prompts (e.g. 60s); per-step .InputTimeout overrides this. 0 = wait forever.")
 }
 
 // scanOwnArgs is the default flag scanner used when RegisterFlags is
@@ -345,6 +388,15 @@ func (d *Demo) scanOwnArgs(args []string) {
 			i++
 		case strings.HasPrefix(arg, "--serve="):
 			d.flagServe = strings.TrimPrefix(arg, "--serve=")
+		case arg == "--input-timeout" && i+1 < len(args):
+			if dur, err := time.ParseDuration(args[i+1]); err == nil {
+				d.flagInputTimeout = dur
+			}
+			i++
+		case strings.HasPrefix(arg, "--input-timeout="):
+			if dur, err := time.ParseDuration(strings.TrimPrefix(arg, "--input-timeout=")); err == nil {
+				d.flagInputTimeout = dur
+			}
 		}
 	}
 }
@@ -425,6 +477,9 @@ func (d *Demo) RunLoop() {
 		} else {
 			fmt.Fprintf(os.Stderr, "demokit: --replay %s: %v\n", d.flagReplayPath, err)
 		}
+	}
+	if d.flagInputTimeout > 0 && d.inputTimeout == 0 {
+		d.inputTimeout = d.flagInputTimeout
 	}
 
 	interactive := isTerminal() && !d.flagNonInteractive

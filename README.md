@@ -110,7 +110,9 @@ func main() {
 
 For programmatic embedding, the same package exposes `web.TraceFragment(d, entries) string` and `web.WriteBundle(d, entries, outPath) error`. See [ARCHITECTURE.md](ARCHITECTURE.md#embed-surface--demokit-demo-web-player) for the full data-source model (URL static, inline blob, programmatic, and the live URL mode driven by `--serve`).
 
-**Live mode (`--serve`).** `go run ./mydemo --serve :8765` runs the demo as an HTTP+WebSocket server. Open `http://localhost:8765/` and the embed page connects via WS, renders structured events as they arrive, and submits input forms back. The server terminal mirrors the same demo in your chosen renderer's style (`PlainRenderer` by default, `tui.Renderer` if you also pass `--tui`). Useful for live presentations and interactive walkthroughs in slide decks.
+**Live mode (`--serve`).** `go run ./mydemo --serve :8765` runs the demo as an HTTP+WebSocket server. Open `http://localhost:8765/` and the embed page connects via WS, renders structured events as they arrive, and submits input forms back. The server terminal mirrors the same demo in your chosen renderer's style (`PlainRenderer` by default, `tui.Renderer` if you also pass `--tui`). Browser-side reset clears the feed and replays from the top; clients posting `{kind:"reset"}` over WS trigger the same restart. Useful for live presentations and interactive walkthroughs in slide decks.
+
+`--input-timeout 60s` (or `Demo.InputTimeout(60 * time.Second)`) bounds how long a prompt waits for input. After the deadline, declared defaults are filled and the demo continues; the live page shows a "(no input — continuing with defaults)" notice. Per-step overrides via `step.InputTimeout(d)` for steps that need a different deadline (e.g. a long-pause "press Enter to advance" step in a kiosk).
 
 **Two renderers.** `PlainRenderer` (zero deps) for plain stdout. `tui.Renderer` (via the `tui/` subpackage, Lipgloss-backed) for styled boxes. Both implement the same `Renderer` interface; you can swap your own in if you want HTML, JSON, or a TUI Bubble app.
 

@@ -26,6 +26,27 @@ import (
 //
 // Blocks until the server is signalled to stop (SIGINT/SIGTERM).
 func ServeHTTP(d *demokit.Demo, addr string) error {
+	srv, handler := newLiveServer(d)
+	server := &http.Server{Addr: addr, Handler: handler}
+	skmiddleware.ApplyDefaults(server)
+
+	log.Printf("demokit: serving %q at http://%s/", d.Title(), addr)
+	err := gohttp.ListenAndServeGraceful(server,
+		gohttp.WithDrainTimeout(5*time.Second),
+		gohttp.WithOnShutdown(srv.shutdown),
+	)
+	if err != nil && err != http.ErrServerClosed {
+		return fmt.Errorf("serve %s: %w", addr, err)
+	}
+	return nil
+}
+
+// newLiveServer wires up a liveServer, registers HTTP routes, swaps
+// the demo's renderer, and launches the demo run goroutine. Returns
+// the server (for shutdown) and the http.Handler ready to be wrapped
+// in any listener — production code uses an http.Server bound to
+// addr; tests use httptest.NewServer.
+func newLiveServer(d *demokit.Demo) (*liveServer, http.Handler) {
 	srv := &liveServer{
 		demo:    d,
 		hub:     newWSHub(),
@@ -43,26 +64,21 @@ func ServeHTTP(d *demokit.Demo, addr string) error {
 
 	srv.registerRenderer()
 
-	// Run the demo in a background goroutine. New WS clients pick up
-	// from the broadcast history when they connect.
 	srv.runCtx, srv.runCancel = context.WithCancel(context.Background())
+	srv.runDone = make(chan struct{})
 	go srv.runDemo()
 
-	server := &http.Server{Addr: addr, Handler: corsMiddleware(mux)}
-	skmiddleware.ApplyDefaults(server)
+	return srv, corsMiddleware(mux)
+}
 
-	log.Printf("demokit: serving %q at http://%s/", d.Title(), addr)
-	err := gohttp.ListenAndServeGraceful(server,
-		gohttp.WithDrainTimeout(5*time.Second),
-		gohttp.WithOnShutdown(func() {
-			srv.runCancel()
-			srv.hub.closeAll()
-		}),
-	)
-	if err != nil && err != http.ErrServerClosed {
-		return fmt.Errorf("serve %s: %w", addr, err)
-	}
-	return nil
+// shutdown cancels the running demo and force-closes every WS
+// connection so gorilla's blocking ReadMessage returns and
+// http.Server.Shutdown can drain. Idempotent — safe to call
+// multiple times (cancel of an already-cancelled context is a
+// no-op; closing already-closed sockets is harmless).
+func (s *liveServer) shutdown() {
+	s.runCancel()
+	s.hub.closeAll()
 }
 
 // --- liveServer ---
@@ -74,9 +90,14 @@ type liveServer struct {
 	mu      sync.Mutex
 	history []serverEvent // replayed to late-joining clients
 
+	// runMu guards the run-lifecycle fields below. Acquired by
+	// reset() to coordinate cancellation, drain, and re-launch
+	// without racing concurrent reset/shutdown calls.
+	runMu     sync.Mutex
 	inputs    chan map[string]any
 	runCtx    context.Context
 	runCancel context.CancelFunc
+	runDone   chan struct{} // closed when the current runDemo goroutine exits
 }
 
 func (s *liveServer) registerRenderer() {
@@ -94,6 +115,7 @@ func (s *liveServer) registerRenderer() {
 }
 
 func (s *liveServer) runDemo() {
+	defer close(s.runDone)
 	defer func() {
 		if r := recover(); r != nil {
 			log.Printf("demokit: demo run panic: %v", r)
@@ -104,6 +126,45 @@ func (s *liveServer) runDemo() {
 	// and would otherwise recurse).
 	s.demo.RunLoop()
 	s.broadcast(serverEvent{Kind: "done"})
+}
+
+// reset cancels the current run, waits for the goroutine to exit,
+// clears history, and re-launches a fresh run from the top. Called
+// when a client sends {"kind":"reset"} over WS. Safe to call
+// concurrently — runMu serializes the lifecycle transition.
+//
+// If the current Run is in a long-running operation that ignores
+// ctx.Ctx.Done(), reset blocks until it returns naturally — same
+// contract as Timeout/Cancellable from issue #5.
+func (s *liveServer) reset() {
+	s.runMu.Lock()
+	defer s.runMu.Unlock()
+
+	// Cancel the current run; any pending Prompt unblocks via its
+	// runCtx select.
+	s.runCancel()
+	<-s.runDone
+
+	// Drain any input value that arrived between the user's reset
+	// click and the cancel firing — otherwise it would feed into
+	// the next run's first Prompt.
+	select {
+	case <-s.inputs:
+	default:
+	}
+
+	// Tell every client to clear its feed, then drop the history
+	// buffer so late-joiners that connect *after* reset don't get
+	// stale state.
+	s.hub.broadcast(serverEvent{Kind: "reset"})
+	s.mu.Lock()
+	s.history = nil
+	s.mu.Unlock()
+
+	// Fresh context + done signal for the next run.
+	s.runCtx, s.runCancel = context.WithCancel(context.Background())
+	s.runDone = make(chan struct{})
+	go s.runDemo()
 }
 
 // broadcast pushes an event to every connected WS client AND
@@ -232,7 +293,11 @@ func (c *liveConn) HandleMessage(msg any) error {
 			log.Printf("demokit: input received but no step waiting (dropped: %v)", values)
 		}
 	case "reset":
-		log.Println("demokit: /events received reset (not yet implemented)")
+		// Run reset in its own goroutine — it blocks on runDone, and
+		// HandleMessage is called from the WS reader loop which we
+		// don't want to stall (the next message we receive may be
+		// another reset, or an input from a different client).
+		go c.srv.reset()
 	}
 	return nil
 }
@@ -393,13 +458,25 @@ func (r *webRenderer) WaitForStep(opts demokit.WaitOpts) {
 // "input-needed" event with the declared input shapes, then blocks
 // reading from the server's inputs channel (filled by WS "input"
 // messages). Selects on runCtx so shutdown unblocks the demo
-// goroutine instead of leaking it.
+// goroutine instead of leaking it. If Demo.EffectiveInputTimeout
+// is non-zero for this step, falls back to declared defaults
+// after the deadline and broadcasts "input-timeout" so the
+// player can dismiss its form.
 func (r *webRenderer) Prompt(stepID string, inputs []demokit.InputDef) map[string]any {
 	r.srv.broadcast(serverEvent{
 		Kind:   "input-needed",
 		StepID: stepID,
 		Inputs: inputs,
 	})
+
+	timeout := r.srv.demo.EffectiveInputTimeout(stepID)
+	var deadline <-chan time.Time
+	if timeout > 0 {
+		t := time.NewTimer(timeout)
+		defer t.Stop()
+		deadline = t.C
+	}
+
 	select {
 	case values, ok := <-r.srv.inputs:
 		if !ok || values == nil {
@@ -408,7 +485,29 @@ func (r *webRenderer) Prompt(stepID string, inputs []demokit.InputDef) map[strin
 		return values
 	case <-r.srv.runCtx.Done():
 		return map[string]any{}
+	case <-deadline:
+		defaults := defaultsForInputs(inputs)
+		r.srv.broadcast(serverEvent{
+			Kind:   "input-timeout",
+			StepID: stepID,
+			Extra:  map[string]any{"timeout_ms": timeout.Milliseconds()},
+		})
+		return defaults
 	}
+}
+
+// defaultsForInputs builds the same map collectInputs would build
+// in non-interactive mode — any input with a Default contributes
+// to the result; inputs without a Default are absent. Used as the
+// fallback when an input prompt times out.
+func defaultsForInputs(inputs []demokit.InputDef) map[string]any {
+	out := make(map[string]any, len(inputs))
+	for _, in := range inputs {
+		if in.Default != nil {
+			out[in.Name] = in.Default
+		}
+	}
+	return out
 }
 
 // StreamOutput broadcasts a chunk event so the live page can render
