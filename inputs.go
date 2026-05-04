@@ -19,12 +19,12 @@ import (
 // preserves them so swapping in a custom parser doesn't lose the
 // declared shape (a Choice with custom validation is still a choice).
 type InputDef struct {
-	Name    string                    // map key in StepContext.Inputs
-	Prompt  string                    // user-facing label; defaults to Name
-	Default any                       // shown in brackets; Enter accepts it
-	Parse   func(string) (any, error) // returns the typed value or a retry error
-	Kind    string                    // "string" | "int" | "choice" — set by helpers
-	Options []string                  // populated only when Kind == "choice"
+	Name    string                    `json:"name"`              // map key in StepContext.Inputs
+	Prompt  string                    `json:"prompt,omitempty"`  // user-facing label; defaults to Name
+	Default any                       `json:"default,omitempty"` // shown in brackets; Enter accepts it
+	Parse   func(string) (any, error) `json:"-"`                 // returns the typed value or a retry error; not JSON-serializable
+	Kind    string                    `json:"kind,omitempty"`    // "string" | "int" | "choice" — set by helpers
+	Options []string                  `json:"options,omitempty"` // populated only when Kind == "choice"
 }
 
 // Named sets the input's identifier and user-facing prompt label. The

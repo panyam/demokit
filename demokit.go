@@ -61,12 +61,20 @@ type Demo struct {
 	flagDoc            string // md|html|json|bundle (empty = not requested)
 	flagFrom           string // optional trace path used with --doc
 	flagOut            string // output file for --doc bundle (else stdout)
+	flagServe          string // address (e.g. ":8765") to serve the live demo on
 
 	// Sidecar-markdown loader state. Errors are stored rather than
 	// returned so FromMarkdown stays chainable; surfaced at Execute.
 	loadError    error
 	loadWarnings []string
 	bindErrors   []string
+
+	// Per-instance registries for optional capabilities. Populated
+	// by callers (typically web.RegisterWith) before Execute.
+	// Instance-scoped instead of package-level so multiple demos in
+	// one process don't collide and tests don't share state.
+	docHandlers  map[string]DocHandler
+	serveHandler ServeHandler
 }
 
 // New creates a new Demo with the given title.
@@ -77,31 +85,47 @@ func New(title string) *Demo {
 // Title returns the demo's title (set via New).
 func (d *Demo) Title() string { return d.title }
 
-// DocHandler renders a documentation format. demokit core comes with
-// md/html/json built in; additional formats register themselves at
-// init time so demos opt in by blank-importing the package.
+// DocHandler renders a documentation format. demokit core ships
+// md/html/json built in; additional formats are registered on a Demo
+// instance, so different demos in the same process can have
+// different capabilities and tests don't share state.
 //
 // out is the path passed via --out (empty string = stdout).
 type DocHandler func(d *Demo, entries []TraceEntry, out string) error
 
-var docHandlers = map[string]DocHandler{}
-
-// RegisterDocFormat installs a handler for a --doc <name> format.
-// Typical pattern — a separate package registers itself in init():
+// RegisterDocFormat installs a handler for a --doc <name> format on
+// this demo. Names "md", "html", "json" are reserved by core;
+// reusing them panics.
 //
-//	func init() {
-//	    demokit.RegisterDocFormat("bundle", func(d *demokit.Demo, entries []demokit.TraceEntry, out string) error {
-//	        return WriteBundle(d, entries, out)
-//	    })
-//	}
+// Typical pattern — a helper package registers all its capabilities
+// at once via a setup function the demo calls explicitly:
 //
-// Names "md", "html", "json" are reserved by core; reusing them panics.
-func RegisterDocFormat(name string, h DocHandler) {
+//	demo := demokit.New("...")
+//	web.RegisterWith(demo)  // wires --doc bundle and --serve
+func (d *Demo) RegisterDocFormat(name string, h DocHandler) *Demo {
 	switch name {
 	case "md", "html", "json":
 		panic("demokit: cannot override built-in doc format " + name)
 	}
-	docHandlers[name] = h
+	if d.docHandlers == nil {
+		d.docHandlers = map[string]DocHandler{}
+	}
+	d.docHandlers[name] = h
+	return d
+}
+
+// ServeHandler runs a Demo as an HTTP server bound to addr. demokit
+// core has no HTTP code itself; the demokit/web package supplies an
+// implementation when the demo opts in via web.RegisterWith.
+type ServeHandler func(d *Demo, addr string) error
+
+// RegisterServeHandler installs the implementation that handles
+// `--serve <addr>` on this demo. Calling Execute with --serve set
+// when no handler is registered surfaces a clear stderr error
+// pointing at the missing setup call.
+func (d *Demo) RegisterServeHandler(h ServeHandler) *Demo {
+	d.serveHandler = h
+	return d
 }
 
 // MaxSteps caps the total number of step visits per Execute, preventing
@@ -237,6 +261,15 @@ func (d *Demo) WithRenderer(r Renderer) *Demo {
 	return d
 }
 
+// Renderer returns the renderer currently set on the demo (may be nil
+// if the user hasn't called WithRenderer — Execute defaults to
+// PlainRenderer in that case). Used by wrapping renderers
+// (e.g. web.ServeHTTP's tee renderer) that need to compose with
+// whatever the caller chose.
+func (d *Demo) Renderer() Renderer {
+	return d.renderer
+}
+
 // RegisterFlags registers demokit's CLI flags onto fs. Use this when
 // your demo has its own flags and you want to manage parsing centrally:
 //
@@ -268,6 +301,8 @@ func (d *Demo) RegisterFlags(fs *flag.FlagSet) {
 		"trace file to render with --doc (omit for static-definition output)")
 	fs.StringVar(&d.flagOut, "out", "",
 		"output file for --doc bundle (else writes to stdout)")
+	fs.StringVar(&d.flagServe, "serve", "",
+		"address to serve the live demo (e.g. :8765); requires importing demokit/web")
 }
 
 // scanOwnArgs is the default flag scanner used when RegisterFlags is
@@ -305,6 +340,11 @@ func (d *Demo) scanOwnArgs(args []string) {
 			i++
 		case strings.HasPrefix(arg, "--out="):
 			d.flagOut = strings.TrimPrefix(arg, "--out=")
+		case arg == "--serve" && i+1 < len(args):
+			d.flagServe = args[i+1]
+			i++
+		case strings.HasPrefix(arg, "--serve="):
+			d.flagServe = strings.TrimPrefix(arg, "--serve=")
 		}
 	}
 }
@@ -344,6 +384,37 @@ func (d *Demo) Execute() {
 		return
 	}
 
+	// --serve <addr> hands the demo over to the registered serve
+	// handler (the demokit/web package wires this on import).
+	if d.flagServe != "" {
+		if d.flagNonInteractive || d.flagRecordPath != "" || d.flagReplayPath != "" {
+			fmt.Fprintln(os.Stderr,
+				"demokit: --serve is mutually exclusive with --non-interactive / --record / --replay")
+			return
+		}
+		if d.serveHandler == nil {
+			fmt.Fprintln(os.Stderr,
+				"demokit: --serve is not enabled. Call web.RegisterWith(demo) before Execute (import github.com/panyam/demokit/web).")
+			return
+		}
+		if err := d.serveHandler(d, d.flagServe); err != nil {
+			fmt.Fprintf(os.Stderr, "demokit: --serve %s: %v\n", d.flagServe, err)
+		}
+		return
+	}
+
+	d.RunLoop()
+}
+
+// RunLoop runs the demo's step loop directly, bypassing --doc and
+// --serve flag dispatch. Execute calls RunLoop after handling those
+// flags; live-mode handlers (web.ServeHTTP) call RunLoop from a
+// goroutine without re-entering the dispatch.
+//
+// In normal use you call Execute, which calls RunLoop for you. Only
+// reach for this directly when you're driving the loop from a
+// non-CLI host (server, embedded, test harness).
+func (d *Demo) RunLoop() {
 	// Programmatic config wins; flags only fill in when not already set.
 	if d.flagRecordPath != "" && d.recorder == nil {
 		d.recorder = NewJSONFileRecorder(d.flagRecordPath)
@@ -362,6 +433,14 @@ func (d *Demo) Execute() {
 	if d.replay != nil {
 		interactive = false
 	}
+
+	// In live (--serve) mode the browser drives the demo via WS — the
+	// server's stdin belongs to the operator, not the demo. Don't read
+	// from it for between-step pauses or Cancellable Enter-watching;
+	// stray keystrokes in the operator's terminal would otherwise
+	// cancel steps unexpectedly. The renderer still calls Prompt for
+	// declared inputs, just sourced from the WS bridge.
+	stdinAttached := interactive && d.flagServe == ""
 
 	r := d.renderer
 	if r == nil {
@@ -434,8 +513,9 @@ walk:
 
 			// Steps with declared inputs take their pause from the prompt
 			// itself; steps without inputs get the conventional Enter-pause
-			// (or auto-accept countdown).
-			if interactive && len(v.inputs) == 0 {
+			// (or auto-accept countdown). Skipped in --serve mode — no
+			// stdin to wait on; the browser advances events as they arrive.
+			if stdinAttached && len(v.inputs) == 0 {
 				r.WaitForStep(waitOpts)
 			}
 
@@ -459,7 +539,7 @@ walk:
 				defer stopTimeout()
 			}
 			var stopWatcher func()
-			if v.cancellable && interactive && !replaying {
+			if v.cancellable && stdinAttached && !replaying {
 				stopWatcher = watchCancelKey(cancelRun)
 			}
 
@@ -647,7 +727,7 @@ func (d *Demo) emitDoc(format, from string) {
 	default:
 		// Registered formats (e.g. "bundle" via demokit/web). Hint
 		// at the most common case if it's missing.
-		if h, ok := docHandlers[format]; ok {
+		if h, ok := d.docHandlers[format]; ok {
 			if err := h(d, entries, d.flagOut); err != nil {
 				fmt.Fprintf(os.Stderr, "demokit: --doc %s: %v\n", format, err)
 			}
@@ -655,7 +735,7 @@ func (d *Demo) emitDoc(format, from string) {
 		}
 		if format == "bundle" {
 			fmt.Fprintln(os.Stderr,
-				"demokit: --doc bundle is not enabled. Add `_ \"github.com/panyam/demokit/web\"` to your imports.")
+				"demokit: --doc bundle is not enabled. Call web.RegisterWith(demo) before Execute (import github.com/panyam/demokit/web).")
 			return
 		}
 		fmt.Fprintf(os.Stderr, "demokit: unknown --doc format %q (want md|html|json or registered format)\n", format)

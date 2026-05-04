@@ -6,9 +6,10 @@
 //   1. Programmatic: el.trace = traceObject (assigning the property
 //      triggers a re-render).
 //   2. data-src URL: fetch JSON; render as static playback.
-//   3. data-src URL with data-mode="live": connect via SSE (PR #3
-//      wires this; today it surfaces a clear "live mode requires
-//      demokit --serve" error).
+//   3. data-src URL with data-mode="live": connect via WebSocket and
+//      render incrementally as the server emits structured events
+//      (header / section / step-start / chunk / step-end /
+//      input-needed / done). Driven by `demokit --serve`.
 //   4. Inline blob: <demokit-demo>{...JSON...}</demokit-demo>.
 //
 // Public API on the element:
@@ -47,50 +48,47 @@
 // fallback strips ANSI escapes to plain text rather than failing
 // the whole module.
 
-// AnsiUp is loaded with a chained fallback so the player works
-// across deployment shapes:
+// ansi_up is loaded from a commit-pinned jsdelivr URL — content-
+// addressable since the commit SHA is immutable, so no separate
+// integrity check is needed. We don't vendor a copy under our repo
+// because the file is already at the CDN; duplicating the bytes
+// adds nothing.
 //
-//   1. ./ansi_up.js — sibling file. WriteBundle drops one next to
-//      the bundle HTML so file:// works without internet (the CDN
-//      can't be reached from a null-origin page in Chrome).
-//   2. CDN URL — used when the player itself was loaded from a CDN
-//      (stdout-mode bundles, inline embeds without local hosting).
-//      Same-origin policy lets cdn → cdn imports through.
-//   3. Stripper — final fallback. Strips ANSI escapes and HTML-
-//      escapes the text so the captured output renders cleanly
-//      (just without colour) instead of garbled.
+// file:// pages can't fetch cross-origin scripts (Chrome blocks
+// null-origin → https). For those cases the answer is the demokit
+// serve command (HTTP origin → CDN imports work) rather than a
+// chained fallback chasing every constraint.
+//
+// The stripper fallback below catches the residual case where the
+// import genuinely fails (no network, hard CSP, or a future demokit
+// air-gapped mode). Output stays readable (just without colour)
+// rather than garbled or absent.
 
 let AnsiUp;
 try {
-  const mod = await import('./ansi_up.js');
+  const mod = await import(
+    'https://cdn.jsdelivr.net/gh/drudru/ansi_up@07a4824757d4dfbb41236a4245a6ce37f21aeb91/ansi_up.js'
+  );
   AnsiUp = mod.AnsiUp;
-} catch (_localErr) {
-  try {
-    const mod = await import(
-      'https://cdn.jsdelivr.net/gh/drudru/ansi_up@07a4824757d4dfbb41236a4245a6ce37f21aeb91/ansi_up.js'
-    );
-    AnsiUp = mod.AnsiUp;
-  } catch (cdnErr) {
-    console.warn(
-      'demokit-player: ansi_up failed to load — captured ANSI escapes will render as plain text:',
-      cdnErr && cdnErr.message ? cdnErr.message : cdnErr,
-    );
-    AnsiUp = class {
-      constructor() { this.use_classes = false; }
-      ansi_to_html(text) {
-        // Strip ANSI escapes AND HTML-escape `<`, `>`, `&`. Without
-        // the HTML escape, ASCII art with literal `<` `>` (e.g. the
-        // dragon's body) gets parsed as malformed tags downstream
-        // and the output looks garbled. ansi_up's real ansi_to_html
-        // escapes internally; the stripper has to do the same.
-        return String(text)
-          .replace(/\x1b\[[0-9;]*m/g, '')
-          .replace(/&/g, '&amp;')
-          .replace(/</g, '&lt;')
-          .replace(/>/g, '&gt;');
-      }
-    };
-  }
+} catch (err) {
+  console.warn(
+    'demokit-player: ansi_up failed to load — captured ANSI escapes will render as plain text:',
+    err && err.message ? err.message : err,
+  );
+  AnsiUp = class {
+    constructor() { this.use_classes = false; }
+    ansi_to_html(text) {
+      // Strip ANSI escapes AND HTML-escape `<`, `>`, `&` so DOMParser
+      // doesn't misinterpret literals (e.g. the dragon ASCII body)
+      // as malformed tags. ansi_up's real ansi_to_html escapes
+      // internally; the stripper has to do the same.
+      return String(text)
+        .replace(/\x1b\[[0-9;]*m/g, '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;');
+    }
+  };
 }
 
 const PLAY_INTERVAL_MS = 1500; // tune via Demo author later if needed
@@ -279,9 +277,10 @@ class DemokitDemoElement extends HTMLElement {
         if (this._programmaticTrace) {
           this._trace = this._programmaticTrace;
         } else if (src && mode === 'live') {
-          throw new Error(
-            'demokit-player: live mode requires demokit --serve and is not enabled in this build.',
-          );
+          // Live mode: open a WebSocket and stream structured events.
+          // Returns immediately; events drive the render incrementally.
+          this._connectWS(src);
+          return;
         } else if (src) {
           const res = await fetch(src);
           if (!res.ok) {
@@ -518,6 +517,250 @@ class DemokitDemoElement extends HTMLElement {
         this.removeEventListener(name, this._evtHandlers[name]);
       });
       this._evtHandlers = {};
+    }
+
+    // --- Live-mode WS ---
+    //
+    // When data-mode="live", the player connects to data-src as a
+    // WebSocket and renders incoming structured events incrementally
+    // (instead of fetching a static trace once). Outgoing messages
+    // are user actions: input submissions, reset.
+
+    _connectWS(rawURL) {
+      const wsURL = this._toWSURL(rawURL);
+      let ws;
+      try {
+        ws = new WebSocket(wsURL);
+      } catch (err) {
+        this._renderError('demokit-player: WS connect failed: ' + (err && err.message ? err.message : err));
+        return;
+      }
+      this._ws = ws;
+      this._currentStepEl = null;
+      this._currentStepID = null;
+
+      ws.onmessage = (e) => {
+        let evt;
+        try { evt = JSON.parse(e.data); } catch (_) { return; }
+        this._handleServerEvent(evt);
+      };
+      ws.onerror = () => {
+        this._renderError('demokit-player: WS error connecting to ' + wsURL);
+      };
+      ws.onclose = () => {
+        const note = document.createElement('p');
+        note.className = 'demokit-player__disconnected';
+        note.textContent = '(disconnected)';
+        this._feedEl.appendChild(note);
+      };
+    }
+
+    // _toWSURL converts an http(s):// or relative URL into ws(s)://
+    // so the host can write data-src as either a path or full URL.
+    _toWSURL(url) {
+      if (url.startsWith('ws://') || url.startsWith('wss://')) return url;
+      if (url.startsWith('http://')) return 'ws://' + url.slice(7);
+      if (url.startsWith('https://')) return 'wss://' + url.slice(8);
+      const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+      const path = url.startsWith('/') ? url : '/' + url;
+      return proto + '//' + location.host + path;
+    }
+
+    _handleServerEvent(evt) {
+      switch (evt.kind) {
+        case 'header':
+          if (evt.demo) {
+            this._titleEl.textContent = evt.demo.title || '';
+            this._descEl.textContent = evt.demo.description || '';
+            this._descEl.style.display = this._descEl.textContent ? '' : 'none';
+          }
+          break;
+        case 'section':
+          this._renderLiveSection(evt.extra || {});
+          break;
+        case 'step-start':
+          this._openLiveStep(evt.extra || {});
+          break;
+        case 'chunk':
+          this._appendChunkToLiveStep(evt.chunk || '');
+          break;
+        case 'step-end':
+          this._closeLiveStep(evt.status || 0, evt.extra || {});
+          break;
+        case 'input-needed':
+          this._renderLiveInputForm(evt.step_id, evt.inputs || []);
+          break;
+        case 'done':
+          this._renderLiveDone();
+          break;
+        case 'reset':
+          this._feedEl.replaceChildren();
+          this._currentStepEl = null;
+          this._currentStepID = null;
+          break;
+      }
+    }
+
+    _renderLiveSection(extra) {
+      const sec = document.createElement('section');
+      sec.className = 'demokit-section';
+      const h = document.createElement('h3');
+      h.className = 'demokit-section__title';
+      h.textContent = extra.title || '';
+      sec.appendChild(h);
+      if (extra.body) {
+        const p = document.createElement('p');
+        p.className = 'demokit-section__body';
+        p.textContent = extra.body;
+        sec.appendChild(p);
+      }
+      this._feedEl.appendChild(sec);
+      sec.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    }
+
+    _openLiveStep(extra) {
+      const art = document.createElement('article');
+      art.className = 'demokit-step demokit-step--status-0';
+      const h = document.createElement('h3');
+      h.className = 'demokit-step__title';
+      const num = extra.step_num;
+      const title = extra.title || extra.id || '';
+      h.textContent = num ? num + '. ' + title : title;
+      art.appendChild(h);
+
+      if (extra.note) {
+        const blk = document.createElement('blockquote');
+        blk.className = 'demokit-step__note';
+        blk.textContent = extra.note;
+        art.appendChild(blk);
+      }
+      if (Array.isArray(extra.refs) && extra.refs.length) {
+        const refs = document.createElement('p');
+        refs.className = 'demokit-step__refs';
+        refs.appendChild(document.createTextNode('References: '));
+        extra.refs.forEach((ref, i) => {
+          if (i > 0) refs.appendChild(document.createTextNode(', '));
+          const a = document.createElement('a');
+          a.href = ref.url || ref.URL || '#';
+          a.textContent = ref.name || ref.Name || ref.url || '';
+          a.target = '_blank';
+          a.rel = 'noopener noreferrer';
+          refs.appendChild(a);
+        });
+        art.appendChild(refs);
+      }
+
+      const pre = document.createElement('pre');
+      pre.className = 'demokit-step__output';
+      pre.style.display = 'none'; // shown when first chunk arrives
+      art.appendChild(pre);
+
+      this._feedEl.appendChild(art);
+      this._currentStepEl = art;
+      this._currentStepPreEl = pre;
+      this._currentStepID = extra.id || '';
+      art.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    }
+
+    _appendChunkToLiveStep(text) {
+      if (!this._currentStepPreEl) return;
+      this._currentStepPreEl.style.display = '';
+      appendANSI(this._currentStepPreEl, text);
+    }
+
+    _closeLiveStep(status, extra) {
+      const el = this._currentStepEl;
+      if (!el) return;
+      el.classList.remove('demokit-step--status-0');
+      el.classList.add('demokit-step--status-' + status);
+
+      if (status !== 0 && extra && extra.message) {
+        const foot = document.createElement('p');
+        foot.className = 'demokit-step__status';
+        foot.textContent = (extra.label || statusLabel(status)) + ': ' + extra.message;
+        el.appendChild(foot);
+      }
+      if (extra && extra.next) {
+        const j = document.createElement('p');
+        j.className = 'demokit-step__jump';
+        j.textContent = '→ jumped to ' + extra.next;
+        el.appendChild(j);
+      }
+      this._currentStepEl = null;
+      this._currentStepPreEl = null;
+      this._currentStepID = null;
+    }
+
+    _renderLiveInputForm(stepID, inputs) {
+      const form = document.createElement('form');
+      form.className = 'demokit-input-form';
+      const fields = [];
+      inputs.forEach((inp) => {
+        const wrap = document.createElement('label');
+        wrap.className = 'demokit-input-form__field';
+        const lbl = document.createElement('span');
+        lbl.textContent = (inp.Prompt || inp.Name || inp.name || 'input') + ': ';
+        wrap.appendChild(lbl);
+
+        let ctrl;
+        const kind = inp.Kind || inp.kind;
+        if (kind === 'choice') {
+          ctrl = document.createElement('select');
+          (inp.Options || inp.options || []).forEach((opt) => {
+            const o = document.createElement('option');
+            o.value = opt;
+            o.textContent = opt;
+            ctrl.appendChild(o);
+          });
+        } else if (kind === 'int') {
+          ctrl = document.createElement('input');
+          ctrl.type = 'number';
+        } else {
+          ctrl = document.createElement('input');
+          ctrl.type = 'text';
+        }
+        ctrl.name = inp.Name || inp.name || '';
+        if (inp.Default !== undefined && inp.Default !== null) {
+          ctrl.value = String(inp.Default);
+        } else if (inp.default !== undefined && inp.default !== null) {
+          ctrl.value = String(inp.default);
+        }
+        wrap.appendChild(ctrl);
+        form.appendChild(wrap);
+        fields.push({ name: ctrl.name, el: ctrl, kind });
+      });
+
+      const submit = document.createElement('button');
+      submit.type = 'submit';
+      submit.className = 'demokit-player__btn';
+      submit.textContent = 'Submit';
+      form.appendChild(submit);
+
+      form.addEventListener('submit', (e) => {
+        e.preventDefault();
+        const values = {};
+        fields.forEach((f) => {
+          if (f.kind === 'int') {
+            values[f.name] = parseInt(f.el.value, 10);
+          } else {
+            values[f.name] = f.el.value;
+          }
+        });
+        if (this._ws && this._ws.readyState === WebSocket.OPEN) {
+          this._ws.send(JSON.stringify({ kind: 'input', values }));
+        }
+        form.remove();
+      });
+
+      this._feedEl.appendChild(form);
+      form.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    }
+
+    _renderLiveDone() {
+      const note = document.createElement('p');
+      note.className = 'demokit-player__done';
+      note.textContent = '(demo ended)';
+      this._feedEl.appendChild(note);
     }
   }
 

@@ -175,25 +175,33 @@ Load warnings (unsupported mermaid syntax, content before the first heading) pri
 
 Static-md and trace-md route to **different renderers** because they walk fundamentally different sources (declarations vs. recorded entries) and produce intentionally different shapes. The static visitor includes a "What you'll learn" notes summary, a consolidated mermaid sequence diagram, and a Run-it footer; the trace renderer produces a per-step walkthrough with captured outputs and inputs.
 
-### Doc-format registry (`RegisterDocFormat`)
+### Doc-format registry (`Demo.RegisterDocFormat`) and `Demo.RegisterServeHandler`
 
-Built-in formats (`md`/`html`/`json`) are hard-coded in core. Additional formats register themselves at `init()` time so demos opt in via blank import:
+Built-in formats (`md`/`html`/`json`) are hard-coded in core. Additional formats — and the `--serve` handler — are **per-instance** registries: methods on `*Demo`, not package globals. Demos opt in by calling a setup function from the helper package:
 
 ```go
 // in demokit/web/web.go
-func init() {
-    demokit.RegisterDocFormat("bundle", func(d *demokit.Demo, entries []demokit.TraceEntry, out string) error {
+func RegisterWith(d *demokit.Demo) {
+    d.RegisterDocFormat("bundle", func(d *demokit.Demo, entries []demokit.TraceEntry, out string) error {
         return WriteBundle(d, entries, out)
+    })
+    d.RegisterServeHandler(func(d *demokit.Demo, addr string) error {
+        return ServeHTTP(d, addr)
     })
 }
 
 // in your demo's main.go
-import _ "github.com/panyam/demokit/web"
+import "github.com/panyam/demokit/web"
+
+demo := demokit.New("...")
+// ... define steps ...
+web.RegisterWith(demo)
+demo.Execute()
 ```
 
-Demos that don't import the package see a clear stderr error if they invoke `--doc bundle`: `"demokit: --doc bundle is not enabled. Add `_ \"github.com/panyam/demokit/web\"` to your imports."`. Names `md`, `html`, `json` are reserved; reusing them panics.
+Demos that don't call `web.RegisterWith` see clear stderr errors if they invoke `--doc bundle` or `--serve`: `"demokit: --doc bundle is not enabled. Call web.RegisterWith(demo) before Execute (import github.com/panyam/demokit/web)."`. Names `md`, `html`, `json` are reserved; reusing them panics.
 
-Reasoning for the indirection: keeping the Go-side embed code (TraceFragment, WriteBundle, PlayerJS) in its own subpackage matches the layout of the JS/CSS assets under `web/player/`. The `tui/` subpackage uses the same shape (separate package; demos opt in via explicit `tui.New()`). Without the registry, `--doc bundle` would have to leave core CLI; with it, the unified `--doc <format>` surface stays intact.
+Reasoning for instance-scoped: multiple demos in one process don't collide; tests don't share state across runs; the explicit `web.RegisterWith(demo)` line is grep-able evidence of opt-in (vs. a silent `init()`). The `tui/` subpackage uses the same shape (separate package; demos opt in via explicit `tui.New()`).
 
 ## Embed surface — `<demokit-demo>` web player
 
@@ -206,7 +214,7 @@ Three (soon four) source modes, in priority order:
 | Programmatic | `el.trace = traceObject` (JS property) | Dynamic insertion, framework integrations |
 | URL static | `<demokit-demo data-src="trace.json">` | Published demos, demokit.com/traces/xyz, slide CDNs |
 | Inline blob | `<demokit-demo>{...JSON...}</demokit-demo>` | Self-contained HTML, file://, copy-paste embeds |
-| URL live *(reserved; PR for issue #3)* | `<demokit-demo data-src="..." data-mode="live">` | Live presentations served by `demokit --serve` |
+| URL live | `<demokit-demo data-src="/events" data-mode="live">` | Live presentations served by `demokit --serve` |
 
 Four Go entry points in the `web` subpackage:
 
@@ -219,9 +227,27 @@ web.PlayerJS()                                 // raw bundled player JS for host
 web.PlayerCSS()
 ```
 
-A blank import `import _ "github.com/panyam/demokit/web"` is enough to enable `--doc bundle` on the CLI side without exposing the package's symbols.
+`web.RegisterWith(demo)` (called before `Execute`) installs the per-instance handlers for `--doc bundle` and `--serve`. Registries are scoped to the `*Demo` (not package globals) so multiple demos in one process can be configured independently and tests don't leak state.
 
 The player events / public methods are documented at the top of `web/player/demokit-player.js`.
+
+### Live mode (`--serve <addr>`)
+
+`web.ServeHTTP` runs the demo behind a small HTTP+WebSocket server:
+
+- `GET /` — `live.html` template, instantiates `<demokit-demo data-src="/events" data-mode="live">` and the embedded player + ansi_up assets.
+- `GET /demokit-player.{js,css}`, `/ansi_up.js` — sibling assets (linked, not inlined; `bundle.html` mode is the inlined sibling).
+- `GET /trace.json` — current run's history as a JSON document for debugging or post-hoc replay.
+- `WS /events` — bidirectional channel. Server pushes structured events (`header` / `section` / `step-start` / `chunk` / `step-end` / `input-needed` / `done` / `reset`); the client posts `{kind:"input", values:{...}}` and `{kind:"reset"}`.
+
+A few invariants worth knowing:
+
+- **The live demo run has its own renderer** (`webRenderer`) which **tees onto whatever renderer the caller configured** before `--serve` (default `PlainRenderer`, or `tui.Renderer` if `--tui` was also passed). Framing methods delegate; `Prompt` and `WaitForStep` stay WS-only because the inner versions would read the operator's stdin.
+- **No stdin in serve mode.** Demokit's `RunLoop` keys off `flagServe != ""` to suppress both the between-step Enter-pause and the `Cancellable` Enter-watcher. The browser drives advancement; stray operator keystrokes don't cancel steps.
+- **`captureOutput` runs as in CLI mode** — chunks reach `webRenderer.StreamOutput`, which writes to the snapshotted-pre-capture stdout (operator terminal) AND broadcasts a `chunk` event over WS.
+- **Aborts surface in the player.** `MaxSteps` / unknown-`Next` paths in `RunLoop` call `RenderResult` without a preceding `RenderStep`. `webRenderer` tracks `stepOpen` and synthesizes a "Aborted" `step-start` so the error is visible in the live UI rather than silently truncating.
+- **Shutdown.** `gohttp.ListenAndServeGraceful` traps SIGINT/SIGTERM; the `WithOnShutdown` callback cancels the demo's run context (which `Prompt` selects on, unblocking it) and force-closes WS connections by calling `liveConn.forceClose()` (closes the underlying `*websocket.Conn` so gorilla's `ReadMessage` returns and the handler unwinds — `BaseConn.OnClose` alone only stops the writer goroutine).
+- **`RunLoop` vs `Execute`.** `runDemo` calls `Demo.RunLoop()` rather than `Demo.Execute()` so the `--serve` flag dispatch isn't re-entered (which would otherwise recurse infinitely).
 
 ### Why no shadow DOM
 

@@ -25,9 +25,7 @@ import (
 
 	"github.com/panyam/demokit"
 	"github.com/panyam/demokit/tui"
-
-	// Enables `--doc bundle` for self-contained HTML embed output.
-	_ "github.com/panyam/demokit/web"
+	"github.com/panyam/demokit/web"
 )
 
 type Diagnosis struct {
@@ -48,6 +46,9 @@ func main() {
 			demokit.Actor("App", "App"),
 			demokit.Actor("AS", "Auth Server"),
 		)
+
+	// Enable --doc bundle and --serve.
+	web.RegisterWith(demo)
 
 	demo.Section("How this demo works",
 		"You'll be asked to pick a failure symptom. Each branch shows the",

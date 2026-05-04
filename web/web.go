@@ -4,11 +4,11 @@
 // HTML shell that links the player from sibling files (when --out
 // is set) or from a CDN (when written to stdout).
 //
-// Importing this package (even via blank import) registers the
-// "bundle" doc format with demokit core, so `--doc bundle` becomes
-// available on demos that opt in:
+// Call web.RegisterWith(demo) before Execute() to enable the
+// "bundle" --doc format and the --serve live mode on a Demo:
 //
-//	import _ "github.com/panyam/demokit/web"
+//	demo := demokit.New("...")
+//	web.RegisterWith(demo)
 //
 // The player files are committed under web/player/ and the HTML
 // shell is rendered from a templar template under web/templates/.
@@ -36,6 +36,15 @@ var playerJS string
 //go:embed player/demokit-player.css
 var playerCSS string
 
+// ansi_up is vendored under web/player/ at a pinned upstream commit
+// (see ansi_up.VENDOR.md). Embedding it into the binary means
+// installed `go install` binaries — which have no access to our
+// source tree — can still write the file alongside bundles and
+// serve it from `--serve` without a runtime CDN fetch.
+//
+//go:embed player/ansi_up.js
+var ansiUpJS string
+
 //go:embed templates/*.html
 var tmplFS embed.FS
 
@@ -54,9 +63,25 @@ const (
 	playerCDNBase    = "https://cdn.jsdelivr.net/gh/panyam/demokit@" + PlayerCDNVersion + "/web/player"
 )
 
-func init() {
-	demokit.RegisterDocFormat("bundle", func(d *demokit.Demo, entries []demokit.TraceEntry, out string) error {
+// RegisterWith wires this package's capabilities into a demo:
+//
+//   - --doc bundle (writes a self-contained HTML + sibling assets)
+//   - --serve <addr> (live HTTP+WS server; from serve.go)
+//
+// Call after constructing your demo and before Execute:
+//
+//	demo := demokit.New("...")
+//	web.RegisterWith(demo)
+//	demo.Execute()
+//
+// Per-instance registration means multiple demos in one process
+// don't share state and tests are fully isolated.
+func RegisterWith(d *demokit.Demo) {
+	d.RegisterDocFormat("bundle", func(d *demokit.Demo, entries []demokit.TraceEntry, out string) error {
 		return WriteBundle(d, entries, out)
+	})
+	d.RegisterServeHandler(func(d *demokit.Demo, addr string) error {
+		return ServeHTTP(d, addr)
 	})
 }
 
@@ -67,6 +92,12 @@ func PlayerJS() string { return playerJS }
 
 // PlayerCSS returns the player's stylesheet.
 func PlayerCSS() string { return playerCSS }
+
+// AnsiUpJS returns the vendored ansi_up.js source. Hosts that
+// self-serve the player should drop this file alongside
+// demokit-player.js so the player's `import './ansi_up.js'` resolves
+// at runtime.
+func AnsiUpJS() string { return ansiUpJS }
 
 // TraceFragment returns an HTML element string with the trace JSON
 // inlined inside a <demokit-demo> tag. Hosts include the player
@@ -120,6 +151,7 @@ func writeBundleLocal(d *demokit.Demo, entries []demokit.TraceEntry, outPath str
 	dir := filepath.Dir(outPath)
 	cssPath := filepath.Join(dir, "demokit-player.css")
 	jsPath := filepath.Join(dir, "demokit-player.js")
+	ansiPath := filepath.Join(dir, "ansi_up.js")
 
 	html, err := renderBundleHTML(d, entries,
 		"./demokit-player.css",
@@ -136,6 +168,9 @@ func writeBundleLocal(d *demokit.Demo, entries []demokit.TraceEntry, outPath str
 	}
 	if err := os.WriteFile(jsPath, []byte(playerJS), 0o644); err != nil {
 		return fmt.Errorf("write %s: %w", jsPath, err)
+	}
+	if err := os.WriteFile(ansiPath, []byte(ansiUpJS), 0o644); err != nil {
+		return fmt.Errorf("write %s: %w", ansiPath, err)
 	}
 	return nil
 }

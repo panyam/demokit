@@ -1,6 +1,7 @@
-.PHONY: run demo runquiet record replay doc-md doc-html doc-json doc-bundle gen-readme
+.PHONY: run demo serve runquiet record replay doc-md doc-html doc-json doc-bundle gen-readme
 
 TRACE := /tmp/demokit-dungeon-trace.json
+SERVE_ADDR := :8765
 
 # Interactive, plain text — the canonical "play through the cave" mode.
 run:
@@ -9,6 +10,15 @@ run:
 # Interactive, TUI styled boxes.
 demo:
 	go run . --tui
+
+# Live web mode — serves the demo at http://localhost$(SERVE_ADDR)/.
+# Browser drives inputs via WebSocket; server terminal mirrors the
+# step output. Override the address with `make serve SERVE_ADDR=:9000`.
+serve:
+	go run . --serve $(SERVE_ADDR)
+
+servetui:
+	go run . --tui --serve $(SERVE_ADDR)
 
 # Non-interactive run using each input's WithDefault. Default path:
 #   north → left → forward → dragon → death (no ring)

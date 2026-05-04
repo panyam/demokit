@@ -33,9 +33,7 @@ import (
 
 	"github.com/panyam/demokit"
 	"github.com/panyam/demokit/tui"
-
-	// Enables `--doc bundle` for self-contained HTML embed output.
-	_ "github.com/panyam/demokit/web"
+	"github.com/panyam/demokit/web"
 )
 
 // Random honorifics for the cave's introductory greeting. Picked once
@@ -122,6 +120,9 @@ func main() {
 		MaxVisits(3). // catches infinite goblin/passage loops
 		AutoAcceptAfter(8 * time.Second).
 		ShowCountdown(true)
+
+	// Enable --doc bundle and --serve.
+	web.RegisterWith(demo)
 
 	// State held in Go closures, never in the markdown:
 	//   hasRing — set by ring-cave, read by dragon to decide outcome
