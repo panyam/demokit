@@ -29,14 +29,15 @@ type demoView struct {
 // matching the TraceKind values used in trace entries. Step-only fields
 // are omitempty for sections, and vice versa.
 type itemView struct {
-	Kind   TraceKind   `json:"kind"`
-	ID     string      `json:"id,omitempty"`
-	Title  string      `json:"title"`
-	Note   string      `json:"note,omitempty"`
-	Body   string      `json:"body,omitempty"` // sections only
-	Arrows []ArrowView `json:"arrows,omitempty"`
-	Refs   []Ref       `json:"refs,omitempty"`
-	Inputs []inputView `json:"inputs,omitempty"`
+	Kind     TraceKind      `json:"kind"`
+	ID       string         `json:"id,omitempty"`
+	Title    string         `json:"title"`
+	Note     string         `json:"note,omitempty"`
+	Body     string         `json:"body,omitempty"` // sections only
+	Arrows   []ArrowView    `json:"arrows,omitempty"`
+	Refs     []Ref          `json:"refs,omitempty"`
+	Inputs   []inputView    `json:"inputs,omitempty"`
+	Verbatim []VerbatimView `json:"verbatim,omitempty"`
 }
 
 // inputView projects an InputDef without its Parse closure (which has
@@ -100,12 +101,13 @@ func projectDemo(d *Demo) *demoView {
 		switch x := it.(type) {
 		case *StepDef:
 			iv := itemView{
-				Kind:   KindStep,
-				ID:     x.id,
-				Title:  x.title,
-				Note:   x.note,
-				Arrows: x.Arrows(),
-				Refs:   x.refs,
+				Kind:     KindStep,
+				ID:       x.id,
+				Title:    x.title,
+				Note:     x.note,
+				Arrows:   x.Arrows(),
+				Refs:     x.refs,
+				Verbatim: x.VerbatimBlocks(),
 			}
 			for _, in := range x.inputs {
 				iv.Inputs = append(iv.Inputs, inputView{

@@ -107,6 +107,7 @@ func (d *Demo) Markdown() string {
 			if v.note != "" {
 				fmt.Fprintf(&b, "%s\n\n", v.note)
 			}
+			writeVerbatimMD(&b, v.verbatim)
 		case *SectionDef:
 			fmt.Fprintf(&b, "### %s\n\n%s\n\n", v.title, v.body)
 		}
@@ -136,4 +137,21 @@ func (d *Demo) Markdown() string {
 	fmt.Fprintf(&b, "```bash\ngo run ./%s/ --non-interactive\n```\n", runPath)
 
 	return b.String()
+}
+
+// writeVerbatimMD emits the markdown form of a step's verbatim blocks.
+// Shared by the static visitor (Demo.Markdown) and the per-entry trace
+// renderer so authors get the same fenced-block shape in both paths.
+// Empty label skips the heading. Content is emitted byte-exact between
+// fences with a single trailing newline before the closing fence so we
+// don't leak the fence into adjacent paragraphs.
+func writeVerbatimMD(b *strings.Builder, blocks []verbatimBlock) {
+	for _, v := range blocks {
+		if v.Label != "" {
+			fmt.Fprintf(b, "#### %s\n\n", v.Label)
+		}
+		fmt.Fprintf(b, "```%s\n", v.Lang)
+		b.WriteString(strings.TrimRight(v.Content, "\n"))
+		b.WriteString("\n```\n\n")
+	}
 }

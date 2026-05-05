@@ -397,6 +397,10 @@ class DemokitDemoElement extends HTMLElement {
         art.appendChild(refs);
       }
 
+      if (stepDef && Array.isArray(stepDef.verbatim) && stepDef.verbatim.length) {
+        this._appendVerbatim(art, stepDef.verbatim);
+      }
+
       // Inputs collected for this entry (read-only)
       if (entry.inputs && Object.keys(entry.inputs).length > 0) {
         const wrap = document.createElement('dl');
@@ -450,6 +454,28 @@ class DemokitDemoElement extends HTMLElement {
         if (it.kind === 'step' && it.id === stepId) return it;
       }
       return null;
+    }
+
+    // Append each verbatim block as an optional label + a <pre><code>
+    // with white-space: pre and overflow-x: auto. The browser does not
+    // soft-wrap, so triple-clicking a long line yields the original
+    // bytes — same copy-paste invariant the TUI guarantees.
+    _appendVerbatim(parent, blocks) {
+      blocks.forEach((b) => {
+        if (b.label) {
+          const h = document.createElement('p');
+          h.className = 'demokit-step__verbatim-label';
+          h.textContent = b.label;
+          parent.appendChild(h);
+        }
+        const pre = document.createElement('pre');
+        pre.className = 'demokit-step__verbatim';
+        const code = document.createElement('code');
+        if (b.lang) code.className = 'language-' + b.lang;
+        code.textContent = b.content || '';
+        pre.appendChild(code);
+        parent.appendChild(pre);
+      });
     }
 
     _stopPlayback() {
@@ -651,6 +677,10 @@ class DemokitDemoElement extends HTMLElement {
           refs.appendChild(a);
         });
         art.appendChild(refs);
+      }
+
+      if (Array.isArray(extra.verbatim) && extra.verbatim.length) {
+        this._appendVerbatim(art, extra.verbatim);
       }
 
       const pre = document.createElement('pre');

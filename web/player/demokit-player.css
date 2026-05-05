@@ -180,6 +180,23 @@
   overflow-x: auto;
 }
 
+.demokit-step__verbatim-label {
+  margin: 8px 0 4px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--demokit-muted);
+}
+.demokit-step__verbatim {
+  margin: 0 0 8px;
+  padding: 8px 10px;
+  background: rgba(0, 0, 0, 0.04);
+  border-radius: 4px;
+  font-family: var(--demokit-mono);
+  font-size: 12px;
+  white-space: pre;
+  overflow-x: auto;
+}
+
 .demokit-step__status {
   margin: 0;
   padding: 6px 10px;

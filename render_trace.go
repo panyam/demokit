@@ -34,6 +34,9 @@ func RenderEntryMD(ctx RenderContext, entry TraceEntry, opts EntryOpts) string {
 		if s != nil && s.note != "" {
 			fmt.Fprintf(&b, "%s\n\n", s.note)
 		}
+		if s != nil && len(s.verbatim) > 0 {
+			writeVerbatimMD(&b, s.verbatim)
+		}
 		if s != nil && len(s.refs) > 0 {
 			b.WriteString("> **References:** ")
 			for i, ref := range s.refs {
@@ -151,6 +154,9 @@ func RenderEntryHTML(ctx RenderContext, entry TraceEntry, opts EntryOpts) string
 		if s != nil && s.note != "" {
 			fmt.Fprintf(&b, "<p>%s</p>\n", html.EscapeString(s.note))
 		}
+		if s != nil && len(s.verbatim) > 0 {
+			writeVerbatimHTML(&b, s.verbatim)
+		}
 
 		if len(entry.Inputs) > 0 {
 			b.WriteString("<p><strong>Inputs:</strong></p>\n<ul>\n")
@@ -225,6 +231,26 @@ func RenderDocumentHTML(ctx RenderContext) string {
 
 	b.WriteString("</body>\n</html>\n")
 	return b.String()
+}
+
+// writeVerbatimHTML emits a step's verbatim blocks as HTML — optional
+// h4 heading + a <pre><code> with html-escaped content. Language hints
+// surface as the standard `language-X` class so a downstream highlighter
+// (Prism, highlight.js) can pick them up.
+func writeVerbatimHTML(b *strings.Builder, blocks []verbatimBlock) {
+	for _, v := range blocks {
+		if v.Label != "" {
+			fmt.Fprintf(b, "<h4>%s</h4>\n", html.EscapeString(v.Label))
+		}
+		if v.Lang != "" {
+			fmt.Fprintf(b, "<pre><code class=\"language-%s\">%s</code></pre>\n",
+				html.EscapeString(v.Lang),
+				html.EscapeString(strings.TrimRight(v.Content, "\n")))
+		} else {
+			fmt.Fprintf(b, "<pre><code>%s</code></pre>\n",
+				html.EscapeString(strings.TrimRight(v.Content, "\n")))
+		}
+	}
 }
 
 // lookupStep finds a step by ID in the demo's items list, or nil if the

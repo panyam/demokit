@@ -35,11 +35,29 @@ type StepDef struct {
 	refs        []Ref
 	note        string
 	inputs      []InputDef
+	verbatim    []verbatimBlock
 	coalesce    func(map[string]any) any
 	runFn       func(StepContext) *StepResult
 	timeout      time.Duration // 0 = no timeout
 	cancellable  bool          // press-Enter cancels in interactive mode
 	inputTimeout time.Duration // per-step prompt deadline; 0 = inherit Demo.InputTimeout
+}
+
+// verbatimBlock holds character-exact content for copy-paste-friendly
+// display. Stored author-time on StepDef; renderers look it up via
+// VerbatimBlocks(). Same lifecycle as note/refs — not part of TraceEntry.
+type verbatimBlock struct {
+	Label   string
+	Lang    string
+	Content string
+}
+
+// VerbatimView is the read-only projection of a verbatim block exposed
+// to renderers and JSON consumers.
+type VerbatimView struct {
+	Label   string `json:"label,omitempty"`
+	Lang    string `json:"lang,omitempty"`
+	Content string `json:"content"`
 }
 
 type arrowDef struct {
@@ -121,6 +139,43 @@ func (s *StepDef) Input(d InputDef) *StepDef {
 	}
 	s.inputs = append(s.inputs, d)
 	return s
+}
+
+// Verbatim attaches a copy-paste-friendly content block to this step.
+// Content is preserved character-exact across all renderers; the TUI
+// renders it outside the bordered box so wrapping cannot inject border
+// chars into the middle of a line. Multiple calls render in declaration
+// order. Empty label is allowed (skips the heading in markdown, omits
+// the label line in the TUI). Use VerbatimLang to specify a fenced-code
+// language hint for markdown.
+func (s *StepDef) Verbatim(label, content string) *StepDef {
+	s.verbatim = append(s.verbatim, verbatimBlock{Label: label, Content: content})
+	return s
+}
+
+// VerbatimLang is Verbatim with an explicit fenced-code language hint
+// (used by markdown renderers; ignored by the TUI). Pass an empty lang
+// for an unfenced default.
+func (s *StepDef) VerbatimLang(label, lang, content string) *StepDef {
+	s.verbatim = append(s.verbatim, verbatimBlock{Label: label, Lang: lang, Content: content})
+	return s
+}
+
+// Shell is a shorthand for VerbatimLang("", "bash", content) — the
+// common case of attaching a copy-pasteable shell snippet without a
+// label.
+func (s *StepDef) Shell(content string) *StepDef {
+	return s.VerbatimLang("", "bash", content)
+}
+
+// VerbatimBlocks returns a read-only view of this step's attached
+// verbatim blocks in declaration order.
+func (s *StepDef) VerbatimBlocks() []VerbatimView {
+	out := make([]VerbatimView, len(s.verbatim))
+	for i, v := range s.verbatim {
+		out[i] = VerbatimView{Label: v.Label, Lang: v.Lang, Content: v.Content}
+	}
+	return out
 }
 
 // Coalesce attaches a function that converts the raw inputs map into a

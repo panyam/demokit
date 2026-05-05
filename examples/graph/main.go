@@ -109,6 +109,9 @@ func main() {
 	demo.Step("Refresh succeeds").ID("refresh").
 		Arrow("App", "AS", "POST /token (refresh)").
 		DashedArrow("AS", "App", "{access_token, expires_in: 3600}").
+		Shell(`curl -s -X POST https://auth.example/oauth2/token \
+  -H 'Content-Type: application/x-www-form-urlencoded' \
+  -d 'grant_type=refresh_token&refresh_token=eyJhbGci...'`).
 		Run(func(ctx demokit.StepContext) *demokit.StepResult {
 			fmt.Println("New token: eyJhbGci...truncated")
 			return &demokit.StepResult{Next: "recovered"}
@@ -158,6 +161,7 @@ func main() {
 	demo.Step("Retry succeeds").ID("ratelimit-retry").
 		Arrow("App", "AS", "POST /token (after backoff)").
 		DashedArrow("AS", "App", "{access_token}").
+		VerbatimLang("Server response", "json", `{"access_token":"eyJhbGci...","token_type":"Bearer","expires_in":3600,"scope":"api:read api:write"}`).
 		Run(func(ctx demokit.StepContext) *demokit.StepResult {
 			fmt.Println("Token issued on retry.")
 			return &demokit.StepResult{Next: "recovered"}

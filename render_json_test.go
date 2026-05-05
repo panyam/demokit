@@ -178,6 +178,46 @@ func TestJSONFromTraceWrapperEquivalence(t *testing.T) {
 	}
 }
 
+// TestRenderDocumentJSONVerbatimProjection verifies a step's verbatim
+// blocks project into the JSON envelope under "verbatim" with lowercase
+// label/lang/content tags. Web embeds — both static (data-src
+// trace.json) and live (WS step-start) — depend on this exact shape to
+// render copy-pasteable code blocks in the player.
+func TestRenderDocumentJSONVerbatimProjection(t *testing.T) {
+	d := New("V").Description("d")
+	d.Step("only").ID("only").
+		VerbatimLang("the wire", "bash", `curl -s http://x`).
+		Verbatim("", "no-label content")
+
+	out := RenderDocumentJSON(RenderContext{Demo: d})
+
+	var parsed map[string]any
+	if err := json.Unmarshal([]byte(out), &parsed); err != nil {
+		t.Fatalf("invalid JSON: %v\n%s", err, out)
+	}
+	items := parsed["demo"].(map[string]any)["items"].([]any)
+	step0 := items[0].(map[string]any)
+	verb, ok := step0["verbatim"].([]any)
+	if !ok || len(verb) != 2 {
+		t.Fatalf("verbatim not a 2-element list: %v", step0["verbatim"])
+	}
+	v0 := verb[0].(map[string]any)
+	if v0["label"] != "the wire" || v0["lang"] != "bash" || v0["content"] != "curl -s http://x" {
+		t.Errorf("verbatim[0] = %v", v0)
+	}
+	v1 := verb[1].(map[string]any)
+	// Empty label/lang must be omitted (omitempty); only content survives.
+	if _, hasLabel := v1["label"]; hasLabel {
+		t.Errorf("verbatim[1] should omit empty label, got %v", v1)
+	}
+	if _, hasLang := v1["lang"]; hasLang {
+		t.Errorf("verbatim[1] should omit empty lang, got %v", v1)
+	}
+	if v1["content"] != "no-label content" {
+		t.Errorf("verbatim[1].content = %v", v1["content"])
+	}
+}
+
 // TestDemoJSONStaticEntryPoint verifies Demo.JSON() — the static-mode
 // counterpart to Demo.Markdown() — produces the same envelope as
 // RenderDocumentJSON with no trace.

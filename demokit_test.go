@@ -71,6 +71,47 @@ func TestNoteVariadic(t *testing.T) {
 	})
 }
 
+// TestVerbatimAttachment verifies the three verbatim setters all
+// append in declaration order and the read accessor projects them
+// without mutation. Empty labels are permitted (markdown skips the
+// heading; TUI omits the label line).
+func TestVerbatimAttachment(t *testing.T) {
+	s := (&StepDef{}).
+		Verbatim("first", "alpha").
+		VerbatimLang("second", "json", `{"k":"v"}`).
+		Shell("echo hi").
+		Verbatim("", "no-label content")
+
+	got := s.VerbatimBlocks()
+	if len(got) != 4 {
+		t.Fatalf("VerbatimBlocks() len = %d, want 4", len(got))
+	}
+
+	want := []VerbatimView{
+		{Label: "first", Lang: "", Content: "alpha"},
+		{Label: "second", Lang: "json", Content: `{"k":"v"}`},
+		{Label: "", Lang: "bash", Content: "echo hi"},
+		{Label: "", Lang: "", Content: "no-label content"},
+	}
+	for i, w := range want {
+		if got[i] != w {
+			t.Errorf("block[%d] = %+v, want %+v", i, got[i], w)
+		}
+	}
+}
+
+// TestVerbatimContentByteExact verifies the raw bytes are preserved —
+// no trimming, normalization, or tab→space — between Verbatim() and
+// the read accessor. Wire-format demos rely on this.
+func TestVerbatimContentByteExact(t *testing.T) {
+	raw := "  leading-space\n\ttabbed\nline\twith\ttabs\ntrailing-newline\n"
+	s := (&StepDef{}).Verbatim("", raw)
+	got := s.VerbatimBlocks()[0].Content
+	if got != raw {
+		t.Errorf("Verbatim content not preserved byte-exact:\n got:  %q\n want: %q", got, raw)
+	}
+}
+
 func TestSectionAccessors(t *testing.T) {
 	s := &SectionDef{title: "sec", body: "body text"}
 	if s.Title() != "sec" {
@@ -940,6 +981,120 @@ func TestMarkdownGenerationWithoutActors(t *testing.T) {
 	}
 	if strings.Contains(md, "## Flow") {
 		t.Errorf("Markdown() should omit the Flow header when no actors are declared:\n%s", md)
+	}
+}
+
+// TestMarkdownVerbatimEmission verifies the static markdown visitor
+// emits verbatim blocks as fenced code with optional language hint,
+// optional preceding heading, and content preserved byte-exact between
+// fences.
+func TestMarkdownVerbatimEmission(t *testing.T) {
+	d := New("V").Description("d")
+	d.Step("only").
+		VerbatimLang("Repro on the wire", "bash", "curl -s http://x\n echo $?").
+		Verbatim("", "no-label, no-lang") // empty label skips heading; empty lang ⇒ ```\n…\n```
+
+	md := d.Markdown()
+
+	want := []string{
+		"#### Repro on the wire",
+		"```bash\ncurl -s http://x\n echo $?\n```",
+		"```\nno-label, no-lang\n```",
+	}
+	for _, w := range want {
+		if !strings.Contains(md, w) {
+			t.Errorf("Markdown missing %q\n--- got ---\n%s", w, md)
+		}
+	}
+
+	// Empty-label form must NOT emit a #### heading for that block.
+	idx := strings.Index(md, "no-label, no-lang")
+	if idx < 0 {
+		t.Fatalf("verbatim content missing entirely")
+	}
+	prefix := md[:idx]
+	// The last "####" before the empty-label content must be the
+	// labeled block's heading — there should be no second one between
+	// the labeled fence and the unlabeled fence.
+	headingsBefore := strings.Count(prefix, "#### ")
+	if headingsBefore != 1 {
+		t.Errorf("expected exactly 1 #### heading before unlabeled block, got %d\n%s",
+			headingsBefore, md)
+	}
+}
+
+// TestRenderEntryMDVerbatim verifies the per-entry trace markdown
+// renderer also emits verbatim blocks (looked up off the static demo,
+// not stored on the TraceEntry — same contract as note/refs).
+func TestRenderEntryMDVerbatim(t *testing.T) {
+	d := New("V").Description("d")
+	d.Step("first").ID("a").
+		Note("explainer").
+		VerbatimLang("the wire", "json", `{"x":1}`)
+
+	trace := []TraceEntry{
+		{Kind: KindStep, Title: "first", StepID: "a", Visit: 1},
+	}
+
+	out := RenderEntryMD(RenderContext{Demo: d, Trace: trace}, trace[0], EntryOpts{StepNumber: 1})
+
+	for _, w := range []string{"#### the wire", "```json\n{\"x\":1}\n```"} {
+		if !strings.Contains(out, w) {
+			t.Errorf("per-entry MD missing %q\n--- got ---\n%s", w, out)
+		}
+	}
+}
+
+// TestVerbatimTraceRoundTrip locks the contract that verbatim blocks,
+// living on the static *Demo, survive a JSON-trace serialize/load
+// cycle: byte-equal markdown render before and after, since the demo
+// definition (where verbatim lives) is unchanged and the trace
+// (TraceEntry slice) round-trips through JSON.
+func TestVerbatimTraceRoundTrip(t *testing.T) {
+	d := New("RT").Description("d")
+	d.Step("only").ID("only").
+		Note("n").
+		VerbatimLang("first", "bash", "echo hi").
+		Verbatim("", "second block\nline2")
+
+	trace := []TraceEntry{
+		{Kind: KindStep, Title: "only", StepID: "only", Visit: 1, Output: "ok"},
+	}
+
+	tmp, err := os.CreateTemp("", "demokit-verbatim-rt-*.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tmp.Close()
+	defer os.Remove(tmp.Name())
+
+	rec := NewJSONFileRecorder(tmp.Name())
+	for _, e := range trace {
+		rec.Record(e)
+	}
+	if err := rec.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	loaded, err := LoadTrace(tmp.Name())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	before := RenderDocumentMD(RenderContext{Demo: d, Trace: trace})
+	after := RenderDocumentMD(RenderContext{Demo: d, Trace: loaded})
+
+	if before != after {
+		t.Errorf("markdown render diverges across trace round-trip\n--- before ---\n%s\n--- after ---\n%s",
+			before, after)
+	}
+	// And the verbatim content must actually be present in the rendered
+	// markdown (otherwise byte-equality is trivially satisfied by both
+	// sides being broken).
+	for _, w := range []string{"```bash\necho hi\n```", "second block\nline2"} {
+		if !strings.Contains(before, w) {
+			t.Errorf("rendered markdown missing %q\n%s", w, before)
+		}
 	}
 }
 

@@ -79,6 +79,76 @@ func TestRenderStep(t *testing.T) {
 	}
 }
 
+// TestRenderStepVerbatimNoBorderInjection is the load-bearing test for
+// the copy-paste invariant: a content line longer than the renderer's
+// width must NOT have box border characters injected mid-line. The bug
+// being prevented: lipgloss soft-wrapping a 200-char curl recipe inside
+// a 80-col bordered box, splitting the JSON body across two visual rows
+// with a `│` between them.
+func TestRenderStepVerbatimNoBorderInjection(t *testing.T) {
+	r := newTestRenderer()
+	r.MaxWidth = 80
+	r.Fraction = 1.0
+	r.Delay = -1
+
+	// 200-char content marker — distinct from any glyph the box uses.
+	content := strings.Repeat("X", 200)
+	demo := demokit.New("v")
+	step := demo.Step("Repro").VerbatimLang("the wire", "bash", content)
+
+	out := captureStdout(t, func() {
+		r.RenderStep(1, 1, step)
+	})
+
+	// Walk every output row. If a row contains the verbatim content
+	// marker AND a box border char, the invariant is broken.
+	for i, row := range strings.Split(out, "\n") {
+		hasContent := strings.ContainsRune(row, 'X')
+		if !hasContent {
+			continue
+		}
+		for _, b := range []rune{'│', '─', '┌', '┐', '└', '┘', '╭', '╮', '╰', '╯'} {
+			if strings.ContainsRune(row, b) {
+				t.Errorf("row %d contains both verbatim content and border %q:\n%q",
+					i, string(b), row)
+			}
+		}
+	}
+
+	// And the content must actually appear in full — clipping/ellipsis
+	// would defeat the copy-paste use case.
+	if !strings.Contains(out, content) {
+		t.Errorf("full 200-char content missing from output (clipped?)\n%s", out)
+	}
+
+	// The label must render too.
+	if !strings.Contains(out, "the wire") {
+		t.Errorf("verbatim label missing from output\n%s", out)
+	}
+}
+
+// TestRenderStepVerbatimMultilinePreserved verifies multi-line content
+// is emitted line-by-line with each input line on its own output row.
+func TestRenderStepVerbatimMultilinePreserved(t *testing.T) {
+	r := newTestRenderer()
+	r.MaxWidth = 80
+	r.Fraction = 1.0
+	r.Delay = -1
+
+	demo := demokit.New("v")
+	step := demo.Step("Repro").Verbatim("", "line1\nline2\nline3")
+
+	out := captureStdout(t, func() {
+		r.RenderStep(1, 1, step)
+	})
+
+	for _, want := range []string{"line1", "line2", "line3"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("output missing %q\n%s", want, out)
+		}
+	}
+}
+
 func TestRenderResultSuccess(t *testing.T) {
 	r := newTestRenderer()
 	out := captureStdout(t, func() {

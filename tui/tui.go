@@ -264,6 +264,30 @@ func (r *Renderer) RenderStep(stepNum, totalSteps int, step *demokit.StepDef) {
 		Width(r.width())
 
 	r.smoothPrint(box.Render(content))
+
+	// Verbatim blocks render OUTSIDE the bordered box so lipgloss never
+	// soft-wraps long lines into the box border. Each line is emitted
+	// raw via fmt.Println — terminals that re-flow on resize (iTerm2,
+	// Terminal.app, gnome-terminal) preserve the underlying line for
+	// triple-click copy. This is how we guarantee character-exact
+	// recovery of curl recipes / JSON envelopes regardless of width.
+	blocks := step.VerbatimBlocks()
+	for _, v := range blocks {
+		fmt.Println()
+		if v.Label != "" {
+			labelStyle := lipgloss.NewStyle().
+				Italic(true).
+				Foreground(p.Note)
+			fmt.Println(labelStyle.Render(v.Label))
+		}
+		// Trim only trailing newlines so the block doesn't carry a
+		// blank tail row; preserve every other byte exactly. Embedded
+		// \n flow through Println unchanged.
+		r.smoothPrint(strings.TrimRight(v.Content, "\n"))
+	}
+	if len(blocks) > 0 {
+		fmt.Println()
+	}
 }
 
 // statusColors returns the border and label colors for a given result status.

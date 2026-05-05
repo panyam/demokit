@@ -398,6 +398,7 @@ func (r *webRenderer) RenderStep(stepNum, totalSteps int, step *demokit.StepDef)
 			"note":        step.NoteText(),
 			"refs":        step.Refs(),
 			"arrows":      step.Arrows(),
+			"verbatim":    step.VerbatimBlocks(),
 		},
 	})
 }
