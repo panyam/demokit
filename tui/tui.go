@@ -76,6 +76,15 @@ type Renderer struct {
 	// none. v1.1 raw-mode interaction will replace this with a real
 	// focus model.
 	lastStep *demokit.StepDef
+
+	// activeVariant maps a block's index within the current step to
+	// the currently-active variant index within that block. Initial
+	// values seed from each block's Default-marked variant (or 0 if
+	// none is marked). The line-based pause loop mutates this when
+	// the user types a switch command; bare `c` then copies whichever
+	// variant is active. Reset at each RenderStep so a fresh step's
+	// defaults take over.
+	activeVariant map[int]int
 }
 
 // New creates a TUI Renderer with default settings.
@@ -204,6 +213,7 @@ func (r *Renderer) RenderHeader(title, description string, stepCount int) {
 
 func (r *Renderer) RenderStep(stepNum, totalSteps int, step *demokit.StepDef) {
 	r.lastStep = step
+	r.activeVariant = initialActiveVariants(step)
 	p := r.Palette
 	iw := r.innerWidth()
 
@@ -277,66 +287,130 @@ func (r *Renderer) RenderStep(stepNum, totalSteps int, step *demokit.StepDef) {
 	r.renderVerbatimBlocks(step)
 }
 
-// renderVerbatimBlocks emits each verbatim block according to the demo's
-// boxing mode + per-block variant count:
+// renderVerbatimBlocks emits each verbatim block according to the
+// demo's boxing mode + per-block variant count:
 //
 //   - Single-variant + Demo.IsBoxedVerbatim() unset → today's behavior:
-//     printed OUTSIDE the bordered box so lipgloss never soft-wraps long
-//     lines into the box border, preserving triple-click copy.
+//     printed OUTSIDE the bordered box so lipgloss never soft-wraps
+//     long lines into the box border, preserving triple-click copy.
 //   - Single-variant + Demo.IsBoxedVerbatim() set → rendered inside a
 //     styled box; keyboard copy via the pause prompt.
-//   - Multi-variant (always boxed regardless of the flag) → rendered
-//     inside a styled box with each variant stacked under its **label**;
-//     keyboard copy via `c <label>` at the pause prompt.
+//   - Multi-variant (always boxed regardless of the flag) → tab strip
+//     above (`<active>  other  other`), box below showing only the
+//     active variant. Default-marked variant starts active; user
+//     switches via line-input command at the pause; the new active
+//     variant is echoed inline.
 func (r *Renderer) renderVerbatimBlocks(step *demokit.StepDef) {
-	p := r.Palette
 	blocks := step.VerbatimBlocks()
 	if len(blocks) == 0 {
 		return
 	}
 	demo := step.Demo()
 	boxedDefault := demo != nil && demo.IsBoxedVerbatim()
-	labelStyle := lipgloss.NewStyle().Italic(true).Foreground(p.Note)
-	variantLabelStyle := lipgloss.NewStyle().Bold(true).Foreground(p.Note)
 
-	for _, v := range blocks {
+	for idx, v := range blocks {
 		fmt.Println()
 		multi := len(v.Variants) > 1
 		boxed := boxedDefault || multi
 		if !boxed {
-			if v.Label != "" {
-				fmt.Println(labelStyle.Render(v.Label))
-			}
-			r.smoothPrint(strings.TrimRight(v.Variants[0].Content, "\n"))
+			r.renderUnboxedVariant(v)
 			continue
 		}
-
-		// Boxed render. Single-variant: snippet inside the box.
-		// Multi-variant: stacked variants, each under its bold label.
-		var sections []string
-		if v.Label != "" {
-			sections = append(sections, labelStyle.Render(v.Label))
-		}
-		for i, va := range v.Variants {
-			if multi {
-				if i > 0 {
-					sections = append(sections, "")
-				}
-				if va.Label != "" {
-					sections = append(sections, variantLabelStyle.Render(va.Label))
-				}
-			}
-			sections = append(sections, strings.TrimRight(va.Content, "\n"))
-		}
-		content := lipgloss.JoinVertical(lipgloss.Left, sections...)
-		box := lipgloss.NewStyle().
-			Border(lipgloss.RoundedBorder()).
-			BorderForeground(p.Note).
-			Padding(0, 1).
-			Width(r.width())
-		r.smoothPrint(box.Render(content))
+		r.renderBoxedBlock(idx, v, multi)
 	}
 	fmt.Println()
+}
+
+// renderUnboxedVariant emits a single-variant block in today's
+// outside-the-box style — italic label line then the raw content.
+// Preserves triple-click copy semantics for users on terminals
+// without OSC 52.
+func (r *Renderer) renderUnboxedVariant(v demokit.VerbatimView) {
+	labelStyle := lipgloss.NewStyle().Italic(true).Foreground(r.Palette.Note)
+	if v.Label != "" {
+		fmt.Println(labelStyle.Render(v.Label))
+	}
+	r.smoothPrint(strings.TrimRight(v.Variants[0].Content, "\n"))
+}
+
+// renderBoxedBlock emits a verbatim block inside a styled box. For
+// multi-variant blocks a tab strip is rendered above the box and only
+// the currently-active variant's content appears inside. blockIdx is
+// the block's index within the step; the renderer reads
+// r.activeVariant[blockIdx] to decide which variant is active.
+func (r *Renderer) renderBoxedBlock(blockIdx int, v demokit.VerbatimView, multi bool) {
+	p := r.Palette
+	labelStyle := lipgloss.NewStyle().Italic(true).Foreground(p.Note)
+	if v.Label != "" {
+		fmt.Println(labelStyle.Render(v.Label))
+	}
+	if multi {
+		fmt.Println(r.renderTabStrip(v.Variants, r.activeIndex(blockIdx)))
+	}
+	active := v.Variants[r.activeIndex(blockIdx)]
+	box := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(p.Note).
+		Padding(0, 1).
+		Width(r.width())
+	r.smoothPrint(box.Render(strings.TrimRight(active.Content, "\n")))
+}
+
+// renderTabStrip formats the per-variant tabs above a multi-variant
+// box. The active variant is wrapped in angle brackets and bolded;
+// others are dim. Spacing: two spaces between entries. Default-marked
+// variant gets a "(default)" trailing tag so the user knows what bare
+// `c` will copy when the active is reset.
+func (r *Renderer) renderTabStrip(variants []demokit.VariantView, activeIdx int) string {
+	active := lipgloss.NewStyle().Bold(true).Foreground(r.Palette.Header)
+	dim := lipgloss.NewStyle().Foreground(r.Palette.Dim)
+	parts := make([]string, len(variants))
+	for i, v := range variants {
+		label := v.Label
+		if label == "" {
+			label = fmt.Sprintf("variant %d", i+1)
+		}
+		if v.IsDefault {
+			label += " (default)"
+		}
+		if i == activeIdx {
+			parts[i] = active.Render("<" + label + ">")
+		} else {
+			parts[i] = dim.Render(" " + label + " ")
+		}
+	}
+	return strings.Join(parts, "  ")
+}
+
+// activeIndex returns the currently-active variant index for the
+// block at blockIdx within the current step. Falls back to 0 when
+// the state map hasn't been seeded (e.g. tests that construct a
+// Renderer without going through RenderStep).
+func (r *Renderer) activeIndex(blockIdx int) int {
+	if r.activeVariant == nil {
+		return 0
+	}
+	return r.activeVariant[blockIdx]
+}
+
+// initialActiveVariants computes the starting active-variant index
+// for each block on a step: the Default-marked variant if any,
+// otherwise the first. Returns a fresh map so the previous step's
+// state doesn't leak.
+func initialActiveVariants(step *demokit.StepDef) map[int]int {
+	if step == nil {
+		return nil
+	}
+	out := map[int]int{}
+	for i, v := range step.VerbatimBlocks() {
+		for j, va := range v.Variants {
+			if va.IsDefault {
+				out[i] = j
+				break
+			}
+		}
+	}
+	return out
 }
 
 // statusColors returns the border and label colors for a given result status.
@@ -534,14 +608,18 @@ func (r *Renderer) waitWithCountdown(opts demokit.WaitOpts, copyables []copyable
 	}
 
 	// Non-empty input cancels the countdown. If we're on a copyable
-	// step and the input parses as a copy command, dispatch
+	// step and the input parses as a copy/switch command, dispatch
 	// immediately so the experienced user doesn't have to re-type;
 	// then fall into the copy loop for further interaction. Steps
 	// without copyables get a plain hold (Enter to advance).
 	noteStyle := lipgloss.NewStyle().Foreground(p.Note).Italic(true)
 	if len(copyables) > 0 {
-		if msg := r.handleCopyCommand(cmd, copyables); msg != "" {
+		msg, switched := r.handleCopyCommand(cmd, copyables)
+		if msg != "" {
 			fmt.Println(noteStyle.Render("  " + msg))
+		}
+		if switched {
+			r.echoActiveVariant(copyables)
 		}
 		r.copyPromptLoop(copyables, promptStyle)
 		return
@@ -551,9 +629,10 @@ func (r *Renderer) waitWithCountdown(opts demokit.WaitOpts, copyables []copyable
 }
 
 // copyPromptLoop runs the line-based pause for steps that have
-// copyable verbatim blocks. Empty input continues; `c` and `c <label>`
-// copy via the clipboard primitive and stay in the loop so the user
-// can grab several variants before advancing.
+// copyable verbatim blocks. Empty input continues; `c` / `c <label>`
+// copy; `<label>` or `<n>` switches the active variant (and echoes
+// the new active inline so the user can see what they're about to
+// copy). Loops until empty Enter so users can stack multiple actions.
 func (r *Renderer) copyPromptLoop(copyables []copyableBlock, promptStyle lipgloss.Style) {
 	p := r.Palette
 	reader := bufio.NewReader(os.Stdin)
@@ -565,10 +644,35 @@ func (r *Renderer) copyPromptLoop(copyables []copyableBlock, promptStyle lipglos
 		if cmd == "" {
 			return
 		}
-		if msg := r.handleCopyCommand(cmd, copyables); msg != "" {
+		msg, switched := r.handleCopyCommand(cmd, copyables)
+		if msg != "" {
 			fmt.Println(noteStyle.Render("  " + msg))
 		}
+		if switched {
+			r.echoActiveVariant(copyables)
+		}
 	}
+}
+
+// echoActiveVariant re-emits the current active variant of the first
+// multi-variant block inline, so the user can see what they switched
+// to before deciding to copy. In raw-mode v1.1 this becomes an
+// in-place redraw; v1 line mode appends to scrollback (cheap and
+// works without cursor positioning).
+func (r *Renderer) echoActiveVariant(copyables []copyableBlock) {
+	target := r.firstMultiVariantBlock(copyables)
+	if target == nil {
+		return
+	}
+	fmt.Println()
+	fmt.Println(r.renderTabStrip(target.view.Variants, r.activeIndex(target.index)))
+	active := target.view.Variants[r.activeIndex(target.index)]
+	box := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(r.Palette.Note).
+		Padding(0, 1).
+		Width(r.width())
+	r.smoothPrint(box.Render(strings.TrimRight(active.Content, "\n")))
 }
 
 // Prompt delegates to the renderer's FormPrompter (default

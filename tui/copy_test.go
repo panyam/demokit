@@ -68,6 +68,17 @@ func TestCopyableBlocksNilStep(t *testing.T) {
 	}
 }
 
+// rendererWithStep returns a Renderer prepared as if RenderStep had
+// just been called on step — activeVariant map seeded from default
+// markers. Lets the tests skip the actual Render plumbing while still
+// exercising the active-variant logic.
+func rendererWithStep(step *demokit.StepDef) *Renderer {
+	r := New()
+	r.lastStep = step
+	r.activeVariant = initialActiveVariants(step)
+	return r
+}
+
 func TestHandleCopyCommandBareC(t *testing.T) {
 	// Route Copy() through a buffer so the OSC 52 path succeeds
 	// deterministically and the test doesn't depend on the host
@@ -80,18 +91,21 @@ func TestHandleCopyCommandBareC(t *testing.T) {
 		demokit.EnableShellClipboardFallback(true)
 	}()
 
-	r := New()
 	step := stepWithVariants(t, false)
+	r := rendererWithStep(step)
 	copyables := r.copyableBlocks(step)
 
-	msg := r.handleCopyCommand("c", copyables)
+	msg, switched := r.handleCopyCommand("c", copyables)
+	if switched {
+		t.Errorf("bare `c` should not be a switch; got switched=true")
+	}
 	if !strings.Contains(msg, "copied") || !strings.Contains(msg, "osc52") {
 		t.Errorf("bare `c` should report copy success, got %q", msg)
 	}
-	// Default-marked variant is curl — the OSC 52 sequence must encode
-	// that exact content. base64("curl -X GET ...") is the payload.
+	// Active starts at the Default-marked variant (curl). base64 of
+	// curl content is the OSC 52 payload.
 	if !strings.Contains(buf.String(), "Y3VybCAtWCBHRVQgLi4u") {
-		t.Errorf("bare `c` should have copied curl (default); buf=%q", buf.String())
+		t.Errorf("bare `c` should have copied the active (curl); buf=%q", buf.String())
 	}
 }
 
@@ -104,11 +118,14 @@ func TestHandleCopyCommandNamedVariant(t *testing.T) {
 		demokit.EnableShellClipboardFallback(true)
 	}()
 
-	r := New()
 	step := stepWithVariants(t, false)
+	r := rendererWithStep(step)
 	copyables := r.copyableBlocks(step)
 
-	msg := r.handleCopyCommand("c python", copyables)
+	msg, switched := r.handleCopyCommand("c python", copyables)
+	if switched {
+		t.Errorf("`c <label>` copies without switching; got switched=true")
+	}
 	if !strings.Contains(msg, "copied") {
 		t.Errorf("`c python` should copy, got %q", msg)
 	}
@@ -118,23 +135,88 @@ func TestHandleCopyCommandNamedVariant(t *testing.T) {
 	}
 }
 
-func TestHandleCopyCommandUnknownLabel(t *testing.T) {
-	r := New()
+func TestHandleCopyCommandSwitchByLabel(t *testing.T) {
 	step := stepWithVariants(t, false)
+	r := rendererWithStep(step)
 	copyables := r.copyableBlocks(step)
 
-	msg := r.handleCopyCommand("c ruby", copyables)
+	// Active starts at curl (Default). Switch to python.
+	msg, switched := r.handleCopyCommand("python", copyables)
+	if !switched {
+		t.Errorf("label switch should set switched=true, got false (msg=%q)", msg)
+	}
+	if !strings.Contains(msg, "switched to python") {
+		t.Errorf("expected status mentioning python; got %q", msg)
+	}
+	if r.activeVariant[copyables[0].index] != 1 {
+		t.Errorf("active variant index after switch = %d, want 1 (python)", r.activeVariant[copyables[0].index])
+	}
+}
+
+func TestHandleCopyCommandSwitchByNumber(t *testing.T) {
+	step := stepWithVariants(t, false)
+	r := rendererWithStep(step)
+	copyables := r.copyableBlocks(step)
+
+	// 1-based: "2" → python (index 1)
+	msg, switched := r.handleCopyCommand("2", copyables)
+	if !switched {
+		t.Errorf("numeric switch should set switched=true, got false (msg=%q)", msg)
+	}
+	if r.activeVariant[copyables[0].index] != 1 {
+		t.Errorf("`2` should switch to index 1, got %d", r.activeVariant[copyables[0].index])
+	}
+}
+
+func TestBareCCopiesActiveAfterSwitch(t *testing.T) {
+	var buf bytes.Buffer
+	demokit.SetClipboardWriter(&buf)
+	demokit.EnableShellClipboardFallback(false)
+	defer func() {
+		demokit.SetClipboardWriter(nil)
+		demokit.EnableShellClipboardFallback(true)
+	}()
+
+	step := stepWithVariants(t, false)
+	r := rendererWithStep(step)
+	copyables := r.copyableBlocks(step)
+
+	if _, switched := r.handleCopyCommand("python", copyables); !switched {
+		t.Fatalf("switch to python failed setup")
+	}
+	buf.Reset()
+	if _, _ = r.handleCopyCommand("c", copyables); buf.Len() == 0 {
+		t.Fatalf("bare c after switch should have written OSC 52")
+	}
+	// Now bare c should copy python content, not curl.
+	if !strings.Contains(buf.String(), "cmVxdWVzdHMuZ2V0KC4uLik=") {
+		t.Errorf("bare `c` after switch should copy python; buf=%q", buf.String())
+	}
+}
+
+func TestHandleCopyCommandUnknownLabel(t *testing.T) {
+	step := stepWithVariants(t, false)
+	r := rendererWithStep(step)
+	copyables := r.copyableBlocks(step)
+
+	msg, switched := r.handleCopyCommand("c ruby", copyables)
+	if switched {
+		t.Errorf("unknown label copy should not switch")
+	}
 	if !strings.Contains(msg, "no variant labeled") {
 		t.Errorf("unknown label should produce a clear error, got %q", msg)
 	}
 }
 
 func TestHandleCopyCommandUnknownVerb(t *testing.T) {
-	r := New()
 	step := stepWithVariants(t, false)
+	r := rendererWithStep(step)
 	copyables := r.copyableBlocks(step)
 
-	msg := r.handleCopyCommand("xyz", copyables)
+	msg, switched := r.handleCopyCommand("xyz", copyables)
+	if switched {
+		t.Errorf("unknown verb should not switch")
+	}
 	if !strings.Contains(msg, "unknown command") {
 		t.Errorf("unknown verb should produce a clear error, got %q", msg)
 	}
