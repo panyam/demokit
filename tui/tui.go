@@ -68,6 +68,14 @@ type Renderer struct {
 	Fraction float64       // fraction of terminal width to use; 0 means 0.80
 	Delay    time.Duration // per-line scroll delay; 0 means 18ms, negative disables
 	prompter FormPrompter
+
+	// lastStep is set by RenderStep and consulted by WaitForStep so the
+	// line-based copy prompt knows which verbatim blocks the user can
+	// reference. Cleared at RenderResult so a between-step Enter pause
+	// doesn't pick up the previous step's blocks if the next step has
+	// none. v1.1 raw-mode interaction will replace this with a real
+	// focus model.
+	lastStep *demokit.StepDef
 }
 
 // New creates a TUI Renderer with default settings.
@@ -195,6 +203,7 @@ func (r *Renderer) RenderHeader(title, description string, stepCount int) {
 }
 
 func (r *Renderer) RenderStep(stepNum, totalSteps int, step *demokit.StepDef) {
+	r.lastStep = step
 	p := r.Palette
 	iw := r.innerWidth()
 
@@ -265,29 +274,69 @@ func (r *Renderer) RenderStep(stepNum, totalSteps int, step *demokit.StepDef) {
 
 	r.smoothPrint(box.Render(content))
 
-	// Verbatim blocks render OUTSIDE the bordered box so lipgloss never
-	// soft-wraps long lines into the box border. Each line is emitted
-	// raw via fmt.Println — terminals that re-flow on resize (iTerm2,
-	// Terminal.app, gnome-terminal) preserve the underlying line for
-	// triple-click copy. This is how we guarantee character-exact
-	// recovery of curl recipes / JSON envelopes regardless of width.
+	r.renderVerbatimBlocks(step)
+}
+
+// renderVerbatimBlocks emits each verbatim block according to the demo's
+// boxing mode + per-block variant count:
+//
+//   - Single-variant + Demo.IsBoxedVerbatim() unset → today's behavior:
+//     printed OUTSIDE the bordered box so lipgloss never soft-wraps long
+//     lines into the box border, preserving triple-click copy.
+//   - Single-variant + Demo.IsBoxedVerbatim() set → rendered inside a
+//     styled box; keyboard copy via the pause prompt.
+//   - Multi-variant (always boxed regardless of the flag) → rendered
+//     inside a styled box with each variant stacked under its **label**;
+//     keyboard copy via `c <label>` at the pause prompt.
+func (r *Renderer) renderVerbatimBlocks(step *demokit.StepDef) {
+	p := r.Palette
 	blocks := step.VerbatimBlocks()
+	if len(blocks) == 0 {
+		return
+	}
+	demo := step.Demo()
+	boxedDefault := demo != nil && demo.IsBoxedVerbatim()
+	labelStyle := lipgloss.NewStyle().Italic(true).Foreground(p.Note)
+	variantLabelStyle := lipgloss.NewStyle().Bold(true).Foreground(p.Note)
+
 	for _, v := range blocks {
 		fmt.Println()
-		if v.Label != "" {
-			labelStyle := lipgloss.NewStyle().
-				Italic(true).
-				Foreground(p.Note)
-			fmt.Println(labelStyle.Render(v.Label))
+		multi := len(v.Variants) > 1
+		boxed := boxedDefault || multi
+		if !boxed {
+			if v.Label != "" {
+				fmt.Println(labelStyle.Render(v.Label))
+			}
+			r.smoothPrint(strings.TrimRight(v.Variants[0].Content, "\n"))
+			continue
 		}
-		// Trim only trailing newlines so the block doesn't carry a
-		// blank tail row; preserve every other byte exactly. Embedded
-		// \n flow through Println unchanged.
-		r.smoothPrint(strings.TrimRight(v.Content, "\n"))
+
+		// Boxed render. Single-variant: snippet inside the box.
+		// Multi-variant: stacked variants, each under its bold label.
+		var sections []string
+		if v.Label != "" {
+			sections = append(sections, labelStyle.Render(v.Label))
+		}
+		for i, va := range v.Variants {
+			if multi {
+				if i > 0 {
+					sections = append(sections, "")
+				}
+				if va.Label != "" {
+					sections = append(sections, variantLabelStyle.Render(va.Label))
+				}
+			}
+			sections = append(sections, strings.TrimRight(va.Content, "\n"))
+		}
+		content := lipgloss.JoinVertical(lipgloss.Left, sections...)
+		box := lipgloss.NewStyle().
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(p.Note).
+			Padding(0, 1).
+			Width(r.width())
+		r.smoothPrint(box.Render(content))
 	}
-	if len(blocks) > 0 {
-		fmt.Println()
-	}
+	fmt.Println()
 }
 
 // statusColors returns the border and label colors for a given result status.
@@ -430,25 +479,44 @@ func (r *Renderer) WaitForStep(opts demokit.WaitOpts) {
 		Foreground(p.Prompt).
 		Italic(true)
 
-	if opts.AutoAcceptAfter <= 0 {
-		fmt.Println(style.Render("  Press Enter to run this step..."))
-		bufio.NewReader(os.Stdin).ReadString('\n')
+	// AutoAccept countdown owns its own input path (cancelreader-backed
+	// race against the timer). Wiring copy into it would require a
+	// raw-mode key dispatcher, which is deferred to v1.1. Steps that
+	// need copy must run without AutoAccept (the common case for
+	// interactive demos that show snippets).
+	if opts.AutoAcceptAfter > 0 {
+		if !opts.ShowCountdown {
+			fmt.Println(style.Render(fmt.Sprintf("  Press Enter to run (auto in %s)...",
+				opts.AutoAcceptAfter.Round(time.Second))))
+			demokit.WaitForEnterOrTimeout(opts.AutoAcceptAfter, nil)
+			return
+		}
+		demokit.WaitForEnterOrTimeout(opts.AutoAcceptAfter, func(remaining time.Duration) {
+			bar := plainCountdownBar(remaining, opts.AutoAcceptAfter, 20)
+			line := fmt.Sprintf("  %s  %4.1fs  (Enter to accept)", bar, remaining.Seconds())
+			fmt.Print("\r" + style.Render(line))
+		})
+		fmt.Print("\r" + strings.Repeat(" ", 70) + "\r")
 		return
 	}
 
-	if !opts.ShowCountdown {
-		fmt.Println(style.Render(fmt.Sprintf("  Press Enter to run (auto in %s)...",
-			opts.AutoAcceptAfter.Round(time.Second))))
-		demokit.WaitForEnterOrTimeout(opts.AutoAcceptAfter, nil)
-		return
+	// No countdown — line-based pause loop with optional copy command
+	// when the rendered step has boxed/multi-variant verbatim blocks
+	// the user can grab via the clipboard primitive.
+	copyables := r.copyableBlocks(r.lastStep)
+	reader := bufio.NewReader(os.Stdin)
+	for {
+		fmt.Println(style.Render(copyPromptHint(copyables)))
+		line, _ := reader.ReadString('\n')
+		cmd := strings.TrimSpace(line)
+		if cmd == "" {
+			return
+		}
+		if msg := r.handleCopyCommand(cmd, copyables); msg != "" {
+			noteStyle := lipgloss.NewStyle().Foreground(p.Note).Italic(true)
+			fmt.Println(noteStyle.Render("  " + msg))
+		}
 	}
-
-	demokit.WaitForEnterOrTimeout(opts.AutoAcceptAfter, func(remaining time.Duration) {
-		bar := plainCountdownBar(remaining, opts.AutoAcceptAfter, 20)
-		line := fmt.Sprintf("  %s  %4.1fs  (Enter to accept)", bar, remaining.Seconds())
-		fmt.Print("\r" + style.Render(line))
-	})
-	fmt.Print("\r" + strings.Repeat(" ", 70) + "\r")
 }
 
 // Prompt delegates to the renderer's FormPrompter (default

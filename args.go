@@ -11,12 +11,13 @@ import (
 // that layer their own flags (`-addr`, `--url`, `--file`, ...) on top
 // of the demokit-recognized ones.
 //
-// Built-in strip set — the four flags demokit's dispatcher consumes:
+// Built-in strip set — the flags demokit's dispatcher consumes:
 //
 //   - --tui                   (bare; selects the TUI renderer)
 //   - --non-interactive       (bare; skips between-step pauses)
 //   - --doc <format>          (value; routes to doc emission)
 //   - --from <trace-path>     (value; trace input for --doc)
+//   - --variant <name>        (value; filters verbatim variant output)
 //
 // Both `--flag value` and `--flag=value` forms are stripped for the
 // value flags. Anything else passes through untouched.
@@ -34,8 +35,9 @@ func FilterArgs(args []string, extra ...ExtraFlag) []string {
 		"--non-interactive": true,
 	}
 	value := map[string]bool{
-		"--doc":  true,
-		"--from": true,
+		"--doc":     true,
+		"--from":    true,
+		"--variant": true,
 	}
 	for _, e := range extra {
 		if e.TakesValue {

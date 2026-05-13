@@ -89,7 +89,9 @@ func (d *Demo) FromMarkdownBytes(src []byte) *Demo {
 
 	for _, li := range loaded {
 		if li.isStep() {
-			d.items = append(d.items, li.toStep())
+			s := li.toStep()
+			s.demo = d
+			d.items = append(d.items, s)
 			d.stepCount++
 		} else {
 			d.items = append(d.items, li.toSection())

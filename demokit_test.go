@@ -87,15 +87,22 @@ func TestVerbatimAttachment(t *testing.T) {
 		t.Fatalf("VerbatimBlocks() len = %d, want 4", len(got))
 	}
 
-	want := []VerbatimView{
+	want := []struct {
+		Label, Lang, Content string
+	}{
 		{Label: "first", Lang: "", Content: "alpha"},
 		{Label: "second", Lang: "json", Content: `{"k":"v"}`},
 		{Label: "", Lang: "bash", Content: "echo hi"},
 		{Label: "", Lang: "", Content: "no-label content"},
 	}
 	for i, w := range want {
-		if got[i] != w {
-			t.Errorf("block[%d] = %+v, want %+v", i, got[i], w)
+		if len(got[i].Variants) != 1 {
+			t.Fatalf("block[%d] Variants len = %d, want 1 (single-variant backcompat)", i, len(got[i].Variants))
+		}
+		va := got[i].Variants[0]
+		if got[i].Label != w.Label || va.Lang != w.Lang || va.Content != w.Content {
+			t.Errorf("block[%d] = {label=%q variant={lang=%q content=%q}}, want {label=%q variant={lang=%q content=%q}}",
+				i, got[i].Label, va.Lang, va.Content, w.Label, w.Lang, w.Content)
 		}
 	}
 }
@@ -106,7 +113,7 @@ func TestVerbatimAttachment(t *testing.T) {
 func TestVerbatimContentByteExact(t *testing.T) {
 	raw := "  leading-space\n\ttabbed\nline\twith\ttabs\ntrailing-newline\n"
 	s := (&StepDef{}).Verbatim("", raw)
-	got := s.VerbatimBlocks()[0].Content
+	got := s.VerbatimBlocks()[0].Variants[0].Content
 	if got != raw {
 		t.Errorf("Verbatim content not preserved byte-exact:\n got:  %q\n want: %q", got, raw)
 	}

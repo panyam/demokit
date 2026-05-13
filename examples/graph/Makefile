@@ -27,16 +27,19 @@ replay: record
 
 # Regenerate this example's README.md from a recorded trace.
 # The default-input run captures the "expired token → refresh" branch.
+# --variant=all so multi-variant verbatim blocks show every form in
+# the generated doc (e.g. curl/python/go for the refresh step); the
+# Go default marker on the curl variant still drives TUI keyboard copy.
 gen-readme: record
-	go run . --doc md --from $(TRACE) > README.md
+	go run . --doc md --from $(TRACE) --variant=all > README.md
 	@echo "Wrote README.md"
 
 # Trace-driven documentation outputs.
 doc-md: record
-	go run . --doc md --from $(TRACE)
+	go run . --doc md --from $(TRACE) --variant=all
 
 doc-html: record
-	go run . --doc html --from $(TRACE)
+	go run . --doc html --from $(TRACE) --variant=all
 
 # JSON for embed hosts. Includes both the static demo definition and
 # the recorded trace.

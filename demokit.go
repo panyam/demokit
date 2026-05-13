@@ -48,6 +48,7 @@ type Demo struct {
 	showCountdown        bool
 	showStepDenominator  bool
 	inputTimeout         time.Duration // default per-prompt deadline; 0 = wait forever. Per-step override via StepDef.InputTimeout.
+	boxedVerbatim        bool          // render verbatim blocks inside the TUI bordered box (default: unboxed, today's behavior)
 	recorder        Recorder
 	replay          []TraceEntry
 	replayCursor    int
@@ -64,6 +65,7 @@ type Demo struct {
 	flagOut            string // output file for --doc bundle (else stdout)
 	flagServe          string // address (e.g. ":8765") to serve the live demo on
 	flagInputTimeout   time.Duration // demo-level prompt deadline; per-step .InputTimeout takes precedence
+	flagVariant        string        // --variant=<label>|all|default; filters multi-variant verbatim output in non-TUI contexts
 
 	// Sidecar-markdown loader state. Errors are stored rather than
 	// returned so FromMarkdown stays chainable; surfaced at Execute.
@@ -128,6 +130,51 @@ type ServeHandler func(d *Demo, addr string) error
 func (d *Demo) RegisterServeHandler(h ServeHandler) *Demo {
 	d.serveHandler = h
 	return d
+}
+
+// BoxedVerbatim opts this demo into the TUI's boxed + interactive
+// rendering of verbatim blocks. When set, single-variant verbatim
+// renders inside a styled box (today's behavior is outside the box
+// for mouse-select friendliness) and the pause prompt accepts a
+// `c` command to copy via the clipboard primitive.
+//
+// Multi-variant verbatim blocks (declared via VerbatimVariants) always
+// render boxed regardless of this flag — per-variant labels require a
+// frame to be readable.
+//
+// Has no effect on plain / markdown / HTML / JSON renderers — boxing
+// is a TUI rendering concern only.
+func (d *Demo) BoxedVerbatim() *Demo {
+	d.boxedVerbatim = true
+	return d
+}
+
+// IsBoxedVerbatim reports whether the demo opted into the boxed +
+// interactive verbatim rendering (set via BoxedVerbatim). Renderers
+// call this at RenderStep time to decide which path to take.
+func (d *Demo) IsBoxedVerbatim() bool {
+	return d.boxedVerbatim
+}
+
+// VariantSelection returns the current --variant selection. Used by
+// renderers (markdown, HTML, JSON, plain) to decide which verbatim
+// variants to emit when the user has set the flag.
+//
+// Mapping from --variant value:
+//   - "" or unset → VariantSelectionDefault (default-marked variants
+//     only, falling back to all when no Default is declared)
+//   - "all"       → VariantSelectionAll
+//   - "default"   → VariantSelectionDefault (explicit)
+//   - "<label>"   → VariantSelectionNamed("<label>")
+func (d *Demo) VariantSelection() VariantSelection {
+	switch d.flagVariant {
+	case "", "default":
+		return VariantSelectionDefault()
+	case "all":
+		return VariantSelectionAll()
+	default:
+		return VariantSelectionNamed(d.flagVariant)
+	}
 }
 
 // InputTimeout sets a default deadline for input prompts across the
@@ -274,7 +321,7 @@ func (d *Demo) Actors(actors ...ActorDef) *Demo {
 
 // Step adds an executable step to the demo. Returns the StepDef for chaining.
 func (d *Demo) Step(title string) *StepDef {
-	s := &StepDef{title: title}
+	s := &StepDef{demo: d, title: title}
 	d.items = append(d.items, s)
 	d.stepCount++
 	return s
@@ -346,6 +393,8 @@ func (d *Demo) RegisterFlags(fs *flag.FlagSet) {
 		"address to serve the live demo (e.g. :8765); requires importing demokit/web")
 	fs.DurationVar(&d.flagInputTimeout, "input-timeout", 0,
 		"default deadline for input prompts (e.g. 60s); per-step .InputTimeout overrides this. 0 = wait forever.")
+	fs.StringVar(&d.flagVariant, "variant", "",
+		"select which verbatim variants to render in non-TUI output: <label>|all|default. TUI ignores this flag.")
 }
 
 // scanOwnArgs is the default flag scanner used when RegisterFlags is
@@ -397,6 +446,11 @@ func (d *Demo) scanOwnArgs(args []string) {
 			if dur, err := time.ParseDuration(strings.TrimPrefix(arg, "--input-timeout=")); err == nil {
 				d.flagInputTimeout = dur
 			}
+		case arg == "--variant" && i+1 < len(args):
+			d.flagVariant = args[i+1]
+			i++
+		case strings.HasPrefix(arg, "--variant="):
+			d.flagVariant = strings.TrimPrefix(arg, "--variant=")
 		}
 	}
 }

@@ -107,7 +107,7 @@ func (d *Demo) Markdown() string {
 			if v.note != "" {
 				fmt.Fprintf(&b, "%s\n\n", v.note)
 			}
-			writeVerbatimMD(&b, v.verbatim)
+			writeVerbatimMD(&b, v.verbatim, d.VariantSelection())
 		case *SectionDef:
 			fmt.Fprintf(&b, "### %s\n\n%s\n\n", v.title, v.body)
 		}
@@ -145,13 +145,26 @@ func (d *Demo) Markdown() string {
 // Empty label skips the heading. Content is emitted byte-exact between
 // fences with a single trailing newline before the closing fence so we
 // don't leak the fence into adjacent paragraphs.
-func writeVerbatimMD(b *strings.Builder, blocks []verbatimBlock) {
+//
+// Multi-variant blocks emit each variant under a **bold-label** line in
+// declaration order; single-variant blocks emit the legacy shape (no
+// variant label). selection controls which variants are rendered when
+// the caller has set --variant; pass VariantSelectionAll to print every
+// variant.
+func writeVerbatimMD(b *strings.Builder, blocks []verbatimBlock, selection VariantSelection) {
 	for _, v := range blocks {
 		if v.Label != "" {
 			fmt.Fprintf(b, "#### %s\n\n", v.Label)
 		}
-		fmt.Fprintf(b, "```%s\n", v.Lang)
-		b.WriteString(strings.TrimRight(v.Content, "\n"))
-		b.WriteString("\n```\n\n")
+		chosen := selection.Apply(v.Variants)
+		multi := len(v.Variants) > 1 && len(chosen) > 1
+		for _, va := range chosen {
+			if multi && va.Label != "" {
+				fmt.Fprintf(b, "**%s**\n\n", va.Label)
+			}
+			fmt.Fprintf(b, "```%s\n", va.Lang)
+			b.WriteString(strings.TrimRight(va.Content, "\n"))
+			b.WriteString("\n```\n\n")
+		}
 	}
 }
