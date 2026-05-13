@@ -179,10 +179,11 @@ func TestJSONFromTraceWrapperEquivalence(t *testing.T) {
 }
 
 // TestRenderDocumentJSONVerbatimProjection verifies a step's verbatim
-// blocks project into the JSON envelope under "verbatim" with lowercase
-// label/lang/content tags. Web embeds — both static (data-src
-// trace.json) and live (WS step-start) — depend on this exact shape to
-// render copy-pasteable code blocks in the player.
+// blocks project into the JSON envelope under "verbatim" with a
+// "variants" array per block. Single-snippet blocks produce a
+// one-element variants array — embed hosts read the same shape
+// unconditionally regardless of whether the author used Verbatim()
+// or VerbatimVariants().
 func TestRenderDocumentJSONVerbatimProjection(t *testing.T) {
 	d := New("V").Description("d")
 	d.Step("only").ID("only").
@@ -201,20 +202,37 @@ func TestRenderDocumentJSONVerbatimProjection(t *testing.T) {
 	if !ok || len(verb) != 2 {
 		t.Fatalf("verbatim not a 2-element list: %v", step0["verbatim"])
 	}
+
 	v0 := verb[0].(map[string]any)
-	if v0["label"] != "the wire" || v0["lang"] != "bash" || v0["content"] != "curl -s http://x" {
-		t.Errorf("verbatim[0] = %v", v0)
+	if v0["label"] != "the wire" {
+		t.Errorf("verbatim[0].label = %v, want %q", v0["label"], "the wire")
 	}
+	vars0 := v0["variants"].([]any)
+	if len(vars0) != 1 {
+		t.Fatalf("verbatim[0].variants len = %d, want 1", len(vars0))
+	}
+	va0 := vars0[0].(map[string]any)
+	if va0["lang"] != "bash" || va0["content"] != "curl -s http://x" {
+		t.Errorf("verbatim[0].variants[0] = %v", va0)
+	}
+	if _, hasLabel := va0["label"]; hasLabel {
+		t.Errorf("variants[0].label should be omitted (omitempty) for single-variant block, got %v", va0)
+	}
+
 	v1 := verb[1].(map[string]any)
-	// Empty label/lang must be omitted (omitempty); only content survives.
 	if _, hasLabel := v1["label"]; hasLabel {
-		t.Errorf("verbatim[1] should omit empty label, got %v", v1)
+		t.Errorf("verbatim[1] should omit empty outer label, got %v", v1)
 	}
-	if _, hasLang := v1["lang"]; hasLang {
-		t.Errorf("verbatim[1] should omit empty lang, got %v", v1)
+	vars1 := v1["variants"].([]any)
+	if len(vars1) != 1 {
+		t.Fatalf("verbatim[1].variants len = %d, want 1", len(vars1))
 	}
-	if v1["content"] != "no-label content" {
-		t.Errorf("verbatim[1].content = %v", v1["content"])
+	va1 := vars1[0].(map[string]any)
+	if _, hasLang := va1["lang"]; hasLang {
+		t.Errorf("verbatim[1].variants[0] should omit empty lang, got %v", va1)
+	}
+	if va1["content"] != "no-label content" {
+		t.Errorf("verbatim[1].variants[0].content = %v", va1["content"])
 	}
 }
 

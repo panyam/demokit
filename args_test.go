@@ -6,22 +6,38 @@ import (
 	"testing"
 )
 
-// TestFilterArgsBuiltInStripsOnly verifies the four built-in flags are
+// TestFilterArgsBuiltInStripsOnly verifies the built-in flags are
 // stripped (with both spaced and = forms for value flags) and nothing
 // else is touched. This is the load-bearing case — examples rely on
-// these four being inverted from demokit's own scanner.
+// these being inverted from demokit's own scanner.
 func TestFilterArgsBuiltInStripsOnly(t *testing.T) {
 	got := FilterArgs([]string{
 		"--tui",
 		"--non-interactive",
 		"--doc", "md",
 		"--from=trace.json",
+		"--variant", "curl",
 		"-addr", ":8081", // unrelated, must pass through
 		"positional",     // positional, must pass through
 	})
 	want := []string{"-addr", ":8081", "positional"}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("FilterArgs built-in:\n got:  %v\n want: %v", got, want)
+	}
+}
+
+// TestFilterArgsStripsVariantEqForm verifies --variant=<value> is
+// stripped alongside the spaced form. Examples that layer their own
+// flags rely on this so demokit's dispatcher flags never leak into
+// their flag.Parse.
+func TestFilterArgsStripsVariantEqForm(t *testing.T) {
+	got := FilterArgs([]string{
+		"--variant=python",
+		"-addr", ":8081",
+	})
+	want := []string{"-addr", ":8081"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("FilterArgs --variant=...:\n got:  %v\n want: %v", got, want)
 	}
 }
 

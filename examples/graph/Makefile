@@ -1,4 +1,4 @@
-.PHONY: run demo runquiet record replay gen-readme doc-md doc-html doc-json doc-bundle
+.PHONY: run demo runquiet record replay gen-readme doc-md doc-md-default doc-md-python doc-html doc-json doc-bundle
 
 TRACE := /tmp/demokit-graph-trace.json
 
@@ -27,16 +27,33 @@ replay: record
 
 # Regenerate this example's README.md from a recorded trace.
 # The default-input run captures the "expired token → refresh" branch.
+# --variant=all so multi-variant verbatim blocks show every form in
+# the generated doc (e.g. curl/python/go for the refresh step); the
+# Go default marker on the curl variant still drives TUI keyboard copy.
 gen-readme: record
-	go run . --doc md --from $(TRACE) > README.md
+	go run . --doc md --from $(TRACE) --variant=all > README.md
 	@echo "Wrote README.md"
 
 # Trace-driven documentation outputs.
+# --variant flag demos:
+#   doc-md          renders every variant of every multi-variant block.
+#   doc-md-default  honors the Go-side Default() marker (curl only on
+#                   the refresh step) — matches what an unset --variant
+#                   produces when a Default is declared.
+#   doc-md-python   filters to just the variant labeled python; useful
+#                   for producing language-specific cheat-sheets from a
+#                   single demo definition.
 doc-md: record
-	go run . --doc md --from $(TRACE)
+	go run . --doc md --from $(TRACE) --variant=all
+
+doc-md-default: record
+	go run . --doc md --from $(TRACE) --variant=default
+
+doc-md-python: record
+	go run . --doc md --from $(TRACE) --variant=python
 
 doc-html: record
-	go run . --doc html --from $(TRACE)
+	go run . --doc html --from $(TRACE) --variant=all
 
 # JSON for embed hosts. Includes both the static demo definition and
 # the recorded trace.

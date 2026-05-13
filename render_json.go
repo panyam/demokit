@@ -90,6 +90,30 @@ func (d *Demo) JSON() string {
 	return RenderDocumentJSON(RenderContext{Demo: d})
 }
 
+// filterVerbatimViews applies the selection to each block's variants
+// in a VerbatimView slice. Blocks whose variants are all filtered out
+// are dropped — embed hosts shouldn't see empty Variants arrays.
+func filterVerbatimViews(in []VerbatimView, selection VariantSelection) []VerbatimView {
+	var out []VerbatimView
+	for _, b := range in {
+		// Convert to Variant for the selection helper, then back.
+		vs := make([]Variant, len(b.Variants))
+		for i, v := range b.Variants {
+			vs[i] = Variant{Label: v.Label, Lang: v.Lang, Content: v.Content, IsDefault: v.IsDefault}
+		}
+		kept := selection.Apply(vs)
+		if len(kept) == 0 {
+			continue
+		}
+		filtered := make([]VariantView, len(kept))
+		for i, v := range kept {
+			filtered[i] = VariantView{Label: v.Label, Lang: v.Lang, Content: v.Content, IsDefault: v.IsDefault}
+		}
+		out = append(out, VerbatimView{Label: b.Label, Variants: filtered})
+	}
+	return out
+}
+
 // projectDemo builds the JSON-serializable view of a Demo.
 func projectDemo(d *Demo) *demoView {
 	v := &demoView{
@@ -107,7 +131,7 @@ func projectDemo(d *Demo) *demoView {
 				Note:     x.note,
 				Arrows:   x.Arrows(),
 				Refs:     x.refs,
-				Verbatim: x.VerbatimBlocks(),
+				Verbatim: filterVerbatimViews(x.VerbatimBlocks(), d.VariantSelection()),
 			}
 			for _, in := range x.inputs {
 				iv.Inputs = append(iv.Inputs, inputView{

@@ -68,6 +68,23 @@ type Renderer struct {
 	Fraction float64       // fraction of terminal width to use; 0 means 0.80
 	Delay    time.Duration // per-line scroll delay; 0 means 18ms, negative disables
 	prompter FormPrompter
+
+	// lastStep is set by RenderStep and consulted by WaitForStep so the
+	// line-based copy prompt knows which verbatim blocks the user can
+	// reference. Cleared at RenderResult so a between-step Enter pause
+	// doesn't pick up the previous step's blocks if the next step has
+	// none. v1.1 raw-mode interaction will replace this with a real
+	// focus model.
+	lastStep *demokit.StepDef
+
+	// activeVariant maps a block's index within the current step to
+	// the currently-active variant index within that block. Initial
+	// values seed from each block's Default-marked variant (or 0 if
+	// none is marked). The line-based pause loop mutates this when
+	// the user types a switch command; bare `c` then copies whichever
+	// variant is active. Reset at each RenderStep so a fresh step's
+	// defaults take over.
+	activeVariant map[int]int
 }
 
 // New creates a TUI Renderer with default settings.
@@ -195,6 +212,8 @@ func (r *Renderer) RenderHeader(title, description string, stepCount int) {
 }
 
 func (r *Renderer) RenderStep(stepNum, totalSteps int, step *demokit.StepDef) {
+	r.lastStep = step
+	r.activeVariant = initialActiveVariants(step)
 	p := r.Palette
 	iw := r.innerWidth()
 
@@ -265,29 +284,139 @@ func (r *Renderer) RenderStep(stepNum, totalSteps int, step *demokit.StepDef) {
 
 	r.smoothPrint(box.Render(content))
 
-	// Verbatim blocks render OUTSIDE the bordered box so lipgloss never
-	// soft-wraps long lines into the box border. Each line is emitted
-	// raw via fmt.Println — terminals that re-flow on resize (iTerm2,
-	// Terminal.app, gnome-terminal) preserve the underlying line for
-	// triple-click copy. This is how we guarantee character-exact
-	// recovery of curl recipes / JSON envelopes regardless of width.
+	r.renderVerbatimBlocks(step)
+}
+
+// renderVerbatimBlocks emits each verbatim block according to the
+// demo's boxing mode + per-block variant count:
+//
+//   - Single-variant + Demo.IsBoxedVerbatim() unset → today's behavior:
+//     printed OUTSIDE the bordered box so lipgloss never soft-wraps
+//     long lines into the box border, preserving triple-click copy.
+//   - Single-variant + Demo.IsBoxedVerbatim() set → rendered inside a
+//     styled box; keyboard copy via the pause prompt.
+//   - Multi-variant (always boxed regardless of the flag) → tab strip
+//     above (`<active>  other  other`), box below showing only the
+//     active variant. Default-marked variant starts active; user
+//     switches via line-input command at the pause; the new active
+//     variant is echoed inline.
+func (r *Renderer) renderVerbatimBlocks(step *demokit.StepDef) {
 	blocks := step.VerbatimBlocks()
-	for _, v := range blocks {
+	if len(blocks) == 0 {
+		return
+	}
+	demo := step.Demo()
+	boxedDefault := demo != nil && demo.IsBoxedVerbatim()
+
+	for idx, v := range blocks {
 		fmt.Println()
-		if v.Label != "" {
-			labelStyle := lipgloss.NewStyle().
-				Italic(true).
-				Foreground(p.Note)
-			fmt.Println(labelStyle.Render(v.Label))
+		multi := len(v.Variants) > 1
+		boxed := boxedDefault || multi
+		if !boxed {
+			r.renderUnboxedVariant(v)
+			continue
 		}
-		// Trim only trailing newlines so the block doesn't carry a
-		// blank tail row; preserve every other byte exactly. Embedded
-		// \n flow through Println unchanged.
-		r.smoothPrint(strings.TrimRight(v.Content, "\n"))
+		r.renderBoxedBlock(idx, v, multi)
 	}
-	if len(blocks) > 0 {
+	fmt.Println()
+}
+
+// renderUnboxedVariant emits a single-variant block in today's
+// outside-the-box style — italic label line then the raw content.
+// Preserves triple-click copy semantics for users on terminals
+// without OSC 52.
+func (r *Renderer) renderUnboxedVariant(v demokit.VerbatimView) {
+	labelStyle := lipgloss.NewStyle().Italic(true).Foreground(r.Palette.Note)
+	if v.Label != "" {
+		fmt.Println(labelStyle.Render(v.Label))
+	}
+	r.smoothPrint(strings.TrimRight(v.Variants[0].Content, "\n"))
+}
+
+// renderBoxedBlock emits a verbatim block inside a styled box. For
+// multi-variant blocks a tab strip is rendered above the box and only
+// the currently-active variant's content appears inside. blockIdx is
+// the block's index within the step; the renderer reads
+// r.activeVariant[blockIdx] to decide which variant is active.
+//
+// The outer block label is bold + Title color so it stands out from
+// the dim variant tabs (the previous italic Note color was too close
+// to the inactive-tab Dim color). A blank line after the label gives
+// the tab strip / box breathing room.
+func (r *Renderer) renderBoxedBlock(blockIdx int, v demokit.VerbatimView, multi bool) {
+	p := r.Palette
+	labelStyle := lipgloss.NewStyle().Bold(true).Foreground(p.Title)
+	if v.Label != "" {
+		fmt.Println(labelStyle.Render(v.Label))
 		fmt.Println()
 	}
+	if multi {
+		fmt.Println(r.renderTabStrip(v.Variants, r.activeIndex(blockIdx)))
+	}
+	active := v.Variants[r.activeIndex(blockIdx)]
+	box := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(p.Note).
+		Padding(0, 1).
+		Width(r.width())
+	r.smoothPrint(box.Render(strings.TrimRight(active.Content, "\n")))
+}
+
+// renderTabStrip formats the per-variant tabs above a multi-variant
+// box. The active variant is wrapped in angle brackets and bolded;
+// others are dim. Spacing: two spaces between entries. Default-marked
+// variant gets a "(default)" trailing tag so the user knows what bare
+// `c` will copy when the active is reset.
+func (r *Renderer) renderTabStrip(variants []demokit.VariantView, activeIdx int) string {
+	active := lipgloss.NewStyle().Bold(true).Foreground(r.Palette.Header)
+	dim := lipgloss.NewStyle().Foreground(r.Palette.Dim)
+	parts := make([]string, len(variants))
+	for i, v := range variants {
+		label := v.Label
+		if label == "" {
+			label = fmt.Sprintf("variant %d", i+1)
+		}
+		if v.IsDefault {
+			label += " (default)"
+		}
+		if i == activeIdx {
+			parts[i] = active.Render("<" + label + ">")
+		} else {
+			parts[i] = dim.Render(" " + label + " ")
+		}
+	}
+	return strings.Join(parts, "  ")
+}
+
+// activeIndex returns the currently-active variant index for the
+// block at blockIdx within the current step. Falls back to 0 when
+// the state map hasn't been seeded (e.g. tests that construct a
+// Renderer without going through RenderStep).
+func (r *Renderer) activeIndex(blockIdx int) int {
+	if r.activeVariant == nil {
+		return 0
+	}
+	return r.activeVariant[blockIdx]
+}
+
+// initialActiveVariants computes the starting active-variant index
+// for each block on a step: the Default-marked variant if any,
+// otherwise the first. Returns a fresh map so the previous step's
+// state doesn't leak.
+func initialActiveVariants(step *demokit.StepDef) map[int]int {
+	if step == nil {
+		return nil
+	}
+	out := map[int]int{}
+	for i, v := range step.VerbatimBlocks() {
+		for j, va := range v.Variants {
+			if va.IsDefault {
+				out[i] = j
+				break
+			}
+		}
+	}
+	return out
 }
 
 // statusColors returns the border and label colors for a given result status.
@@ -430,25 +559,127 @@ func (r *Renderer) WaitForStep(opts demokit.WaitOpts) {
 		Foreground(p.Prompt).
 		Italic(true)
 
-	if opts.AutoAcceptAfter <= 0 {
-		fmt.Println(style.Render("  Press Enter to run this step..."))
-		bufio.NewReader(os.Stdin).ReadString('\n')
+	copyables := r.copyableBlocks(r.lastStep)
+
+	// Countdown path. The user's escape hatch is "type anything to
+	// review" — empty Enter accepts and advances (today's behavior),
+	// any other input cancels the countdown and drops into the
+	// interactive hold (copy loop if the step has copyables; plain
+	// Enter wait otherwise). v1.1's raw mode will make Tab the
+	// literal trigger; the prompt wording reflects that v1 reality
+	// honestly.
+	if opts.AutoAcceptAfter > 0 {
+		r.waitWithCountdown(opts, copyables, style)
 		return
 	}
 
+	// No countdown — line-based pause. Copy loop when the step has
+	// copyables, otherwise today's plain Enter pause.
+	if len(copyables) > 0 {
+		r.copyPromptLoop(copyables, style)
+		return
+	}
+	fmt.Println(style.Render("  Press Enter to run this step..."))
+	bufio.NewReader(os.Stdin).ReadString('\n')
+}
+
+// waitWithCountdown runs the auto-accept countdown with a universal
+// "any key to review" escape. The countdown read is in raw mode so a
+// single keypress (not just Enter) interrupts:
+//
+//   - Enter (KeyEnter or '\n') → accept and advance.
+//   - Any other key            → drop into the line-based interactive
+//                                 hold (copy loop for copyable steps,
+//                                 plain Enter wait otherwise).
+//   - Timer fires              → auto-advance.
+//
+// On terminals where raw mode is unavailable, WaitForKeyOrTimeout
+// falls back to line mode and the user has to press Enter to
+// interrupt — degraded but still functional.
+func (r *Renderer) waitWithCountdown(opts demokit.WaitOpts, copyables []copyableBlock, promptStyle lipgloss.Style) {
+	p := r.Palette
+	hint := "Enter accept · any key to review"
+
+	var key byte
+	var gotKey bool
 	if !opts.ShowCountdown {
-		fmt.Println(style.Render(fmt.Sprintf("  Press Enter to run (auto in %s)...",
+		fmt.Println(promptStyle.Render(fmt.Sprintf("  Press Enter to run (auto in %s) · any key to review",
 			opts.AutoAcceptAfter.Round(time.Second))))
-		demokit.WaitForEnterOrTimeout(opts.AutoAcceptAfter, nil)
-		return
+		key, gotKey = demokit.WaitForKeyOrTimeout(opts.AutoAcceptAfter, nil)
+	} else {
+		key, gotKey = demokit.WaitForKeyOrTimeout(opts.AutoAcceptAfter, func(remaining time.Duration) {
+			bar := plainCountdownBar(remaining, opts.AutoAcceptAfter, 20)
+			row := fmt.Sprintf("  %s  %4.1fs  (%s)", bar, remaining.Seconds(), hint)
+			fmt.Print("\r" + promptStyle.Render(row))
+		})
+		fmt.Print("\r" + strings.Repeat(" ", 80) + "\r")
 	}
 
-	demokit.WaitForEnterOrTimeout(opts.AutoAcceptAfter, func(remaining time.Duration) {
-		bar := plainCountdownBar(remaining, opts.AutoAcceptAfter, 20)
-		line := fmt.Sprintf("  %s  %4.1fs  (Enter to accept)", bar, remaining.Seconds())
-		fmt.Print("\r" + style.Render(line))
-	})
-	fmt.Print("\r" + strings.Repeat(" ", 70) + "\r")
+	if !gotKey {
+		return // timer fired — auto-advance
+	}
+	if key == demokit.KeyEnter || key == '\n' {
+		return // Enter — accept and advance
+	}
+
+	// Any other key cancels the countdown. Drop into the interactive
+	// hold appropriate for the step. Raw-mode terminal is already
+	// restored by WaitForKeyOrTimeout, so cooked-mode line input
+	// (bufio + ReadString) works correctly below.
+	noteStyle := lipgloss.NewStyle().Foreground(p.Note).Italic(true)
+	if len(copyables) > 0 {
+		r.copyPromptLoop(copyables, promptStyle)
+		return
+	}
+	fmt.Println(noteStyle.Render("  (countdown stopped — press Enter to continue)"))
+	bufio.NewReader(os.Stdin).ReadString('\n')
+}
+
+// copyPromptLoop runs the line-based pause for steps that have
+// copyable verbatim blocks. Empty input continues; `c` / `c <label>`
+// copy; `<label>` or `<n>` switches the active variant (and echoes
+// the new active inline so the user can see what they're about to
+// copy). Loops until empty Enter so users can stack multiple actions.
+func (r *Renderer) copyPromptLoop(copyables []copyableBlock, promptStyle lipgloss.Style) {
+	p := r.Palette
+	reader := bufio.NewReader(os.Stdin)
+	noteStyle := lipgloss.NewStyle().Foreground(p.Note).Italic(true)
+	for {
+		fmt.Println(promptStyle.Render(copyPromptHint(copyables)))
+		line, _ := reader.ReadString('\n')
+		cmd := strings.TrimSpace(line)
+		if cmd == "" {
+			return
+		}
+		msg, switched := r.handleCopyCommand(cmd, copyables)
+		if msg != "" {
+			fmt.Println(noteStyle.Render("  " + msg))
+		}
+		if switched {
+			r.echoActiveVariant(copyables)
+		}
+	}
+}
+
+// echoActiveVariant re-emits the current active variant of the first
+// multi-variant block inline, so the user can see what they switched
+// to before deciding to copy. In raw-mode v1.1 this becomes an
+// in-place redraw; v1 line mode appends to scrollback (cheap and
+// works without cursor positioning).
+func (r *Renderer) echoActiveVariant(copyables []copyableBlock) {
+	target := r.firstMultiVariantBlock(copyables)
+	if target == nil {
+		return
+	}
+	fmt.Println()
+	fmt.Println(r.renderTabStrip(target.view.Variants, r.activeIndex(target.index)))
+	active := target.view.Variants[r.activeIndex(target.index)]
+	box := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(r.Palette.Note).
+		Padding(0, 1).
+		Width(r.width())
+	r.smoothPrint(box.Render(strings.TrimRight(active.Content, "\n")))
 }
 
 // Prompt delegates to the renderer's FormPrompter (default

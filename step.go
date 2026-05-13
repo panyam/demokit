@@ -29,6 +29,7 @@ type item interface {
 
 // StepDef defines one executable step in the demo.
 type StepDef struct {
+	demo        *Demo // back-pointer set by Demo.Step (and Demo.Bind) so renderers can query demo-wide flags (BoxedVerbatim, ...). Nil only for steps constructed standalone in tests.
 	id          string
 	title       string
 	arrows      []arrowDef
@@ -46,18 +47,127 @@ type StepDef struct {
 // verbatimBlock holds character-exact content for copy-paste-friendly
 // display. Stored author-time on StepDef; renderers look it up via
 // VerbatimBlocks(). Same lifecycle as note/refs — not part of TraceEntry.
+//
+// A block may carry multiple Variants when the author wants to show the
+// same task expressed several ways (curl / gcloud CLI / Python). Single-
+// snippet blocks are stored as a one-element Variants slice — renderers
+// don't branch on the count, they iterate uniformly.
 type verbatimBlock struct {
-	Label   string
-	Lang    string
-	Content string
+	Label    string
+	Variants []Variant
+}
+
+// Variant is one labeled form of a verbatim snippet. Multi-variant blocks
+// declare N variants and renderers pick which to show (or, in markdown,
+// emit all of them with sub-labels). IsDefault marks the form preferred
+// by non-interactive contexts and the demo-defined "copy this one"
+// target; it has no effect when only one variant is declared.
+//
+// Construct via MakeVariant("curl", "bash", "...").Default() for the
+// fluent form, or as a struct literal — both are supported.
+type Variant struct {
+	Label     string // "curl", "gcloud", "Python" — empty for single-variant blocks
+	Lang      string // fenced-code language hint
+	Content   string
+	IsDefault bool
+}
+
+// MakeVariant constructs a Variant. Use .Default() to mark the preferred
+// form for non-interactive output and the keyboard-copy target.
+//
+// Named MakeVariant (not Variant) because the type is already named
+// Variant — Go doesn't allow a function and a type to share a name.
+func MakeVariant(label, lang, content string) Variant {
+	return Variant{Label: label, Lang: lang, Content: content}
+}
+
+// Default marks this variant as the preferred form. At most one variant
+// per block is expected to carry IsDefault=true; if multiple are marked,
+// the first wins. If none is marked, "default" behaves as "first".
+func (v Variant) Default() Variant {
+	v.IsDefault = true
+	return v
+}
+
+// VariantView is the read-only projection of a Variant exposed to
+// renderers and JSON consumers. JSON field is named "default" for wire
+// stability — embed hosts read it as the marker for the preferred form.
+type VariantView struct {
+	Label     string `json:"label,omitempty"`
+	Lang      string `json:"lang,omitempty"`
+	Content   string `json:"content"`
+	IsDefault bool   `json:"default,omitempty"`
 }
 
 // VerbatimView is the read-only projection of a verbatim block exposed
-// to renderers and JSON consumers.
+// to renderers and JSON consumers. Single-variant blocks produce a
+// one-element Variants slice; renderers treat all blocks uniformly.
 type VerbatimView struct {
-	Label   string `json:"label,omitempty"`
-	Lang    string `json:"lang,omitempty"`
-	Content string `json:"content"`
+	Label    string        `json:"label,omitempty"`
+	Variants []VariantView `json:"variants"`
+}
+
+// VariantSelection encodes a renderer's filter over a block's variants.
+// Renderers consult it to decide which variants to emit when the user
+// has set --variant on the CLI.
+//
+// Use the constructors (VariantSelectionAll, VariantSelectionDefault,
+// VariantSelectionNamed) rather than the struct literal — internal
+// fields may shift.
+type VariantSelection struct {
+	all      bool
+	defOnly  bool   // strict: error if no Default-marked variant exists
+	name     string // empty = no name filter
+}
+
+// VariantSelectionAll renders every variant of every block.
+func VariantSelectionAll() VariantSelection {
+	return VariantSelection{all: true}
+}
+
+// VariantSelectionDefault renders only Default-marked variants. Blocks
+// with no Default-marked variant fall back to all variants. Use this
+// when "--variant" is unset and the demo wants the implicit-default
+// behavior.
+func VariantSelectionDefault() VariantSelection {
+	return VariantSelection{}
+}
+
+// VariantSelectionNamed renders only variants whose Label matches name
+// (case-insensitive). Blocks with no matching variant are dropped from
+// output. Used when the user passes --variant=<label>.
+func VariantSelectionNamed(name string) VariantSelection {
+	return VariantSelection{name: name}
+}
+
+// Apply filters block.Variants according to the selection rules. The
+// returned slice is always a fresh allocation so callers may mutate.
+func (s VariantSelection) Apply(in []Variant) []Variant {
+	if s.all || len(in) == 0 {
+		out := make([]Variant, len(in))
+		copy(out, in)
+		return out
+	}
+	if s.name != "" {
+		var out []Variant
+		for _, v := range in {
+			if strings.EqualFold(v.Label, s.name) {
+				out = append(out, v)
+			}
+		}
+		return out
+	}
+	// Default behavior.
+	for _, v := range in {
+		if v.IsDefault {
+			return []Variant{v}
+		}
+	}
+	// No Default marked — render everything so non-interactive output
+	// stays lossless when the author didn't specify a preference.
+	out := make([]Variant, len(in))
+	copy(out, in)
+	return out
 }
 
 type arrowDef struct {
@@ -142,22 +252,25 @@ func (s *StepDef) Input(d InputDef) *StepDef {
 }
 
 // Verbatim attaches a copy-paste-friendly content block to this step.
-// Content is preserved character-exact across all renderers; the TUI
-// renders it outside the bordered box so wrapping cannot inject border
-// chars into the middle of a line. Multiple calls render in declaration
-// order. Empty label is allowed (skips the heading in markdown, omits
-// the label line in the TUI). Use VerbatimLang to specify a fenced-code
-// language hint for markdown.
+// Content is preserved character-exact across all renderers. By default
+// the TUI renders it outside the bordered box so wrapping cannot inject
+// border chars into the middle of a line — call Demo.BoxedVerbatim() to
+// render every verbatim inside a styled box with keyboard copy instead.
+// Multiple calls render in declaration order. Empty label is allowed
+// (skips the heading in markdown, omits the label line in the TUI).
+// Use VerbatimLang to specify a fenced-code language hint for markdown.
 func (s *StepDef) Verbatim(label, content string) *StepDef {
-	s.verbatim = append(s.verbatim, verbatimBlock{Label: label, Content: content})
-	return s
+	return s.VerbatimLang(label, "", content)
 }
 
 // VerbatimLang is Verbatim with an explicit fenced-code language hint
-// (used by markdown renderers; ignored by the TUI). Pass an empty lang
-// for an unfenced default.
+// (used by markdown / HTML renderers). Pass an empty lang for an
+// unfenced default.
 func (s *StepDef) VerbatimLang(label, lang, content string) *StepDef {
-	s.verbatim = append(s.verbatim, verbatimBlock{Label: label, Lang: lang, Content: content})
+	s.verbatim = append(s.verbatim, verbatimBlock{
+		Label:    label,
+		Variants: []Variant{{Lang: lang, Content: content}},
+	})
 	return s
 }
 
@@ -168,12 +281,36 @@ func (s *StepDef) Shell(content string) *StepDef {
 	return s.VerbatimLang("", "bash", content)
 }
 
+// VerbatimVariants attaches a multi-variant verbatim block to this step
+// — one labeled snippet rendered N ways (curl / gcloud / Python ...).
+// At most one variant should carry Default=true (via .Default()); if
+// none does, the first declared is the implicit default for non-
+// interactive output and keyboard copy.
+//
+// Multi-variant blocks always render inside the TUI's bordered box
+// regardless of Demo.BoxedVerbatim() — the per-variant labels need a
+// frame to be readable.
+//
+// Markdown / HTML output emits every variant labeled in declaration
+// order; --variant=<label> at the CLI filters to a single one.
+func (s *StepDef) VerbatimVariants(label string, variants ...Variant) *StepDef {
+	s.verbatim = append(s.verbatim, verbatimBlock{
+		Label:    label,
+		Variants: append([]Variant(nil), variants...),
+	})
+	return s
+}
+
 // VerbatimBlocks returns a read-only view of this step's attached
 // verbatim blocks in declaration order.
 func (s *StepDef) VerbatimBlocks() []VerbatimView {
 	out := make([]VerbatimView, len(s.verbatim))
 	for i, v := range s.verbatim {
-		out[i] = VerbatimView{Label: v.Label, Lang: v.Lang, Content: v.Content}
+		vars := make([]VariantView, len(v.Variants))
+		for j, va := range v.Variants {
+			vars[j] = VariantView{Label: va.Label, Lang: va.Lang, Content: va.Content, IsDefault: va.IsDefault}
+		}
+		out[i] = VerbatimView{Label: v.Label, Variants: vars}
 	}
 	return out
 }
@@ -264,6 +401,12 @@ func (s *StepDef) Run(fn func(StepContext) *StepResult) *StepDef {
 
 // StepID returns the step's identifier (auto-assigned at Execute time if unset).
 func (s *StepDef) StepID() string { return s.id }
+
+// Demo returns the parent demo for this step, or nil if the step was
+// constructed standalone (e.g. in tests). Renderers use this to query
+// demo-wide flags like IsBoxedVerbatim that affect how this step
+// renders.
+func (s *StepDef) Demo() *Demo { return s.demo }
 
 // Title returns the step title.
 func (s *StepDef) Title() string { return s.title }

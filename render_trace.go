@@ -35,7 +35,7 @@ func RenderEntryMD(ctx RenderContext, entry TraceEntry, opts EntryOpts) string {
 			fmt.Fprintf(&b, "%s\n\n", s.note)
 		}
 		if s != nil && len(s.verbatim) > 0 {
-			writeVerbatimMD(&b, s.verbatim)
+			writeVerbatimMD(&b, s.verbatim, demoVariantSelection(ctx.Demo))
 		}
 		if s != nil && len(s.refs) > 0 {
 			b.WriteString("> **References:** ")
@@ -155,7 +155,7 @@ func RenderEntryHTML(ctx RenderContext, entry TraceEntry, opts EntryOpts) string
 			fmt.Fprintf(&b, "<p>%s</p>\n", html.EscapeString(s.note))
 		}
 		if s != nil && len(s.verbatim) > 0 {
-			writeVerbatimHTML(&b, s.verbatim)
+			writeVerbatimHTML(&b, s.verbatim, demoVariantSelection(ctx.Demo))
 		}
 
 		if len(entry.Inputs) > 0 {
@@ -237,20 +237,38 @@ func RenderDocumentHTML(ctx RenderContext) string {
 // h4 heading + a <pre><code> with html-escaped content. Language hints
 // surface as the standard `language-X` class so a downstream highlighter
 // (Prism, highlight.js) can pick them up.
-func writeVerbatimHTML(b *strings.Builder, blocks []verbatimBlock) {
+func writeVerbatimHTML(b *strings.Builder, blocks []verbatimBlock, selection VariantSelection) {
 	for _, v := range blocks {
 		if v.Label != "" {
 			fmt.Fprintf(b, "<h4>%s</h4>\n", html.EscapeString(v.Label))
 		}
-		if v.Lang != "" {
-			fmt.Fprintf(b, "<pre><code class=\"language-%s\">%s</code></pre>\n",
-				html.EscapeString(v.Lang),
-				html.EscapeString(strings.TrimRight(v.Content, "\n")))
-		} else {
-			fmt.Fprintf(b, "<pre><code>%s</code></pre>\n",
-				html.EscapeString(strings.TrimRight(v.Content, "\n")))
+		chosen := selection.Apply(v.Variants)
+		multi := len(v.Variants) > 1 && len(chosen) > 1
+		for _, va := range chosen {
+			if multi && va.Label != "" {
+				fmt.Fprintf(b, "<p><strong>%s</strong></p>\n", html.EscapeString(va.Label))
+			}
+			if va.Lang != "" {
+				fmt.Fprintf(b, "<pre><code class=\"language-%s\">%s</code></pre>\n",
+					html.EscapeString(va.Lang),
+					html.EscapeString(strings.TrimRight(va.Content, "\n")))
+			} else {
+				fmt.Fprintf(b, "<pre><code>%s</code></pre>\n",
+					html.EscapeString(strings.TrimRight(va.Content, "\n")))
+			}
 		}
 	}
+}
+
+// demoVariantSelection is a nil-safe lookup for the demo's current
+// VariantSelection. Used by trace renderers where ctx.Demo may be nil
+// (e.g. raw-trace render without a demo definition); falls back to
+// VariantSelectionDefault.
+func demoVariantSelection(d *Demo) VariantSelection {
+	if d == nil {
+		return VariantSelectionDefault()
+	}
+	return d.VariantSelection()
 }
 
 // lookupStep finds a step by ID in the demo's items list, or nil if the

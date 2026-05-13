@@ -12,7 +12,11 @@ try a different one.
 
 ### 1. Pick a symptom
 
-Most auth failures fall into a handful of buckets.
+Most auth failures fall into a handful of buckets:
+
+- **expired** — the access token's TTL has elapsed
+- **scope** — token is valid but lacks the required scope
+- **ratelimit** — auth server is shedding load
 
 **Inputs:**
 
@@ -43,6 +47,37 @@ API said: 401 token_expired
 → jumped to `refresh`
 
 ### 4. Refresh succeeds
+
+#### Refresh the token
+
+**curl**
+
+```bash
+curl -s -X POST https://auth.example/oauth2/token \
+  -H 'Content-Type: application/x-www-form-urlencoded' \
+  -d 'grant_type=refresh_token&refresh_token=eyJhbGci...'
+```
+
+**python**
+
+```python
+import requests
+r = requests.post(
+    "https://auth.example/oauth2/token",
+    data={"grant_type": "refresh_token", "refresh_token": "eyJhbGci..."},
+)
+token = r.json()["access_token"]
+```
+
+**go**
+
+```go
+resp, _ := http.PostForm("https://auth.example/oauth2/token", url.Values{
+    "grant_type":    {"refresh_token"},
+    "refresh_token": {"eyJhbGci..."},
+})
+defer resp.Body.Close()
+```
 
 ```
 New token: eyJhbGci...truncated

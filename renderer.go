@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/charmbracelet/x/term"
 	"github.com/muesli/cancelreader"
 )
 
@@ -259,46 +260,100 @@ func (r *PlainRenderer) WaitForStep(opts WaitOpts) {
 
 // WaitForEnterOrTimeout blocks until the user presses Enter on stdin or
 // the timeout elapses. Returns true if Enter was pressed, false if the
-// timer fired. Uses muesli/cancelreader to cancel the pending stdin
-// read when the timer wins, so the read goroutine never leaks across
-// successive calls — important because a leaked goroutine still
-// blocked on os.Stdin can race later prompt reads and steal input.
+// timer fired. Discards the line content — callers that need to inspect
+// what the user typed should use WaitForLineOrTimeout instead.
+//
+// Uses muesli/cancelreader to cancel the pending stdin read when the
+// timer wins, so the read goroutine never leaks across successive
+// calls — important because a leaked goroutine still blocked on
+// os.Stdin can race later prompt reads and steal input.
 //
 // onTick, if non-nil, is invoked roughly every 100ms with the time
 // remaining; renderers use it to redraw a countdown bar.
 //
 // On platforms where cancelreader is unavailable, the function
 // degrades gracefully: it sleeps for the timeout (no Enter shortcut)
-// and returns false. The pending-read leak is avoided either way.
+// and returns false.
 func WaitForEnterOrTimeout(timeout time.Duration, onTick func(remaining time.Duration)) bool {
-	if timeout <= 0 {
-		bufio.NewReader(os.Stdin).ReadString('\n')
-		return true
+	_, ok := WaitForLineOrTimeout(timeout, onTick)
+	return ok
+}
+
+// KeyEnter is the byte returned by WaitForKeyOrTimeout when the user
+// presses Enter. On most terminals the literal byte read in raw mode
+// is '\r' (carriage return); the constant lets callers compare
+// against a stable name. Some terminals (rare) deliver '\n' — the
+// public callers should accept both.
+const KeyEnter = '\r'
+
+// WaitForKeyOrTimeout puts the terminal in raw mode and reads a single
+// byte from stdin racing against the timer. Used by interactive
+// countdown prompts that want any-key (not just Enter) to interrupt.
+// Returns:
+//
+//   - (key, true) on the first byte typed. Enter typically arrives as
+//     '\r' (KeyEnter); some terminals send '\n'. Callers wanting "any
+//     key but Enter" should match both.
+//   - (0, false) when the timer fires before any input.
+//
+// The terminal is restored to its prior cooked-mode state before the
+// function returns so a caller can drop into line-based input
+// immediately. On platforms where raw mode is unavailable (or stdin
+// is not a terminal), falls back to WaitForLineOrTimeout — the user
+// has to press Enter to interrupt, but the function still works.
+//
+// onTick, if non-nil, fires roughly every 100ms with remaining time
+// — renderers use it to redraw a countdown bar.
+func WaitForKeyOrTimeout(timeout time.Duration, onTick func(remaining time.Duration)) (byte, bool) {
+	fd := os.Stdin.Fd()
+	if !term.IsTerminal(fd) {
+		return fallbackToLineRead(timeout, onTick)
 	}
+	state, err := term.MakeRaw(fd)
+	if err != nil {
+		return fallbackToLineRead(timeout, onTick)
+	}
+	defer term.Restore(fd, state)
+
+	if timeout <= 0 {
+		buf := make([]byte, 1)
+		n, err := os.Stdin.Read(buf)
+		if err != nil || n == 0 {
+			return 0, false
+		}
+		return buf[0], true
+	}
+
 	cr, err := cancelreader.NewReader(os.Stdin)
 	if err != nil {
-		// Platform unsupported — sleep and give up the Enter shortcut
-		// rather than leak a goroutine.
-		time.Sleep(timeout)
-		return false
+		return fallbackToLineRead(timeout, onTick)
 	}
 	defer cr.Close()
 
-	enter := make(chan struct{}, 1)
+	type keyMsg struct {
+		key byte
+		ok  bool
+	}
+	got := make(chan keyMsg, 1)
 	go func() {
-		bufio.NewReader(cr).ReadString('\n')
-		enter <- struct{}{}
+		buf := make([]byte, 1)
+		n, err := cr.Read(buf)
+		if err != nil || n == 0 {
+			got <- keyMsg{ok: false}
+			return
+		}
+		got <- keyMsg{key: buf[0], ok: true}
 	}()
 
 	deadline := time.Now().Add(timeout)
 	if onTick == nil {
 		select {
-		case <-enter:
-			return true
+		case msg := <-got:
+			return msg.key, msg.ok
 		case <-time.After(timeout):
 			cr.Cancel()
-			<-enter
-			return false
+			<-got
+			return 0, false
 		}
 	}
 
@@ -308,13 +363,93 @@ func WaitForEnterOrTimeout(timeout time.Duration, onTick func(remaining time.Dur
 		remaining := time.Until(deadline)
 		if remaining <= 0 {
 			cr.Cancel()
-			<-enter
-			return false
+			<-got
+			return 0, false
 		}
 		onTick(remaining)
 		select {
-		case <-enter:
-			return true
+		case msg := <-got:
+			return msg.key, msg.ok
+		case <-tick.C:
+		}
+	}
+}
+
+// fallbackToLineRead is the cooked-mode degradation for
+// WaitForKeyOrTimeout on platforms where raw mode is unavailable.
+// User must press Enter to interrupt (but the function still works).
+func fallbackToLineRead(timeout time.Duration, onTick func(remaining time.Duration)) (byte, bool) {
+	line, ok := WaitForLineOrTimeout(timeout, onTick)
+	if !ok {
+		return 0, false
+	}
+	if line == "" {
+		return KeyEnter, true
+	}
+	return line[0], true
+}
+
+// WaitForLineOrTimeout is the line-returning sibling of
+// WaitForEnterOrTimeout. Reads one line from stdin racing against the
+// timer; returns ("", false) when the timer fires, (line, true) when
+// the user submitted a line (line excludes the trailing newline,
+// preserving any other whitespace the user typed).
+//
+// Used by renderers that combine an auto-advance countdown with an
+// interactive command prompt — the returned line lets the caller
+// dispatch (e.g. "c" → copy) when the input was non-empty, advance
+// when the input was empty, or auto-advance when the timer won.
+func WaitForLineOrTimeout(timeout time.Duration, onTick func(remaining time.Duration)) (string, bool) {
+	if timeout <= 0 {
+		line, _ := bufio.NewReader(os.Stdin).ReadString('\n')
+		return strings.TrimRight(line, "\r\n"), true
+	}
+	cr, err := cancelreader.NewReader(os.Stdin)
+	if err != nil {
+		time.Sleep(timeout)
+		return "", false
+	}
+	defer cr.Close()
+
+	type lineMsg struct {
+		text string
+		ok   bool
+	}
+	got := make(chan lineMsg, 1)
+	go func() {
+		text, err := bufio.NewReader(cr).ReadString('\n')
+		if err != nil {
+			got <- lineMsg{ok: false}
+			return
+		}
+		got <- lineMsg{text: strings.TrimRight(text, "\r\n"), ok: true}
+	}()
+
+	deadline := time.Now().Add(timeout)
+	if onTick == nil {
+		select {
+		case msg := <-got:
+			return msg.text, msg.ok
+		case <-time.After(timeout):
+			cr.Cancel()
+			<-got
+			return "", false
+		}
+	}
+
+	tick := time.NewTicker(100 * time.Millisecond)
+	defer tick.Stop()
+	for {
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			cr.Cancel()
+			<-got
+			return "", false
+		}
+		onTick(remaining)
+		select {
+		case msg := <-got:
+			return msg.text, msg.ok
 		case <-tick.C:
 		}
 	}
