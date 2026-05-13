@@ -1,4 +1,4 @@
-.PHONY: run demo runquiet record replay gen-readme doc-md doc-html doc-json doc-bundle
+.PHONY: run demo runquiet record replay gen-readme doc-md doc-md-default doc-md-python doc-html doc-json doc-bundle
 
 TRACE := /tmp/demokit-graph-trace.json
 
@@ -35,8 +35,22 @@ gen-readme: record
 	@echo "Wrote README.md"
 
 # Trace-driven documentation outputs.
+# --variant flag demos:
+#   doc-md          renders every variant of every multi-variant block.
+#   doc-md-default  honors the Go-side Default() marker (curl only on
+#                   the refresh step) — matches what an unset --variant
+#                   produces when a Default is declared.
+#   doc-md-python   filters to just the variant labeled python; useful
+#                   for producing language-specific cheat-sheets from a
+#                   single demo definition.
 doc-md: record
 	go run . --doc md --from $(TRACE) --variant=all
+
+doc-md-default: record
+	go run . --doc md --from $(TRACE) --variant=default
+
+doc-md-python: record
+	go run . --doc md --from $(TRACE) --variant=python
 
 doc-html: record
 	go run . --doc html --from $(TRACE) --variant=all
