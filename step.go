@@ -315,6 +315,67 @@ func (s *StepDef) VerbatimBlocks() []VerbatimView {
 	return out
 }
 
+// NumberedCopyable is one variant exposed to the interactive copy UI
+// with a stable 1-based number. Renderers print "[N] label" alongside
+// the variant content; the pause prompt reads N back to identify what
+// to copy via demokit.Copy(content). Numbering is global across all
+// copyable blocks on the step, in declaration order, after the
+// demo's --variant filter is applied.
+type NumberedCopyable struct {
+	N       int    // 1-based number shown to the user
+	Label   string // variant label (or block label fallback) for status messages
+	Lang    string // fenced-code hint, for renderers that highlight
+	Content string // raw content; copied byte-exact
+}
+
+// NumberedCopyables returns the flat numbered list of copyable variants
+// on this step, in the order renderers should emit them. Used by both
+// PlainRenderer (digit-to-copy line prompt) and the TUI Bubble Tea
+// overlay so they share a single numbering scheme.
+//
+// A variant is "copyable" when its block is:
+//   - multi-variant (always copyable — variants are the whole point), or
+//   - single-variant inside a demo that opted into Demo.BoxedVerbatim()
+//     (single-variant unboxed blocks stay mouse-select-friendly today
+//     and don't expose a copy keystroke).
+//
+// The demo's --variant filter is **not** applied here — interactive
+// renderers always show every variant so the user can pick which to
+// copy by number. The filter is a documentation concern (markdown /
+// HTML / JSON output); reducing the interactive list to a single
+// default-marked variant would silently strip the choice the digit
+// prompt is supposed to expose.
+func (s *StepDef) NumberedCopyables() []NumberedCopyable {
+	if s == nil {
+		return nil
+	}
+	demo := s.demo
+	boxedDefault := demo != nil && demo.IsBoxedVerbatim()
+	var out []NumberedCopyable
+	for _, b := range s.verbatim {
+		if len(b.Variants) == 0 {
+			continue
+		}
+		copyable := boxedDefault || len(b.Variants) > 1
+		if !copyable {
+			continue
+		}
+		for _, va := range b.Variants {
+			label := va.Label
+			if label == "" {
+				label = b.Label
+			}
+			out = append(out, NumberedCopyable{
+				N:       len(out) + 1,
+				Label:   label,
+				Lang:    va.Lang,
+				Content: va.Content,
+			})
+		}
+	}
+	return out
+}
+
 // Coalesce attaches a function that converts the raw inputs map into a
 // single typed payload, available to the step as StepContext.Input. If
 // not set, ctx.Input == ctx.Inputs (the map itself).
