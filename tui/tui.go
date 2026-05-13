@@ -338,11 +338,17 @@ func (r *Renderer) renderUnboxedVariant(v demokit.VerbatimView) {
 // the currently-active variant's content appears inside. blockIdx is
 // the block's index within the step; the renderer reads
 // r.activeVariant[blockIdx] to decide which variant is active.
+//
+// The outer block label is bold + Title color so it stands out from
+// the dim variant tabs (the previous italic Note color was too close
+// to the inactive-tab Dim color). A blank line after the label gives
+// the tab strip / box breathing room.
 func (r *Renderer) renderBoxedBlock(blockIdx int, v demokit.VerbatimView, multi bool) {
 	p := r.Palette
-	labelStyle := lipgloss.NewStyle().Italic(true).Foreground(p.Note)
+	labelStyle := lipgloss.NewStyle().Bold(true).Foreground(p.Title)
 	if v.Label != "" {
 		fmt.Println(labelStyle.Render(v.Label))
+		fmt.Println()
 	}
 	if multi {
 		fmt.Println(r.renderTabStrip(v.Variants, r.activeIndex(blockIdx)))
@@ -578,20 +584,30 @@ func (r *Renderer) WaitForStep(opts demokit.WaitOpts) {
 }
 
 // waitWithCountdown runs the auto-accept countdown with a universal
-// "type to review" escape. On user input, the countdown stops and the
-// caller drops into the interactive hold appropriate for the step.
+// "any key to review" escape. The countdown read is in raw mode so a
+// single keypress (not just Enter) interrupts:
+//
+//   - Enter (KeyEnter or '\n') → accept and advance.
+//   - Any other key            → drop into the line-based interactive
+//                                 hold (copy loop for copyable steps,
+//                                 plain Enter wait otherwise).
+//   - Timer fires              → auto-advance.
+//
+// On terminals where raw mode is unavailable, WaitForKeyOrTimeout
+// falls back to line mode and the user has to press Enter to
+// interrupt — degraded but still functional.
 func (r *Renderer) waitWithCountdown(opts demokit.WaitOpts, copyables []copyableBlock, promptStyle lipgloss.Style) {
 	p := r.Palette
-	hint := "Enter to accept · type to review"
+	hint := "Enter accept · any key to review"
 
-	var line string
-	var gotInput bool
+	var key byte
+	var gotKey bool
 	if !opts.ShowCountdown {
-		fmt.Println(promptStyle.Render(fmt.Sprintf("  Press Enter to run (auto in %s) · type to review",
+		fmt.Println(promptStyle.Render(fmt.Sprintf("  Press Enter to run (auto in %s) · any key to review",
 			opts.AutoAcceptAfter.Round(time.Second))))
-		line, gotInput = demokit.WaitForLineOrTimeout(opts.AutoAcceptAfter, nil)
+		key, gotKey = demokit.WaitForKeyOrTimeout(opts.AutoAcceptAfter, nil)
 	} else {
-		line, gotInput = demokit.WaitForLineOrTimeout(opts.AutoAcceptAfter, func(remaining time.Duration) {
+		key, gotKey = demokit.WaitForKeyOrTimeout(opts.AutoAcceptAfter, func(remaining time.Duration) {
 			bar := plainCountdownBar(remaining, opts.AutoAcceptAfter, 20)
 			row := fmt.Sprintf("  %s  %4.1fs  (%s)", bar, remaining.Seconds(), hint)
 			fmt.Print("\r" + promptStyle.Render(row))
@@ -599,28 +615,19 @@ func (r *Renderer) waitWithCountdown(opts demokit.WaitOpts, copyables []copyable
 		fmt.Print("\r" + strings.Repeat(" ", 80) + "\r")
 	}
 
-	if !gotInput {
+	if !gotKey {
 		return // timer fired — auto-advance
 	}
-	cmd := strings.TrimSpace(line)
-	if cmd == "" {
-		return // empty Enter — accept and advance
+	if key == demokit.KeyEnter || key == '\n' {
+		return // Enter — accept and advance
 	}
 
-	// Non-empty input cancels the countdown. If we're on a copyable
-	// step and the input parses as a copy/switch command, dispatch
-	// immediately so the experienced user doesn't have to re-type;
-	// then fall into the copy loop for further interaction. Steps
-	// without copyables get a plain hold (Enter to advance).
+	// Any other key cancels the countdown. Drop into the interactive
+	// hold appropriate for the step. Raw-mode terminal is already
+	// restored by WaitForKeyOrTimeout, so cooked-mode line input
+	// (bufio + ReadString) works correctly below.
 	noteStyle := lipgloss.NewStyle().Foreground(p.Note).Italic(true)
 	if len(copyables) > 0 {
-		msg, switched := r.handleCopyCommand(cmd, copyables)
-		if msg != "" {
-			fmt.Println(noteStyle.Render("  " + msg))
-		}
-		if switched {
-			r.echoActiveVariant(copyables)
-		}
 		r.copyPromptLoop(copyables, promptStyle)
 		return
 	}
