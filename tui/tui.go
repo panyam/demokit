@@ -479,41 +479,93 @@ func (r *Renderer) WaitForStep(opts demokit.WaitOpts) {
 		Foreground(p.Prompt).
 		Italic(true)
 
-	// AutoAccept countdown owns its own input path (cancelreader-backed
-	// race against the timer). Wiring copy into it would require a
-	// raw-mode key dispatcher, which is deferred to v1.1. Steps that
-	// need copy must run without AutoAccept (the common case for
-	// interactive demos that show snippets).
+	copyables := r.copyableBlocks(r.lastStep)
+
+	// Countdown path. The user's escape hatch is "type anything to
+	// review" — empty Enter accepts and advances (today's behavior),
+	// any other input cancels the countdown and drops into the
+	// interactive hold (copy loop if the step has copyables; plain
+	// Enter wait otherwise). v1.1's raw mode will make Tab the
+	// literal trigger; the prompt wording reflects that v1 reality
+	// honestly.
 	if opts.AutoAcceptAfter > 0 {
-		if !opts.ShowCountdown {
-			fmt.Println(style.Render(fmt.Sprintf("  Press Enter to run (auto in %s)...",
-				opts.AutoAcceptAfter.Round(time.Second))))
-			demokit.WaitForEnterOrTimeout(opts.AutoAcceptAfter, nil)
-			return
-		}
-		demokit.WaitForEnterOrTimeout(opts.AutoAcceptAfter, func(remaining time.Duration) {
-			bar := plainCountdownBar(remaining, opts.AutoAcceptAfter, 20)
-			line := fmt.Sprintf("  %s  %4.1fs  (Enter to accept)", bar, remaining.Seconds())
-			fmt.Print("\r" + style.Render(line))
-		})
-		fmt.Print("\r" + strings.Repeat(" ", 70) + "\r")
+		r.waitWithCountdown(opts, copyables, style)
 		return
 	}
 
-	// No countdown — line-based pause loop with optional copy command
-	// when the rendered step has boxed/multi-variant verbatim blocks
-	// the user can grab via the clipboard primitive.
-	copyables := r.copyableBlocks(r.lastStep)
+	// No countdown — line-based pause. Copy loop when the step has
+	// copyables, otherwise today's plain Enter pause.
+	if len(copyables) > 0 {
+		r.copyPromptLoop(copyables, style)
+		return
+	}
+	fmt.Println(style.Render("  Press Enter to run this step..."))
+	bufio.NewReader(os.Stdin).ReadString('\n')
+}
+
+// waitWithCountdown runs the auto-accept countdown with a universal
+// "type to review" escape. On user input, the countdown stops and the
+// caller drops into the interactive hold appropriate for the step.
+func (r *Renderer) waitWithCountdown(opts demokit.WaitOpts, copyables []copyableBlock, promptStyle lipgloss.Style) {
+	p := r.Palette
+	hint := "Enter to accept · type to review"
+
+	var line string
+	var gotInput bool
+	if !opts.ShowCountdown {
+		fmt.Println(promptStyle.Render(fmt.Sprintf("  Press Enter to run (auto in %s) · type to review",
+			opts.AutoAcceptAfter.Round(time.Second))))
+		line, gotInput = demokit.WaitForLineOrTimeout(opts.AutoAcceptAfter, nil)
+	} else {
+		line, gotInput = demokit.WaitForLineOrTimeout(opts.AutoAcceptAfter, func(remaining time.Duration) {
+			bar := plainCountdownBar(remaining, opts.AutoAcceptAfter, 20)
+			row := fmt.Sprintf("  %s  %4.1fs  (%s)", bar, remaining.Seconds(), hint)
+			fmt.Print("\r" + promptStyle.Render(row))
+		})
+		fmt.Print("\r" + strings.Repeat(" ", 80) + "\r")
+	}
+
+	if !gotInput {
+		return // timer fired — auto-advance
+	}
+	cmd := strings.TrimSpace(line)
+	if cmd == "" {
+		return // empty Enter — accept and advance
+	}
+
+	// Non-empty input cancels the countdown. If we're on a copyable
+	// step and the input parses as a copy command, dispatch
+	// immediately so the experienced user doesn't have to re-type;
+	// then fall into the copy loop for further interaction. Steps
+	// without copyables get a plain hold (Enter to advance).
+	noteStyle := lipgloss.NewStyle().Foreground(p.Note).Italic(true)
+	if len(copyables) > 0 {
+		if msg := r.handleCopyCommand(cmd, copyables); msg != "" {
+			fmt.Println(noteStyle.Render("  " + msg))
+		}
+		r.copyPromptLoop(copyables, promptStyle)
+		return
+	}
+	fmt.Println(noteStyle.Render("  (countdown stopped — press Enter to continue)"))
+	bufio.NewReader(os.Stdin).ReadString('\n')
+}
+
+// copyPromptLoop runs the line-based pause for steps that have
+// copyable verbatim blocks. Empty input continues; `c` and `c <label>`
+// copy via the clipboard primitive and stay in the loop so the user
+// can grab several variants before advancing.
+func (r *Renderer) copyPromptLoop(copyables []copyableBlock, promptStyle lipgloss.Style) {
+	p := r.Palette
 	reader := bufio.NewReader(os.Stdin)
+	noteStyle := lipgloss.NewStyle().Foreground(p.Note).Italic(true)
 	for {
-		fmt.Println(style.Render(copyPromptHint(copyables)))
+		fmt.Println(promptStyle.Render(copyPromptHint(copyables)))
 		line, _ := reader.ReadString('\n')
 		cmd := strings.TrimSpace(line)
 		if cmd == "" {
 			return
 		}
 		if msg := r.handleCopyCommand(cmd, copyables); msg != "" {
-			noteStyle := lipgloss.NewStyle().Foreground(p.Note).Italic(true)
 			fmt.Println(noteStyle.Render("  " + msg))
 		}
 	}

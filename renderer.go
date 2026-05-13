@@ -259,46 +259,70 @@ func (r *PlainRenderer) WaitForStep(opts WaitOpts) {
 
 // WaitForEnterOrTimeout blocks until the user presses Enter on stdin or
 // the timeout elapses. Returns true if Enter was pressed, false if the
-// timer fired. Uses muesli/cancelreader to cancel the pending stdin
-// read when the timer wins, so the read goroutine never leaks across
-// successive calls — important because a leaked goroutine still
-// blocked on os.Stdin can race later prompt reads and steal input.
+// timer fired. Discards the line content — callers that need to inspect
+// what the user typed should use WaitForLineOrTimeout instead.
+//
+// Uses muesli/cancelreader to cancel the pending stdin read when the
+// timer wins, so the read goroutine never leaks across successive
+// calls — important because a leaked goroutine still blocked on
+// os.Stdin can race later prompt reads and steal input.
 //
 // onTick, if non-nil, is invoked roughly every 100ms with the time
 // remaining; renderers use it to redraw a countdown bar.
 //
 // On platforms where cancelreader is unavailable, the function
 // degrades gracefully: it sleeps for the timeout (no Enter shortcut)
-// and returns false. The pending-read leak is avoided either way.
+// and returns false.
 func WaitForEnterOrTimeout(timeout time.Duration, onTick func(remaining time.Duration)) bool {
+	_, ok := WaitForLineOrTimeout(timeout, onTick)
+	return ok
+}
+
+// WaitForLineOrTimeout is the line-returning sibling of
+// WaitForEnterOrTimeout. Reads one line from stdin racing against the
+// timer; returns ("", false) when the timer fires, (line, true) when
+// the user submitted a line (line excludes the trailing newline,
+// preserving any other whitespace the user typed).
+//
+// Used by renderers that combine an auto-advance countdown with an
+// interactive command prompt — the returned line lets the caller
+// dispatch (e.g. "c" → copy) when the input was non-empty, advance
+// when the input was empty, or auto-advance when the timer won.
+func WaitForLineOrTimeout(timeout time.Duration, onTick func(remaining time.Duration)) (string, bool) {
 	if timeout <= 0 {
-		bufio.NewReader(os.Stdin).ReadString('\n')
-		return true
+		line, _ := bufio.NewReader(os.Stdin).ReadString('\n')
+		return strings.TrimRight(line, "\r\n"), true
 	}
 	cr, err := cancelreader.NewReader(os.Stdin)
 	if err != nil {
-		// Platform unsupported — sleep and give up the Enter shortcut
-		// rather than leak a goroutine.
 		time.Sleep(timeout)
-		return false
+		return "", false
 	}
 	defer cr.Close()
 
-	enter := make(chan struct{}, 1)
+	type lineMsg struct {
+		text string
+		ok   bool
+	}
+	got := make(chan lineMsg, 1)
 	go func() {
-		bufio.NewReader(cr).ReadString('\n')
-		enter <- struct{}{}
+		text, err := bufio.NewReader(cr).ReadString('\n')
+		if err != nil {
+			got <- lineMsg{ok: false}
+			return
+		}
+		got <- lineMsg{text: strings.TrimRight(text, "\r\n"), ok: true}
 	}()
 
 	deadline := time.Now().Add(timeout)
 	if onTick == nil {
 		select {
-		case <-enter:
-			return true
+		case msg := <-got:
+			return msg.text, msg.ok
 		case <-time.After(timeout):
 			cr.Cancel()
-			<-enter
-			return false
+			<-got
+			return "", false
 		}
 	}
 
@@ -308,13 +332,13 @@ func WaitForEnterOrTimeout(timeout time.Duration, onTick func(remaining time.Dur
 		remaining := time.Until(deadline)
 		if remaining <= 0 {
 			cr.Cancel()
-			<-enter
-			return false
+			<-got
+			return "", false
 		}
 		onTick(remaining)
 		select {
-		case <-enter:
-			return true
+		case msg := <-got:
+			return msg.text, msg.ok
 		case <-tick.C:
 		}
 	}
