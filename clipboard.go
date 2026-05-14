@@ -12,23 +12,24 @@ import (
 	"time"
 )
 
-// Copy writes s to the system clipboard, trying terminal-side OSC 52
-// first and falling back to OS-specific shell tools. Returns the
-// strategy name that succeeded ("osc52", "pbcopy", "wl-copy", "xclip",
-// "xsel", "clip") and ok=true, or ("", false) if every strategy failed
-// (missing tools, OSC 52 disabled, hung daemons, etc.).
+// Copy writes s to the system clipboard. Strategy priority depends on
+// whether the process is running in a remote (SSH) session:
 //
-// Strategy order (first success wins):
+//   - Local: native shell tools first (pbcopy / wl-copy / xclip / xsel /
+//     clip.exe), OSC 52 as last resort. Native tools fail loudly when
+//     they fail; OSC 52 is silently dropped by hardened terminals
+//     (iTerm2, Terminal.app, Alacritty default off), so trying it first
+//     locally would falsely report "copied" when the terminal ignored
+//     the escape.
+//   - Remote (SSH_CONNECTION/SSH_TTY set): OSC 52 first — it's the only
+//     strategy that lands content on the user's local clipboard without
+//     a clipboard daemon on the remote host. Shell tools are still
+//     tried after as a fallback for remote machines that happen to
+//     expose a host clipboard.
 //
-//  1. OSC 52 escape sequence. Works over SSH and inside tmux (≥3.3 with
-//     set-clipboard on) without a binary on the host. Some corporate
-//     environments disable it.
-//  2. pbcopy   (darwin)
-//  3. wl-copy  (Wayland — typical on modern Linux laptops)
-//  4. xclip    (X11)
-//  5. xsel     (X11 fallback)
-//  6. clip.exe (Windows; works in WSL where /mnt/c/Windows/System32 is
-//     on PATH)
+// Returns the strategy name that succeeded ("osc52", "pbcopy",
+// "wl-copy", "xclip", "xsel", "clip") and ok=true, or ("", false) if
+// every applicable strategy failed.
 //
 // Each shell-out is given a 2-second context deadline so a hung
 // clipboard daemon never blocks demokit's caller. Missing tools (no
@@ -39,15 +40,55 @@ import (
 // is os.Stderr (writing to stdout would be captured by demokit's step
 // output redirect during Run).
 func Copy(s string) (strategy string, ok bool) {
-	if writeOSC52(s) {
-		return "osc52", true
-	}
-	for _, c := range shellCopyCandidates() {
-		if runShellCopy(c, s) {
-			return c.name, true
+	shells := shellCopyCandidates()
+	for _, name := range copyStrategyNames(shells) {
+		if name == "osc52" {
+			if writeOSC52(s) {
+				return "osc52", true
+			}
+			continue
+		}
+		for _, c := range shells {
+			if c.name != name {
+				continue
+			}
+			if runShellCopy(c, s) {
+				return c.name, true
+			}
+			break
 		}
 	}
 	return "", false
+}
+
+// copyStrategyNames returns the clipboard strategy names Copy will try,
+// in order, given the available shell candidates. Exposed at package
+// scope so tests can assert ordering without exercising the OS
+// clipboard or shell binaries.
+//
+// In remote sessions OSC 52 leads (the only universal cross-host
+// strategy). Locally, shell tools lead so a terminal silently dropping
+// OSC 52 doesn't cause Copy to report a false success.
+func copyStrategyNames(shells []shellCopyCandidate) []string {
+	names := make([]string, 0, len(shells)+1)
+	for _, c := range shells {
+		names = append(names, c.name)
+	}
+	if isRemoteSession() {
+		return append([]string{"osc52"}, names...)
+	}
+	return append(names, "osc52")
+}
+
+// isRemoteSession reports whether demokit appears to be running inside
+// an SSH session — the only signal we use to flip OSC 52 to the front
+// of the strategy list. SSH_CONNECTION is set by sshd for interactive
+// sessions; SSH_TTY covers cases where the user re-exports it through
+// a multiplexer. Mosh and other transports aren't covered; they fall
+// back to "local" ordering, which still works as long as a shell
+// clipboard tool is available on the host.
+func isRemoteSession() bool {
+	return os.Getenv("SSH_CONNECTION") != "" || os.Getenv("SSH_TTY") != ""
 }
 
 // clipboardOut is the writer the OSC 52 strategy targets. Defaults to
