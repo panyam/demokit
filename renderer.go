@@ -329,19 +329,29 @@ func (r *PlainRenderer) WaitForStep(opts WaitOpts) {
 		return
 	}
 
+	var key byte
+	var gotKey bool
 	if !opts.ShowCountdown {
-		fmt.Printf("\n    Press Enter to run (auto in %s)...", opts.AutoAcceptAfter.Round(time.Second))
-		WaitForEnterOrTimeout(opts.AutoAcceptAfter, nil)
+		fmt.Printf("\n    Press Enter to run (auto in %s · any key to hold)...", opts.AutoAcceptAfter.Round(time.Second))
+		key, gotKey = WaitForKeyOrTimeout(opts.AutoAcceptAfter, nil)
 		fmt.Println()
-		return
+	} else {
+		fmt.Println()
+		key, gotKey = WaitForKeyOrTimeout(opts.AutoAcceptAfter, func(remaining time.Duration) {
+			bar := countdownBar(remaining, opts.AutoAcceptAfter, 20)
+			fmt.Printf("\r    %s  %4.1fs  (Enter to accept · any key to hold)", bar, remaining.Seconds())
+		})
+		fmt.Printf("\r    %s\n", strings.Repeat(" ", 60))
 	}
 
-	fmt.Println()
-	WaitForEnterOrTimeout(opts.AutoAcceptAfter, func(remaining time.Duration) {
-		bar := countdownBar(remaining, opts.AutoAcceptAfter, 20)
-		fmt.Printf("\r    %s  %4.1fs  (Enter to accept now)", bar, remaining.Seconds())
-	})
-	fmt.Printf("\r    %s\n", strings.Repeat(" ", 60))
+	if !gotKey || key == KeyEnter || key == '\n' {
+		return // timer fired or Enter — advance
+	}
+	// Any other key cancels the countdown. Drop into a cooked-mode
+	// "press Enter to continue" hold so the user can read the screen
+	// before advancing.
+	fmt.Print("    (countdown stopped — press Enter to continue) ")
+	bufio.NewReader(os.Stdin).ReadString('\n')
 }
 
 // waitWithCopyPrompt is PlainRenderer's pause when the step exposes
@@ -351,30 +361,31 @@ func (r *PlainRenderer) WaitForStep(opts WaitOpts) {
 // anything else silently reprints the prompt (the prompt itself
 // describes the valid form).
 //
-// Countdown: any non-empty input cancels the auto-advance (the user
-// signaled interest in interacting). Once cancelled, the loop runs
-// without the timer until empty Enter.
+// Countdown: the first read is a single-keypress raw-mode race against
+// the timer. Enter or timer expiry → advance. Any other key cancels
+// the countdown and drops into the cooked-mode loop below; the user
+// then types their actual command (digit / Enter) with Enter as
+// usual. Matches the TUI's "any key holds" mental model.
 func (r *PlainRenderer) waitWithCopyPrompt(opts WaitOpts, copyables []NumberedCopyable) {
 	hint := promptFromCopyables(copyables)
 
-	// First read may race the countdown if AutoAcceptAfter > 0.
-	deadline := opts.AutoAcceptAfter
-	for {
-		var line string
-		var gotInput bool
-		if deadline > 0 {
-			fmt.Printf("\n    %s (auto in %s): ", hint, deadline.Round(time.Second))
-			line, gotInput = WaitForLineOrTimeout(deadline, nil)
-			if !gotInput {
-				fmt.Println() // newline after the dangling prompt
-				return        // timer fired — auto-advance
-			}
-			deadline = 0 // user signalled intent; subsequent reads are pure line mode
-		} else {
-			fmt.Printf("\n    %s: ", hint)
-			text, _ := bufio.NewReader(os.Stdin).ReadString('\n')
-			line = strings.TrimRight(text, "\r\n")
+	if opts.AutoAcceptAfter > 0 {
+		fmt.Printf("\n    %s · any key holds (auto in %s): ", hint, opts.AutoAcceptAfter.Round(time.Second))
+		key, gotKey := WaitForKeyOrTimeout(opts.AutoAcceptAfter, nil)
+		fmt.Println() // newline after the dangling prompt
+		if !gotKey {
+			return // timer fired — auto-advance
 		}
+		if key == KeyEnter || key == '\n' {
+			return // user accepted with Enter
+		}
+		// Any other key — fall through to the cooked-mode loop below.
+	}
+
+	for {
+		fmt.Printf("\n    %s: ", hint)
+		text, _ := bufio.NewReader(os.Stdin).ReadString('\n')
+		line := strings.TrimRight(text, "\r\n")
 
 		cmd := strings.TrimSpace(line)
 		if cmd == "" {
