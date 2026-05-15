@@ -340,6 +340,13 @@ func (m Model) handleKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		case "enter", " ":
+			// Demo finished (BridgeDoneMsg flipped m.done) → Enter
+			// becomes "exit". Without this Enter fires a no-op
+			// AdvanceMsg into the void and the user has to hit
+			// q / Ctrl+C just to get the shell back.
+			if m.done {
+				return m, tea.Quit
+			}
 			// Bridge path: a NotebookRenderer is blocked on waitCh.
 			// Close it to release demokit's Execute loop into the
 			// next step. Standalone path: no waitCh; the legacy
@@ -544,8 +551,14 @@ func (m Model) statusLine() string {
 	c := m.cells[m.cursor]
 	hint := c.StatusHint(m.mode)
 	if m.mode == SelectMode {
-		// At the outer level, advance is the dominant action.
-		hint = "↑/↓ navigate · Enter advance · s/f focus · q quit"
+		// At the outer level, advance is the dominant action,
+		// except when the demo is done — Enter then becomes
+		// "exit" so the user doesn't have to learn q at the end.
+		if m.done {
+			hint = "↑/↓ navigate · Enter exit · q quit"
+		} else {
+			hint = "↑/↓ navigate · Enter advance · s/f focus · q quit"
+		}
 	}
 	// Ctrl+L is the only universal recovery from a stale-cache
 	// blank screen (see model.go's handleKey comment). Surface it
