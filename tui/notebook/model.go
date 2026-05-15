@@ -3,9 +3,32 @@ package notebook
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 )
+
+// repaintTickMsg fires every repaintInterval to force a fresh
+// render pass regardless of whether other messages have arrived.
+// Bubble Tea's diff renderer can leave intermediate state on
+// screen when a burst of bridge messages arrives during startup
+// (BridgeHeader / BridgeStepCells / BridgeWait in rapid succession
+// before WindowSizeMsg lands and the first paint completes). The
+// ticker guarantees the screen reconverges with model state
+// within one tick — without needing a user keypress.
+type repaintTickMsg struct{}
+
+// repaintInterval is how often the model re-arms its repaint tick.
+// 100ms = 10 paints/sec when idle, well within the diff renderer's
+// "no work to do" cost (View() is cheap when nothing changed).
+const repaintInterval = 100 * time.Millisecond
+
+// repaintTick returns a tea.Cmd that fires one repaintTickMsg
+// after repaintInterval. Re-armed on each receipt to make it
+// perpetual.
+func repaintTick() tea.Cmd {
+	return tea.Tick(repaintInterval, func(time.Time) tea.Msg { return repaintTickMsg{} })
+}
 
 // AdvanceMsg is what the model emits as a tea.Cmd when the user
 // presses Space / Shift+Enter from SelectMode (Phase A.1's
@@ -146,9 +169,15 @@ func (m Model) SetCells(cells []Cell) Model {
 }
 
 // Init implements tea.Model. Returns the accumulated subscription
-// commands (from WithOutputSubscription) so streaming buffers start
-// pushing OutputAppendedMsg events immediately.
-func (m Model) Init() tea.Cmd { return m.initCmd }
+// commands (from WithOutputSubscription) plus the repaint ticker
+// so the screen reconverges with model state without waiting on a
+// user keypress.
+func (m Model) Init() tea.Cmd {
+	if m.initCmd == nil {
+		return repaintTick()
+	}
+	return tea.Batch(m.initCmd, repaintTick())
+}
 
 // Update implements tea.Model. Routes input by mode:
 //
@@ -234,6 +263,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case BridgeDoneMsg:
 		m.done = true
 		return m, nil
+	case repaintTickMsg:
+		// Re-arm the perpetual paint tick. The handler itself is
+		// a no-op; the Update return is what triggers BT to call
+		// View() and emit any pending diff.
+		return m, repaintTick()
 	case cellAdvanceMsg:
 		// A focused cell finished and wants us to pop back to
 		// SelectMode + advance to the next step in one motion.
