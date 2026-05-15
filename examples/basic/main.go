@@ -11,7 +11,8 @@
 // Run modes:
 //
 //	go run ./examples/basic/                              # interactive
-//	go run ./examples/basic/ --tui                        # styled boxes
+//	go run ./examples/basic/ --mode=tui                   # styled boxes (also --tui)
+//	go run ./examples/basic/ --mode=notebook              # Bubble Tea notebook UI
 //	go run ./examples/basic/ --smooth                     # plain w/ smooth scroll
 //	go run ./examples/basic/ --non-interactive            # default-input run
 //	go run ./examples/basic/ --record /tmp/r.json
@@ -26,6 +27,7 @@ import (
 
 	"github.com/panyam/demokit"
 	"github.com/panyam/demokit/tui"
+	"github.com/panyam/demokit/tui/notebook"
 )
 
 func main() {
@@ -138,21 +140,25 @@ func main() {
 		})
 
 	// --- renderer / output mode flags ---
+	// --mode=plain (default) | tui | notebook. --tui is honored as a
+	// deprecated alias for --mode=tui. --smooth adds a per-line
+	// delay to PlainRenderer (only relevant when mode is plain).
 
-	useTUI := false
 	smooth := false
 	for _, arg := range os.Args[1:] {
-		switch strings.TrimSpace(arg) {
-		case "--tui":
-			useTUI = true
-		case "--smooth":
+		if strings.TrimSpace(arg) == "--smooth" {
 			smooth = true
 		}
 	}
-	if useTUI {
+	switch demokit.Mode() {
+	case "tui":
 		demo.WithRenderer(tui.New())
-	} else if smooth {
-		demo.WithRenderer(&demokit.PlainRenderer{Delay: 18 * time.Millisecond})
+	case "notebook":
+		demo.WithRenderer(notebook.NewRenderer())
+	default:
+		if smooth {
+			demo.WithRenderer(&demokit.PlainRenderer{Delay: 18 * time.Millisecond})
+		}
 	}
 
 	demo.Execute()
