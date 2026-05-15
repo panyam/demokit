@@ -223,6 +223,14 @@ func (c *PromptCell) trySubmit() (Cell, tea.Cmd) {
 		return c, nil
 	}
 	c.done = true
+	// Blur every textinput so the bubbles cursor stops blinking
+	// inside the cell after submission. Without this, the inner
+	// textinput keeps rendering its focused style even after the
+	// cell-level cursor has moved on to the next step's cells —
+	// which reads as "focus is still on the prompt."
+	for i := range c.fields {
+		c.fields[i].Blur()
+	}
 	if c.reply != nil {
 		c.reply <- answers
 		close(c.reply)
