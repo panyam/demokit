@@ -68,12 +68,17 @@ type BridgeHeaderMsg struct {
 	StepCount   int
 }
 
-// BridgeStepCellsMsg installs a fresh single-step cell list — the
-// MetaCell + 0..N VerbatimCells + OutputCell built for the step
-// just rendered. Replaces any previous cells (Phase A.1's
-// single-step-on-screen contract). OutputBuf is the buffer the
-// new OutputCell pulls from; OutputCellID is used for re-arming
-// the SubscribeOutputBuffer listener.
+// BridgeStepCellsMsg appends the cells for one step visit
+// (MetaCell + 0..N VerbatimCells + OutputCell) to the model's cell
+// list. The list IS the trace projection — every visited step
+// stays present so the user can scroll back through prior steps,
+// re-copy variants from a previous step's VerbatimCell, etc.
+// OutputBuf is the buffer the new OutputCell pulls from;
+// OutputCellID is used for re-arming the SubscribeOutputBuffer
+// listener for this step's stream.
+//
+// The cursor is moved to the first newly-appended cell and the
+// viewport scrolls to bring it on screen.
 type BridgeStepCellsMsg struct {
 	Cells        []Cell
 	OutputBuf    *OutputBuffer

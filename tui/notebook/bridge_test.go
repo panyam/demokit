@@ -15,25 +15,36 @@ func TestBridgeHeaderMsgSetsBanner(t *testing.T) {
 	}
 }
 
-func TestBridgeStepCellsMsgReplacesAndSubscribes(t *testing.T) {
-	m := New(nil)
-	// Move-then-focus before the bridge fires.
-	m.cursor = 99
+func TestBridgeStepCellsMsgAppendsAndSubscribes(t *testing.T) {
+	// Seed the model with cells from a prior step so we can assert
+	// the new step's cells are appended (trace projection), not
+	// substituted.
+	prior := []Cell{
+		NewMetaCell("s0#0.meta", "Step Zero", "body"),
+		NewOutputCell("s0#0.output", NewOutputBuffer(), 6),
+	}
+	m := New(prior)
+	m.cursor = 0
 	m.mode = ViewMode
 
 	buf := NewOutputBuffer()
-	cells := []Cell{
+	newCells := []Cell{
 		NewMetaCell("s1#0.meta", "Step One", "body"),
 		NewOutputCell("s1#0.output", buf, 6),
 	}
-	next, cmd := m.Update(BridgeStepCellsMsg{Cells: cells, OutputBuf: buf, OutputCellID: "s1#0.output"})
+	next, cmd := m.Update(BridgeStepCellsMsg{Cells: newCells, OutputBuf: buf, OutputCellID: "s1#0.output"})
 	m = next.(Model)
 
-	if got := len(m.Cells()); got != 2 {
-		t.Fatalf("cell count = %d, want 2", got)
+	if got := len(m.Cells()); got != 4 {
+		t.Fatalf("cell count = %d, want 4 (2 prior + 2 new)", got)
 	}
-	if m.CursorIndex() != 0 || m.Mode() != SelectMode {
-		t.Errorf("BridgeStepCellsMsg did not reset cursor/mode: cursor=%d mode=%v", m.CursorIndex(), m.Mode())
+	// Cursor should snap to the first newly-appended cell — the
+	// MetaCell of the step that just rendered.
+	if got := m.CursorIndex(); got != 2 {
+		t.Errorf("cursor = %d, want 2 (first newly-appended cell)", got)
+	}
+	if m.Mode() != SelectMode {
+		t.Errorf("mode = %v, want SelectMode", m.Mode())
 	}
 	if cmd == nil {
 		t.Errorf("BridgeStepCellsMsg with OutputBuf should return a SubscribeOutputBuffer cmd")

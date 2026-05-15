@@ -22,10 +22,11 @@ import (
 //   - Bubble Tea owns the screen for the entire demo lifetime
 //     (lazy-started on the first Render call, exits on RenderDone
 //     or when the user presses q).
-//   - Single-step-on-screen: each RenderStep replaces the cell list
-//     (cross-step navigation is Phase B).
-//   - Step inputs are not supported in Phase A.2; Phase A.3 wires
-//     a PromptCell driven by bubbles/textinput.
+//   - The cell list IS the trace projection — each RenderStep
+//     appends its cells; prior steps stay navigable so the user
+//     can scroll back, re-copy variants, or read past output.
+//   - Step inputs render as a PromptCell driven by
+//     bubbles/textinput; Renderer.Prompt blocks until submission.
 type Renderer struct {
 	once     sync.Once
 	program  *tea.Program

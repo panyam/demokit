@@ -192,10 +192,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.headerDesc = msg.Description
 		return m, nil
 	case BridgeStepCellsMsg:
-		m.cells = msg.Cells
-		m.cursor = 0
+		// Append: the cell list is the trace projection. Each
+		// visited step stays present so the user can scroll back
+		// through prior steps. Cursor snaps to the first newly-
+		// appended cell (typically the MetaCell of the just-
+		// rendered step) so further keypresses act on the fresh
+		// content; viewport follows.
+		firstNew := len(m.cells)
+		m.cells = append(m.cells, msg.Cells...)
+		m.cursor = firstNew
 		m.mode = SelectMode
 		m.invalidateCaches()
+		m.ensureCursorVisible()
 		if msg.OutputBuf != nil && msg.OutputCellID != "" {
 			if m.resubscribe == nil {
 				m.resubscribe = map[string]tea.Cmd{}
