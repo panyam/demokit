@@ -56,7 +56,7 @@ func TestCellsForStepBuildsExpectedShape(t *testing.T) {
 	if step == nil {
 		t.Fatal("expected step with ID refresh")
 	}
-	cells, buf, oid := cellsForStep(0, step)
+	cells, buf, oid := cellsForStep(0, step, DefaultPalette())
 	if len(cells) != 3 {
 		t.Fatalf("cells: got %d, want 3 (meta + verbatim + output)", len(cells))
 	}

@@ -48,23 +48,26 @@ func TestMetaCellRendersTitleAndBody(t *testing.T) {
 		t.Fatal("no rows")
 	}
 	joined := strings.Join(rows, "\n")
-	if !strings.Contains(joined, "▸ Authentication starts") {
-		t.Errorf("expected title row in render, got:\n%s", joined)
+	if !strings.Contains(joined, "Authentication starts") {
+		t.Errorf("expected title text in render, got:\n%s", joined)
 	}
 	if !strings.Contains(joined, "Set up the client.") {
 		t.Errorf("expected body in render, got:\n%s", joined)
 	}
 }
 
-func TestMetaCellFocusedSwapsBullet(t *testing.T) {
+func TestMetaCellFocusedChangesBorderColor(t *testing.T) {
+	// Focus is signaled by lipgloss border color now (FocusBorder vs
+	// MetaBorder); the cell never emits the old glyph swap. We assert
+	// the rendered ANSI changes when focused vs not — exact escape
+	// sequences depend on the runtime palette so we just compare
+	// inequality.
 	c := NewMetaCell("m", "Hello", "")
-	rows := allRows(c, 60, true, SelectMode)
-	joined := strings.Join(rows, "\n")
-	if !strings.Contains(joined, "▶ Hello") {
-		t.Errorf("focused render should use ▶ marker, got:\n%s", joined)
-	}
-	if strings.Contains(joined, "▸ Hello") {
-		t.Errorf("unfocused marker leaked into focused render: %s", joined)
+	unfocused := strings.Join(allRows(c, 60, false, SelectMode), "\n")
+	c2 := NewMetaCell("m", "Hello", "")
+	focused := strings.Join(allRows(c2, 60, true, SelectMode), "\n")
+	if unfocused == focused {
+		t.Errorf("focused and unfocused renders are identical; expected border-color change\n%s", unfocused)
 	}
 }
 

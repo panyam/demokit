@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	"charm.land/lipgloss/v2"
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/panyam/demokit"
@@ -19,21 +20,24 @@ import (
 //
 // Single-variant blocks omit the tab strip but still respect 'c'.
 type VerbatimCell struct {
-	id        string
-	label     string
-	variants  []demokit.Variant
-	active    int
+	id       string
+	label    string
+	variants []demokit.Variant
+	active   int
+	palette  Palette
 
-	cachedWidth  int
-	cachedLines  []string
-	cachedHeight int
+	cachedWidth   int
+	cachedFocused bool
+	cachedActive  int
+	cachedLines   []string
+	cachedHeight  int
 
 	copyMsg string
 }
 
 // NewVerbatimCell builds a cell from a flat slice of demokit.Variants.
-// The active variant is whichever carries IsDefault (first wins), or
-// 0 if none does.
+// Active variant defaults to whichever carries IsDefault (first wins),
+// or 0 if none does.
 func NewVerbatimCell(id, label string, variants []demokit.Variant) *VerbatimCell {
 	active := 0
 	for i, v := range variants {
@@ -42,15 +46,21 @@ func NewVerbatimCell(id, label string, variants []demokit.Variant) *VerbatimCell
 			break
 		}
 	}
-	return &VerbatimCell{id: id, label: label, variants: variants, active: active}
+	return &VerbatimCell{
+		id: id, label: label, variants: variants, active: active,
+		palette: DefaultPalette(),
+	}
 }
+
+// SetPalette overrides the cell's palette.
+func (c *VerbatimCell) SetPalette(p Palette) { c.palette = p; c.cachedLines = nil }
 
 // ID implements Cell.
 func (c *VerbatimCell) ID() string { return c.id }
 
 // HeightHint implements Cell.
 func (c *VerbatimCell) HeightHint(width int) int {
-	c.materialize(width)
+	c.materialize(width, c.cachedFocused)
 	h := c.cachedHeight
 	if c.copyMsg != "" {
 		h++
@@ -59,8 +69,8 @@ func (c *VerbatimCell) HeightHint(width int) int {
 }
 
 // RenderRows implements Cell.
-func (c *VerbatimCell) RenderRows(width, startRow, endRow int, focused bool, mode Mode) []string {
-	c.materialize(width)
+func (c *VerbatimCell) RenderRows(width, startRow, endRow int, focused bool, _ Mode) []string {
+	c.materialize(width, focused)
 	total := c.cachedHeight
 	if c.copyMsg != "" {
 		total++
@@ -76,13 +86,11 @@ func (c *VerbatimCell) RenderRows(width, startRow, endRow int, focused bool, mod
 	}
 	rows := make([]string, endRow-startRow)
 	for i := startRow; i < endRow; i++ {
-		var line string
 		if i < c.cachedHeight {
-			line = c.cachedLines[i]
-		} else {
-			line = "  " + c.copyMsg
+			rows[i-startRow] = c.cachedLines[i]
+			continue
 		}
-		rows[i-startRow] = applyFocusMarker(line, focused)
+		rows[i-startRow] = "  " + c.copyMsg
 	}
 	return rows
 }
@@ -120,21 +128,19 @@ func (c *VerbatimCell) Update(msg tea.Msg, mode Mode) (Cell, tea.Cmd) {
 		}
 		return c, clearCopyMsgAfter(c.id)
 	default:
-		// 1-9 jumps. Only single-digit keys.
 		s := keyMsg.String()
 		if len(s) == 1 && s[0] >= '1' && s[0] <= '9' {
-			idx := int(s[0]-'1')
+			idx := int(s[0] - '1')
 			if idx < len(c.variants) {
 				c.active = idx
-				c.cachedLines = nil // body changed → rerender
+				c.cachedLines = nil
 			}
 		}
 	}
 	return c, nil
 }
 
-// StatusHint implements Cell. Wording adapts to the number of
-// variants so the user isn't told about keys that do nothing.
+// StatusHint implements Cell.
 func (c *VerbatimCell) StatusHint(_ Mode) string {
 	if len(c.variants) <= 1 {
 		return "c copy"
@@ -148,56 +154,70 @@ func (c *VerbatimCell) cycle(delta int) {
 		return
 	}
 	c.active = (c.active + delta + n) % n
-	c.cachedLines = nil // body changed → rerender
+	c.cachedLines = nil
 }
 
-func (c *VerbatimCell) materialize(width int) {
+func (c *VerbatimCell) materialize(width int, focused bool) {
 	if width <= 0 {
 		width = 80
 	}
-	if c.cachedWidth == width && c.cachedLines != nil {
+	if c.cachedWidth == width &&
+		c.cachedFocused == focused &&
+		c.cachedActive == c.active &&
+		c.cachedLines != nil {
 		return
 	}
-	var rows []string
-	rows = append(rows, "")
-	// Label row.
-	header := "❑ " + c.label
-	if c.label == "" {
-		header = "❑ verbatim"
+	border := c.palette.VerbatimBorder
+	if focused {
+		border = c.palette.FocusBorder
 	}
-	rows = append(rows, header)
-	// Tab strip — single-variant blocks skip it.
+
+	labelStyle := lipgloss.NewStyle().Bold(true).Foreground(c.palette.Title)
+	label := c.label
+	if label == "" {
+		label = "verbatim"
+	}
+	parts := []string{labelStyle.Render(label)}
+
 	if len(c.variants) > 1 {
-		var tabs []string
-		for i, v := range c.variants {
-			name := v.Label
-			if name == "" {
-				name = fmt.Sprintf("#%d", i+1)
-			}
-			if i == c.active {
-				tabs = append(tabs, "["+name+"]")
-			} else {
-				tabs = append(tabs, " "+name+" ")
-			}
-		}
-		rows = append(rows, "  "+strings.Join(tabs, " "))
-		rows = append(rows, "")
-	} else {
-		rows = append(rows, "")
+		parts = append(parts, c.renderTabs())
 	}
-	// Active body — split into lines, truncated/wrapped to width.
-	body := c.variants[c.active].Content
-	for _, line := range strings.Split(body, "\n") {
-		line = strings.TrimRight(line, "\r")
-		// Hard-wrap rather than soft-wrap — code is layout-sensitive,
-		// wrapping mid-token would lie about the snippet.
-		if len(line) > width-4 {
-			line = line[:width-4]
-		}
-		rows = append(rows, "    "+line)
-	}
-	rows = append(rows, "")
+
+	codeStyle := lipgloss.NewStyle().Foreground(c.palette.Note)
+	parts = append(parts, codeStyle.Render(c.variants[c.active].Content))
+
+	content := strings.Join(parts, "\n\n")
+	boxStyle := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(border).
+		Padding(0, 1).
+		Width(maxBoxWidth(width))
+	rendered := boxStyle.Render(content)
+
 	c.cachedWidth = width
-	c.cachedLines = rows
-	c.cachedHeight = len(rows)
+	c.cachedFocused = focused
+	c.cachedActive = c.active
+	c.cachedLines = strings.Split(rendered, "\n")
+	c.cachedHeight = len(c.cachedLines)
+}
+
+// renderTabs builds the variant tab strip — active variant gets the
+// Active color + brackets, others are dim. Single-variant cells skip
+// this row.
+func (c *VerbatimCell) renderTabs() string {
+	active := lipgloss.NewStyle().Bold(true).Foreground(c.palette.Active)
+	dim := lipgloss.NewStyle().Foreground(c.palette.Dim)
+	var out []string
+	for i, v := range c.variants {
+		name := v.Label
+		if name == "" {
+			name = fmt.Sprintf("#%d", i+1)
+		}
+		if i == c.active {
+			out = append(out, active.Render("["+name+"]"))
+		} else {
+			out = append(out, dim.Render(" "+name+" "))
+		}
+	}
+	return strings.Join(out, " ")
 }

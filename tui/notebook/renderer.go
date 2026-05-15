@@ -17,15 +17,15 @@ import (
 // tea.Msg sent into the program; WaitForStep blocks on a channel
 // the model closes when the user presses the advance key.
 //
-// Phase A.2 contract:
+// Contract:
 //
 //   - Bubble Tea owns the screen for the entire demo lifetime
 //     (lazy-started on the first Render call, exits on RenderDone
 //     or when the user presses q).
 //   - Single-step-on-screen: each RenderStep replaces the cell list
-//     (Phase B keeps prior steps).
-//   - Step inputs are not supported (Prompt panics). Phase A.3
-//     adds textinput-driven prompts.
+//     (cross-step navigation is Phase B).
+//   - Step inputs are not supported in Phase A.2; Phase A.3 wires
+//     a PromptCell driven by bubbles/textinput.
 type Renderer struct {
 	once     sync.Once
 	program  *tea.Program
@@ -35,6 +35,7 @@ type Renderer struct {
 	activeBuf      *OutputBuffer
 	activeCellID   string
 	stepCount      int
+	palette        Palette
 
 	// killed is set when the user pressed q (program exited).
 	// Subsequent bridge calls become no-ops; WaitForStep returns
@@ -45,9 +46,18 @@ type Renderer struct {
 
 // NewRenderer constructs a fresh notebook renderer. The Bubble Tea
 // program is started lazily on the first Render call so cheap test
-// constructions don't grab a terminal.
+// constructions don't grab a terminal. Default palette is auto-
+// detected against the terminal background; override via
+// WithPalette before the first Render call.
 func NewRenderer() *Renderer {
-	return &Renderer{}
+	return &Renderer{palette: DefaultPalette()}
+}
+
+// WithPalette overrides the palette used to construct cells. Must
+// be called before the first Render call.
+func (r *Renderer) WithPalette(p Palette) *Renderer {
+	r.palette = p
+	return r
 }
 
 // ensureProgram lazily starts the tea.Program in a background
@@ -94,7 +104,7 @@ func (r *Renderer) RenderHeader(title, description string, stepCount int) {
 // StreamOutput chunks feed into.
 func (r *Renderer) RenderStep(stepNum, totalSteps int, step *demokit.StepDef) {
 	r.ensureProgram()
-	cells, buf, outputID := cellsForStep(stepNum, step)
+	cells, buf, outputID := cellsForStep(stepNum, step, r.palette)
 	r.mu.Lock()
 	r.activeBuf = buf
 	r.activeCellID = outputID
@@ -134,6 +144,7 @@ func (r *Renderer) RenderSection(section *demokit.SectionDef) {
 	r.ensureProgram()
 	id := fmt.Sprintf("section#%s", slugify(section.Title()))
 	cell := NewSectionCell(id, section.Title(), section.Body())
+	cell.SetPalette(r.palette)
 	r.send(BridgeSectionCellMsg{Cell: cell})
 }
 
@@ -204,7 +215,9 @@ func (r *Renderer) StreamOutput(stepNum int, chunk []byte, out io.Writer) {
 // cellsForStep builds the cell list for one step visit. Output is
 // (cells, buffer, outputCellID); the renderer holds buffer +
 // outputCellID for subsequent StreamOutput / RenderResult routing.
-func cellsForStep(visit int, s *demokit.StepDef) ([]Cell, *OutputBuffer, string) {
+// The supplied palette is propagated to every cell so they all
+// render against the same theme.
+func cellsForStep(visit int, s *demokit.StepDef, palette Palette) ([]Cell, *OutputBuffer, string) {
 	base := slugify(s.StepID())
 	if base == "" {
 		base = fmt.Sprintf("step%d", visit)
@@ -212,16 +225,22 @@ func cellsForStep(visit int, s *demokit.StepDef) ([]Cell, *OutputBuffer, string)
 
 	body := buildMetaBody(s)
 	metaID := fmt.Sprintf("%s#%d.meta", base, visit)
-	cells := []Cell{NewMetaCell(metaID, s.Title(), body)}
+	meta := NewMetaCell(metaID, s.Title(), body)
+	meta.SetPalette(palette)
+	cells := []Cell{meta}
 
 	for i, vb := range s.VerbatimBlocks() {
 		vid := fmt.Sprintf("%s#%d.verbatim%d", base, visit, i)
-		cells = append(cells, NewVerbatimCell(vid, vb.Label, variantsFromView(vb.Variants)))
+		vc := NewVerbatimCell(vid, vb.Label, variantsFromView(vb.Variants))
+		vc.SetPalette(palette)
+		cells = append(cells, vc)
 	}
 
 	buf := NewOutputBuffer()
 	outputID := fmt.Sprintf("%s#%d.output", base, visit)
-	cells = append(cells, NewOutputCell(outputID, buf, 12))
+	oc := NewOutputCell(outputID, buf, 12)
+	oc.SetPalette(palette)
+	cells = append(cells, oc)
 	return cells, buf, outputID
 }
 

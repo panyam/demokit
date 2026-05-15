@@ -3,6 +3,7 @@ package notebook
 import (
 	"strings"
 
+	"charm.land/lipgloss/v2"
 	tea "github.com/charmbracelet/bubbletea"
 )
 
@@ -11,47 +12,50 @@ import (
 // text. Read-only in Phase A; future EditMode would let the user
 // rename or rewrite the note.
 //
-// Held immutable after construction (the demo's *Step content
-// doesn't mutate during the trace). Width caching keeps repeated
-// HeightHint calls cheap.
+// Renders as a lipgloss-bordered box; the border color comes from
+// the configured Palette (MetaBorder when unfocused, FocusBorder
+// when focused). Width caching keeps repeated HeightHint calls
+// cheap.
 type MetaCell struct {
-	id    string
-	title string
-	// body is the rendered, wrap-ready body text (arrows + refs +
-	// note, joined with blank lines). NotebookRenderer pre-formats
-	// it from the StepDef so MetaCell doesn't need a back-reference
-	// to demokit types in Phase A.
-	body string
+	id      string
+	title   string
+	body    string
+	palette Palette
 
-	// width cache: lines/heightForWidth describe the body rendered
-	// at the given width. Invalidated on width change.
-	cachedWidth  int
-	cachedLines  []string
-	cachedHeight int
+	// Box geometry cache: cachedFor describes the (width, focused)
+	// pair the cached lines/height correspond to. Invalidated when
+	// either changes.
+	cachedWidth   int
+	cachedFocused bool
+	cachedLines   []string
+	cachedHeight  int
 }
 
-// NewMetaCell builds a MetaCell. title is the step's display title;
-// body is the rendered prose (already joined). id should be unique
-// across the trace (e.g. "step.name#visit0.meta").
+// NewMetaCell builds a MetaCell. The cell uses DefaultPalette until
+// the renderer bridge overrides it via SetPalette — keeps test
+// construction trivial.
 func NewMetaCell(id, title, body string) *MetaCell {
-	return &MetaCell{id: id, title: title, body: body}
+	return &MetaCell{id: id, title: title, body: body, palette: DefaultPalette()}
 }
+
+// SetPalette overrides the cell's palette. Called by the renderer
+// bridge so the notebook-level theme propagates to every cell.
+func (c *MetaCell) SetPalette(p Palette) { c.palette = p; c.cachedLines = nil }
 
 // ID implements Cell.
 func (c *MetaCell) ID() string { return c.id }
 
-// HeightHint implements Cell. The cell renders as: blank line +
-// "▸ TITLE" + blank line + wrapped body lines + trailing blank.
+// HeightHint implements Cell.
 func (c *MetaCell) HeightHint(width int) int {
-	c.materialize(width)
+	c.materialize(width, c.cachedFocused)
 	return c.cachedHeight
 }
 
-// RenderRows implements Cell — returns the half-open row range.
-// Clamped to availability so a viewport asking past the end just
-// gets fewer rows back.
-func (c *MetaCell) RenderRows(width, startRow, endRow int, focused bool, mode Mode) []string {
-	c.materialize(width)
+// RenderRows implements Cell — returns the half-open row range,
+// clamped to availability so a viewport asking past the end gets
+// fewer rows back.
+func (c *MetaCell) RenderRows(width, startRow, endRow int, focused bool, _ Mode) []string {
+	c.materialize(width, focused)
 	if startRow < 0 {
 		startRow = 0
 	}
@@ -61,84 +65,64 @@ func (c *MetaCell) RenderRows(width, startRow, endRow int, focused bool, mode Mo
 	if startRow >= endRow {
 		return nil
 	}
-	// Title row gets the focus marker swap; every other row is
-	// pass-through. The title is whichever row starts with a
-	// printable rune + space, so applyFocusMarker (which checks
-	// shape) does the right thing without hardcoding indices.
-	rows := make([]string, endRow-startRow)
-	for i := startRow; i < endRow; i++ {
-		rows[i-startRow] = applyFocusMarker(c.cachedLines[i], focused)
-	}
-	return rows
+	out := make([]string, endRow-startRow)
+	copy(out, c.cachedLines[startRow:endRow])
+	return out
 }
 
-// Update implements Cell. MetaCell is read-only in Phase A — no key
-// handling at all, including Esc (the model handles Esc at the
-// outer level by popping mode).
-func (c *MetaCell) Update(_ tea.Msg, _ Mode) (Cell, tea.Cmd) {
-	return c, nil
-}
+// Update implements Cell. MetaCell is read-only in Phase A.
+func (c *MetaCell) Update(_ tea.Msg, _ Mode) (Cell, tea.Cmd) { return c, nil }
 
 // StatusHint implements Cell — MetaCell exposes only the
-// advance-step gesture, since it has no per-cell action.
+// advance-step gesture since it has no per-cell action.
 func (c *MetaCell) StatusHint(_ Mode) string {
 	return "Space/Shift+Enter advance"
 }
 
-// materialize lazily rebuilds cachedLines/cachedHeight when width
-// changes. Cheap on cache hit; the body wrap is the only work on
-// miss and even that's bounded by the cell's text length.
-func (c *MetaCell) materialize(width int) {
+// materialize rebuilds cachedLines + cachedHeight when width or
+// focus state changes. The box renders title (bold, palette.Title)
+// + an optional body (wrapped to fit inside the border).
+func (c *MetaCell) materialize(width int, focused bool) {
 	if width <= 0 {
 		width = 80
 	}
-	if c.cachedWidth == width && c.cachedLines != nil {
+	if c.cachedWidth == width && c.cachedFocused == focused && c.cachedLines != nil {
 		return
 	}
-	var rows []string
-	rows = append(rows, "")
-	rows = append(rows, "▸ "+c.title)
-	rows = append(rows, "")
-	if strings.TrimSpace(c.body) != "" {
-		for _, line := range wrapPlain(c.body, width-2) {
-			rows = append(rows, "  "+line)
-		}
-		rows = append(rows, "")
+	border := c.palette.MetaBorder
+	if focused {
+		border = c.palette.FocusBorder
 	}
+
+	titleStyle := lipgloss.NewStyle().Bold(true).Foreground(c.palette.Title)
+	content := titleStyle.Render(c.title)
+	if strings.TrimSpace(c.body) != "" {
+		bodyStyle := lipgloss.NewStyle().Foreground(c.palette.Note)
+		content = content + "\n\n" + bodyStyle.Render(c.body)
+	}
+
+	boxStyle := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(border).
+		Padding(0, 1).
+		Width(maxBoxWidth(width))
+
+	rendered := boxStyle.Render(content)
 	c.cachedWidth = width
-	c.cachedLines = rows
-	c.cachedHeight = len(rows)
+	c.cachedFocused = focused
+	c.cachedLines = strings.Split(rendered, "\n")
+	c.cachedHeight = len(c.cachedLines)
 }
 
-// wrapPlain is the package-local wrap helper used by Meta/Section
-// cells. Word-wraps each input paragraph (separated by '\n') to
-// max width. Blank input lines become single blank output lines.
-// Keep this tiny — cells do their own indentation outside of it.
-func wrapPlain(s string, width int) []string {
-	if width <= 4 {
-		width = 4
+// maxBoxWidth returns the inner content width for a lipgloss
+// rounded-border box at the given outer width: 2 chars for the
+// vertical borders + 2 chars of horizontal padding = 4 chars
+// reserved. Clamped to a minimum so narrow terminals don't blow up
+// the wrap logic.
+func maxBoxWidth(outer int) int {
+	w := outer - 4
+	if w < 10 {
+		w = 10
 	}
-	var out []string
-	for _, para := range strings.Split(s, "\n") {
-		if strings.TrimSpace(para) == "" {
-			out = append(out, "")
-			continue
-		}
-		words := strings.Fields(para)
-		if len(words) == 0 {
-			out = append(out, "")
-			continue
-		}
-		line := words[0]
-		for _, w := range words[1:] {
-			if len(line)+1+len(w) > width {
-				out = append(out, line)
-				line = w
-				continue
-			}
-			line = line + " " + w
-		}
-		out = append(out, line)
-	}
-	return out
+	return w
 }
