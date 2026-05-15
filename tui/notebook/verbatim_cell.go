@@ -82,11 +82,7 @@ func (c *VerbatimCell) RenderRows(width, startRow, endRow int, focused bool, mod
 		} else {
 			line = "  " + c.copyMsg
 		}
-		// Decorate the focus marker on the label row (row 1).
-		if focused && i == 1 && strings.HasPrefix(line, "❑ ") {
-			line = "▶ " + line[len("❑ "):]
-		}
-		rows[i-startRow] = line
+		rows[i-startRow] = applyFocusMarker(line, focused)
 	}
 	return rows
 }
