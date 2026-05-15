@@ -1,6 +1,7 @@
 package notebook
 
 import (
+	"fmt"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -72,12 +73,27 @@ type Model struct {
 	// stays on screen. Bumped by ensureCursorVisible after every
 	// arrow-key navigation.
 	viewportOffset int
+
+	// palette is the theme used for model-owned chrome (status line,
+	// banner) and propagated to dynamically-created cells like
+	// PromptCell. Cells constructed via cellsForStep get their
+	// palette from the renderer directly.
+	palette Palette
 }
 
 // New constructs a model over a flat cell list. Cursor starts on
 // the first cell; mode starts in SelectMode (the outermost level).
+// Palette defaults to DefaultPalette; override with WithPalette.
 func New(cells []Cell) Model {
-	return Model{cells: cells, mode: SelectMode}
+	return Model{cells: cells, mode: SelectMode, palette: DefaultPalette()}
+}
+
+// WithPalette sets the model's palette. Used by the renderer
+// bridge so model-owned chrome (status, banner) and on-the-fly
+// cells (PromptCell) match the renderer's theme.
+func (m Model) WithPalette(p Palette) Model {
+	m.palette = p
+	return m
 }
 
 // WithQuitOnAdvance enables a small-demo affordance: pressing the
@@ -209,6 +225,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case BridgeDoneMsg:
 		m.done = true
+		return m, nil
+	case BridgePromptMsg:
+		// Append a PromptCell to the current cell list and auto-
+		// focus it; the user starts typing immediately. The cell
+		// holds the reply channel and closes it on submit.
+		pid := fmt.Sprintf("prompt#%d", len(m.cells))
+		cell := NewPromptCell(pid, msg.Inputs, msg.Reply, m.palette)
+		m.cells = append(m.cells, cell)
+		m.cursor = len(m.cells) - 1
+		m.mode = ViewMode
+		m.ensureCursorVisible()
 		return m, nil
 	case tea.KeyMsg:
 		return m.handleKey(msg)

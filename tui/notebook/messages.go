@@ -112,3 +112,30 @@ type BridgeWaitMsg struct {
 // shows a "Done." banner and stays alive until the user presses q
 // so they can scroll back through prior cells before exiting.
 type BridgeDoneMsg struct{}
+
+// BridgePromptMsg appends a PromptCell to the current cell list
+// and blocks the renderer's Prompt call on Reply. The model
+// auto-focuses the new cell so the user can start typing
+// immediately. When the user submits valid answers, the model
+// sends them via Reply and the renderer's Prompt returns.
+//
+// Reply is closed (not sent to) on submission — the model sends
+// the answer map via the buffered channel before close. Tests
+// can construct this message directly.
+type BridgePromptMsg struct {
+	Inputs []promptInput
+	Reply  chan map[string]any
+}
+
+// promptInput is the per-field projection of demokit.InputDef that
+// PromptCell consumes. Kept package-local so the notebook doesn't
+// re-export an alias of demokit's type; renderer.Prompt builds the
+// slice from each InputDef before sending.
+type promptInput struct {
+	Name    string
+	Prompt  string
+	Default any
+	Kind    string
+	Options []string
+	parse   func(string) (any, error)
+}

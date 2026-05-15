@@ -180,13 +180,46 @@ func (r *Renderer) WaitForStep(opts demokit.WaitOpts) {
 	}
 }
 
-// Prompt is unimplemented in Phase A.2. demokit only calls Prompt
-// when a step declares inputs; until Phase A.3 adds a textinput-
-// driven prompt UI, notebook mode panics so the user notices.
+// Prompt appends a PromptCell to the current cell list and blocks
+// until the user submits valid answers. The cell drives the
+// textinput-based UI; the model closes Reply after sending the
+// answer map.
 //
-// To opt out: don't pass --mode=notebook for demos that prompt.
+// If the user quits the program (q / Ctrl+C) before submitting,
+// Reply never receives and Prompt unblocks via the program-done
+// channel, returning an empty map. demokit's Execute treats that
+// as "no answers" — the step's Run sees an empty Inputs map.
 func (r *Renderer) Prompt(stepID string, inputs []demokit.InputDef) map[string]any {
-	panic("notebook mode does not support step inputs yet — re-run without --mode=notebook (Phase A.3 will add textinput-driven prompts)")
+	r.ensureProgram()
+	reply := make(chan map[string]any, 1)
+	r.send(BridgePromptMsg{Inputs: promptInputsFrom(inputs), Reply: reply})
+	select {
+	case ans, ok := <-reply:
+		if !ok || ans == nil {
+			return map[string]any{}
+		}
+		return ans
+	case <-r.progDone:
+		return map[string]any{}
+	}
+}
+
+// promptInputsFrom projects demokit.InputDef into the notebook's
+// per-field shape, capturing the Parse closure so the PromptCell
+// can validate each entry without depending on the demokit type.
+func promptInputsFrom(inputs []demokit.InputDef) []promptInput {
+	out := make([]promptInput, len(inputs))
+	for i, in := range inputs {
+		out[i] = promptInput{
+			Name:    in.Name,
+			Prompt:  in.Prompt,
+			Default: in.Default,
+			Kind:    in.Kind,
+			Options: in.Options,
+			parse:   in.Parse,
+		}
+	}
+	return out
 }
 
 // --- demokit.StreamingRenderer ---
