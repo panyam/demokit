@@ -110,7 +110,7 @@ func (c *OutputCell) RenderRows(width, startRow, endRow int, focused bool, _ Mod
 	content := title + "\n" + bodyText + "\n" + status
 
 	boxStyle := lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
+		Border(focusedBorder(focused)).
 		BorderForeground(border).
 		Padding(0, 1).
 		Width(maxBoxWidth(width))

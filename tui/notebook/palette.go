@@ -33,6 +33,23 @@ type Palette struct {
 	Header   color.Color // bottom-row status / banner accent
 }
 
+// focusedBorder returns the lipgloss border style to apply for a
+// cell at the given focus state. Unfocused cells use a rounded
+// single-line border; focused cells switch to a thick (heavy
+// single-line) border so the cursor is unmistakable even when the
+// color delta is faint (low-contrast terminals, SSH over a
+// muted color profile, color-blind users).
+//
+// Both styles occupy identical character positions — one row of
+// border on each side — so HeightHint stays accurate and the
+// viewport row math doesn't shift when focus moves between cells.
+func focusedBorder(focused bool) lipgloss.Border {
+	if focused {
+		return lipgloss.ThickBorder()
+	}
+	return lipgloss.RoundedBorder()
+}
+
 // DefaultPalette returns a palette adapted to the terminal's
 // background. Uses lipgloss.HasDarkBackground for auto detection,
 // same as tui.DefaultPalette.

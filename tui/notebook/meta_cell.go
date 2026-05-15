@@ -102,7 +102,7 @@ func (c *MetaCell) materialize(width int, focused bool) {
 	}
 
 	boxStyle := lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
+		Border(focusedBorder(focused)).
 		BorderForeground(border).
 		Padding(0, 1).
 		Width(maxBoxWidth(width))

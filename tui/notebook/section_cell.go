@@ -124,7 +124,7 @@ func (c *SectionCell) materialize(width int, focused bool) {
 	content := titleStyle.Render(c.title) + "\n\n" + bodyStyle.Render(c.body)
 
 	boxStyle := lipgloss.NewStyle().
-		Border(lipgloss.NormalBorder()).
+		Border(focusedBorder(focused)).
 		BorderForeground(border).
 		Padding(0, 1).
 		Width(maxBoxWidth(width))

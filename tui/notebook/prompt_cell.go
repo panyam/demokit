@@ -121,7 +121,7 @@ func (c *PromptCell) RenderRows(width, startRow, endRow int, focused bool, _ Mod
 	}
 
 	boxStyle := lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
+		Border(focusedBorder(focused)).
 		BorderForeground(border).
 		Padding(0, 1).
 		Width(maxBoxWidth(width))

@@ -188,7 +188,7 @@ func (c *VerbatimCell) materialize(width int, focused bool) {
 
 	content := strings.Join(parts, "\n\n")
 	boxStyle := lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
+		Border(focusedBorder(focused)).
 		BorderForeground(border).
 		Padding(0, 1).
 		Width(maxBoxWidth(width))
