@@ -3,10 +3,12 @@ package notebook
 import (
 	"fmt"
 	"io"
+	"os"
 	"strings"
 	"sync"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/x/term"
 
 	"github.com/panyam/demokit"
 )
@@ -65,19 +67,30 @@ func (r *Renderer) WithPalette(p Palette) *Renderer {
 // goroutine. Idempotent; safe to call from every Render method.
 func (r *Renderer) ensureProgram() {
 	r.once.Do(func() {
+		// Capture stdin termios before Bubble Tea raw-modes it.
+		// Bubble Tea is supposed to restore on its own when Run()
+		// returns, but some exit paths (signal-driven SIGINT,
+		// panic-during-render) skip the restore — leaving the
+		// terminal with ONLCR off so the user's shell output
+		// staircases. Saving the state ourselves and restoring
+		// unconditionally guarantees the shell is back to normal
+		// regardless of how the program exits.
+		var origTermState *term.State
+		if fd := os.Stdin.Fd(); term.IsTerminal(fd) {
+			origTermState, _ = term.GetState(fd)
+		}
+
 		m := New(nil)
 		r.program = tea.NewProgram(m, tea.WithAltScreen())
 		r.progDone = make(chan struct{})
 		go func() {
 			defer close(r.progDone)
 			_, _ = r.program.Run()
-			// Bubble Tea's alt-screen exit doesn't always leave
-			// the cursor at column 0 — some terminal emulators
-			// land it at the column the cursor occupied inside
-			// the alt-screen, so the shell prompt overlaps the
-			// last visible row's content. A single CR-LF after
-			// Run() returns puts the shell prompt on a fresh
-			// line on every emulator we've tested.
+			if origTermState != nil {
+				_ = term.Restore(os.Stdin.Fd(), origTermState)
+			}
+			// A trailing CR-LF settles the cursor onto a fresh
+			// line in case alt-screen exit left it mid-row.
 			fmt.Print("\r\n")
 			r.mu.Lock()
 			r.killed = true
