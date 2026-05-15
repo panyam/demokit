@@ -34,11 +34,12 @@ type Renderer struct {
 	program  *tea.Program
 	progDone chan struct{}
 
-	mu             sync.Mutex
-	activeBuf      *OutputBuffer
-	activeCellID   string
-	stepCount      int
-	palette        Palette
+	mu                sync.Mutex
+	activeBuf         *OutputBuffer
+	activeCellID      string
+	stepCount         int
+	palette           Palette
+	pendingOutputCell Cell // OutputCell stashed by RenderStep, flushed by appendOutputCell
 
 	// killed is set when the user pressed q (program exited).
 	// Subsequent bridge calls become no-ops; WaitForStep returns
@@ -121,17 +122,46 @@ func (r *Renderer) RenderHeader(title, description string, stepCount int) {
 	r.send(BridgeHeaderMsg{Title: title, Description: description, StepCount: stepCount})
 }
 
-// RenderStep builds the cell list for the visited step and ships it
-// to the model. The OutputCell created here is what subsequent
-// StreamOutput chunks feed into.
+// RenderStep builds the cell list for the visited step's body
+// (MetaCell + 0..N VerbatimCells) and ships it to the model. The
+// OutputCell is constructed here and stashed on the renderer but
+// NOT sent yet — appendOutputCell flushes it later, once the user
+// has actually signalled "run" (WaitForStep released or Prompt
+// submitted). That keeps the visual order honest:
+//
+//	[meta]
+//	[verbatim]
+//	[prompt or "Enter to run"]
+//	[output appears here — just before it starts streaming]
 func (r *Renderer) RenderStep(stepNum, totalSteps int, step *demokit.StepDef) {
 	r.ensureProgram()
-	cells, buf, outputID := cellsForStep(stepNum, step, r.palette)
+	bodyCells, outputCell, buf, outputID := cellsForStep(stepNum, step, r.palette)
 	r.mu.Lock()
 	r.activeBuf = buf
 	r.activeCellID = outputID
+	r.pendingOutputCell = outputCell
 	r.mu.Unlock()
-	r.send(BridgeStepCellsMsg{Cells: cells, OutputBuf: buf, OutputCellID: outputID})
+	r.send(BridgeStepCellsMsg{Cells: bodyCells})
+}
+
+// appendOutputCell flushes the OutputCell stashed by RenderStep to
+// the model. Called from WaitForStep (after the user pressed
+// advance) or Prompt (after the user submitted) so the cell only
+// materializes when the step is actually about to run.
+//
+// Safe to call multiple times — the second call is a no-op
+// because pendingOutputCell is nil'd after the first flush.
+func (r *Renderer) appendOutputCell() {
+	r.mu.Lock()
+	cell := r.pendingOutputCell
+	buf := r.activeBuf
+	cellID := r.activeCellID
+	r.pendingOutputCell = nil
+	r.mu.Unlock()
+	if cell == nil {
+		return
+	}
+	r.send(BridgeAppendOutputCellMsg{Cell: cell, OutputBuf: buf, OutputCellID: cellID})
 }
 
 // RenderResult marks the active OutputCell as done. If demokit
@@ -181,8 +211,8 @@ func (r *Renderer) RenderDone() {
 
 // WaitForStep blocks demokit's Execute loop until the user presses
 // the advance key in the model. The model closes the channel on
-// receipt of Space (or Shift+Enter); WaitForStep returns
-// immediately afterward so the next step can run.
+// receipt of Enter / Space; WaitForStep flushes the pending
+// OutputCell to the model and returns so the step can run.
 //
 // If the program has already exited (user pressed q mid-demo),
 // WaitForStep returns immediately so Execute can finish naturally.
@@ -198,6 +228,7 @@ func (r *Renderer) WaitForStep(opts demokit.WaitOpts) {
 	r.send(BridgeWaitMsg{Ch: ch})
 	select {
 	case <-ch:
+		r.appendOutputCell()
 	case <-r.progDone:
 	}
 }
@@ -217,6 +248,7 @@ func (r *Renderer) Prompt(stepID string, inputs []demokit.InputDef) map[string]a
 	r.send(BridgePromptMsg{Inputs: promptInputsFrom(inputs), Reply: reply})
 	select {
 	case ans, ok := <-reply:
+		r.appendOutputCell()
 		if !ok || ans == nil {
 			return map[string]any{}
 		}
@@ -267,12 +299,15 @@ func (r *Renderer) StreamOutput(stepNum int, chunk []byte, out io.Writer) {
 
 // --- helpers ---
 
-// cellsForStep builds the cell list for one step visit. Output is
-// (cells, buffer, outputCellID); the renderer holds buffer +
-// outputCellID for subsequent StreamOutput / RenderResult routing.
-// The supplied palette is propagated to every cell so they all
-// render against the same theme.
-func cellsForStep(visit int, s *demokit.StepDef, palette Palette) ([]Cell, *OutputBuffer, string) {
+// cellsForStep builds the cell list for one step visit, split
+// into the body (always shown immediately at RenderStep time) and
+// the OutputCell (deferred until the user signals "run"). Returns
+// (bodyCells, outputCell, outputBuf, outputCellID).
+//
+// The renderer holds outputCell as pending until appendOutputCell
+// flushes it; outputBuf / outputCellID stay on the renderer for
+// StreamOutput / RenderResult routing.
+func cellsForStep(visit int, s *demokit.StepDef, palette Palette) ([]Cell, Cell, *OutputBuffer, string) {
 	base := slugify(s.StepID())
 	if base == "" {
 		base = fmt.Sprintf("step%d", visit)
@@ -295,8 +330,7 @@ func cellsForStep(visit int, s *demokit.StepDef, palette Palette) ([]Cell, *Outp
 	outputID := fmt.Sprintf("%s#%d.output", base, visit)
 	oc := NewOutputCell(outputID, buf, 12)
 	oc.SetPalette(palette)
-	cells = append(cells, oc)
-	return cells, buf, outputID
+	return cells, oc, buf, outputID
 }
 
 // buildMetaBody renders the step's note + arrows + refs into a

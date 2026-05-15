@@ -56,19 +56,24 @@ func TestCellsForStepBuildsExpectedShape(t *testing.T) {
 	if step == nil {
 		t.Fatal("expected step with ID refresh")
 	}
-	cells, buf, oid := cellsForStep(0, step, DefaultPalette())
-	if len(cells) != 3 {
-		t.Fatalf("cells: got %d, want 3 (meta + verbatim + output)", len(cells))
+	bodyCells, outputCell, buf, oid := cellsForStep(0, step, DefaultPalette())
+	// Body is meta + verbatim only — OutputCell is deferred until
+	// the user has signalled "run" (handled separately by the
+	// renderer's appendOutputCell flush).
+	if len(bodyCells) != 2 {
+		t.Fatalf("body cells: got %d, want 2 (meta + verbatim)", len(bodyCells))
 	}
-	if _, ok := cells[0].(*MetaCell); !ok {
-		t.Errorf("cells[0] = %T, want *MetaCell", cells[0])
+	if _, ok := bodyCells[0].(*MetaCell); !ok {
+		t.Errorf("bodyCells[0] = %T, want *MetaCell", bodyCells[0])
 	}
-	if _, ok := cells[1].(*VerbatimCell); !ok {
-		t.Errorf("cells[1] = %T, want *VerbatimCell", cells[1])
+	if _, ok := bodyCells[1].(*VerbatimCell); !ok {
+		t.Errorf("bodyCells[1] = %T, want *VerbatimCell", bodyCells[1])
 	}
-	if oc, ok := cells[2].(*OutputCell); !ok {
-		t.Errorf("cells[2] = %T, want *OutputCell", cells[2])
-	} else if oc.ID() != oid {
+	oc, ok := outputCell.(*OutputCell)
+	if !ok {
+		t.Fatalf("outputCell = %T, want *OutputCell", outputCell)
+	}
+	if oc.ID() != oid {
 		t.Errorf("output cell ID mismatch: oc.ID()=%q, returned oid=%q", oc.ID(), oid)
 	}
 	if buf == nil {

@@ -224,13 +224,23 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Append: the cell list is the trace projection. Each
 		// visited step stays present so the user can scroll back
 		// through prior steps. Cursor snaps to the first newly-
-		// appended cell (typically the MetaCell of the just-
-		// rendered step) so further keypresses act on the fresh
-		// content; viewport follows.
+		// appended cell (the MetaCell of the just-rendered step)
+		// so further keypresses act on the fresh content;
+		// viewport follows.
 		firstNew := len(m.cells)
 		m.cells = append(m.cells, msg.Cells...)
 		m.cursor = firstNew
 		m.mode = SelectMode
+		m.invalidateCaches()
+		m.ensureCursorVisible()
+		return m, nil
+	case BridgeAppendOutputCellMsg:
+		// OutputCell flushed by the renderer once the user has
+		// signalled "run" (WaitForStep released or Prompt
+		// submitted). Append at the tail and register the
+		// SubscribeOutputBuffer listener so streamed lines reach
+		// the model as OutputAppendedMsg.
+		m.cells = append(m.cells, msg.Cell)
 		m.invalidateCaches()
 		m.ensureCursorVisible()
 		if msg.OutputBuf != nil && msg.OutputCellID != "" {
@@ -246,15 +256,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.cells = append(m.cells, msg.Cell)
 		return m, nil
 	case BridgeOutputDoneMsg:
-		// Find the OutputCell and flip its "live"→"end" indicator.
-		for _, c := range m.cells {
-			if c.ID() != msg.CellID {
-				continue
-			}
-			if oc, ok := c.(*OutputCell); ok {
+		// Flip the most-recently-appended OutputCell to "end".
+		// At this point in the flow it MUST be the last cell —
+		// it was just added by BridgeAppendOutputCellMsg and
+		// nothing else has been appended since. No need to scan
+		// the whole list by ID; the tail tells the story.
+		if len(m.cells) > 0 {
+			if oc, ok := m.cells[len(m.cells)-1].(*OutputCell); ok {
 				oc.MarkDone()
 			}
-			break
 		}
 		return m, nil
 	case BridgeWaitMsg:

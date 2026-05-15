@@ -68,19 +68,29 @@ type BridgeHeaderMsg struct {
 	StepCount   int
 }
 
-// BridgeStepCellsMsg appends the cells for one step visit
-// (MetaCell + 0..N VerbatimCells + OutputCell) to the model's cell
-// list. The list IS the trace projection — every visited step
-// stays present so the user can scroll back through prior steps,
-// re-copy variants from a previous step's VerbatimCell, etc.
-// OutputBuf is the buffer the new OutputCell pulls from;
-// OutputCellID is used for re-arming the SubscribeOutputBuffer
-// listener for this step's stream.
+// BridgeStepCellsMsg appends the cells for one step visit's
+// "body" — MetaCell + 0..N VerbatimCells. The OutputCell is
+// added separately (BridgeAppendOutputCellMsg) only after the
+// user has actually advanced past the pause / prompt gesture,
+// so the visual order matches the temporal order:
+//
+//	[meta]
+//	[prompt or "Enter to run"]
+//	[output — appears here, just before it streams]
 //
 // The cursor is moved to the first newly-appended cell and the
 // viewport scrolls to bring it on screen.
 type BridgeStepCellsMsg struct {
-	Cells        []Cell
+	Cells []Cell
+}
+
+// BridgeAppendOutputCellMsg appends the step's OutputCell after
+// the user has signalled "go" (released WaitForStep / submitted
+// Prompt). Carries the OutputBuffer pointer so the model can
+// register the SubscribeOutputBuffer listener at the same time —
+// matching the pre-split BridgeStepCellsMsg's behavior.
+type BridgeAppendOutputCellMsg struct {
+	Cell         Cell
 	OutputBuf    *OutputBuffer
 	OutputCellID string
 }

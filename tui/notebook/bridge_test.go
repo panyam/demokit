@@ -15,10 +15,12 @@ func TestBridgeHeaderMsgSetsBanner(t *testing.T) {
 	}
 }
 
-func TestBridgeStepCellsMsgAppendsAndSubscribes(t *testing.T) {
+func TestBridgeStepCellsMsgAppendsBodyOnly(t *testing.T) {
 	// Seed the model with cells from a prior step so we can assert
-	// the new step's cells are appended (trace projection), not
-	// substituted.
+	// the new step's body cells are appended (trace projection),
+	// not substituted. OutputCell for the new step is no longer
+	// part of BridgeStepCellsMsg — it's deferred until the user
+	// signals "run" via BridgeAppendOutputCellMsg.
 	prior := []Cell{
 		NewMetaCell("s0#0.meta", "Step Zero", "body"),
 		NewOutputCell("s0#0.output", NewOutputBuffer(), 6),
@@ -27,27 +29,62 @@ func TestBridgeStepCellsMsgAppendsAndSubscribes(t *testing.T) {
 	m.cursor = 0
 	m.mode = ViewMode
 
-	buf := NewOutputBuffer()
 	newCells := []Cell{
 		NewMetaCell("s1#0.meta", "Step One", "body"),
-		NewOutputCell("s1#0.output", buf, 6),
 	}
-	next, cmd := m.Update(BridgeStepCellsMsg{Cells: newCells, OutputBuf: buf, OutputCellID: "s1#0.output"})
+	next, _ := m.Update(BridgeStepCellsMsg{Cells: newCells})
 	m = next.(Model)
 
-	if got := len(m.Cells()); got != 4 {
-		t.Fatalf("cell count = %d, want 4 (2 prior + 2 new)", got)
+	if got := len(m.Cells()); got != 3 {
+		t.Fatalf("cell count = %d, want 3 (2 prior + 1 new body)", got)
 	}
-	// Cursor should snap to the first newly-appended cell — the
-	// MetaCell of the step that just rendered.
 	if got := m.CursorIndex(); got != 2 {
 		t.Errorf("cursor = %d, want 2 (first newly-appended cell)", got)
 	}
 	if m.Mode() != SelectMode {
 		t.Errorf("mode = %v, want SelectMode", m.Mode())
 	}
+}
+
+func TestBridgeAppendOutputCellMsgAppendsAndSubscribes(t *testing.T) {
+	// Seed with a step body already appended.
+	prior := []Cell{NewMetaCell("s1#0.meta", "Step One", "")}
+	m := New(prior)
+
+	buf := NewOutputBuffer()
+	oc := NewOutputCell("s1#0.output", buf, 6)
+	next, cmd := m.Update(BridgeAppendOutputCellMsg{
+		Cell: oc, OutputBuf: buf, OutputCellID: "s1#0.output",
+	})
+	m = next.(Model)
+
+	if got := len(m.Cells()); got != 2 {
+		t.Fatalf("cell count after append = %d, want 2", got)
+	}
+	if _, ok := m.Cells()[len(m.Cells())-1].(*OutputCell); !ok {
+		t.Errorf("tail cell is not *OutputCell")
+	}
 	if cmd == nil {
-		t.Errorf("BridgeStepCellsMsg with OutputBuf should return a SubscribeOutputBuffer cmd")
+		t.Errorf("BridgeAppendOutputCellMsg should return a SubscribeOutputBuffer cmd")
+	}
+}
+
+func TestBridgeOutputDoneMsgFlipsTailOutputCell(t *testing.T) {
+	// Per the new contract, BridgeOutputDoneMsg looks at the tail
+	// rather than searching by ID.
+	buf := NewOutputBuffer()
+	tail := NewOutputCell("tail", buf, 4)
+	m := New([]Cell{
+		NewMetaCell("m", "T", ""),
+		tail,
+	})
+	if tail.done {
+		t.Fatal("expected tail OutputCell to start not-done")
+	}
+	next, _ := m.Update(BridgeOutputDoneMsg{CellID: "tail"})
+	_ = next
+	if !tail.done {
+		t.Error("BridgeOutputDoneMsg did not flip tail OutputCell")
 	}
 }
 
