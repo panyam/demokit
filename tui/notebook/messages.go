@@ -55,3 +55,60 @@ func SubscribeOutputBuffer(buf *OutputBuffer, cellID string) tea.Cmd {
 		return OutputAppendedMsg{CellID: cellID}
 	}
 }
+
+// --- Renderer-bridge messages (PR2; produced by NotebookRenderer,
+//     consumed by Model.Update) ---
+
+// BridgeHeaderMsg arrives once per demo, at the start when
+// demokit.RenderHeader fires. The model stashes the title for the
+// top banner row.
+type BridgeHeaderMsg struct {
+	Title       string
+	Description string
+	StepCount   int
+}
+
+// BridgeStepCellsMsg installs a fresh single-step cell list — the
+// MetaCell + 0..N VerbatimCells + OutputCell built for the step
+// just rendered. Replaces any previous cells (Phase A.1's
+// single-step-on-screen contract). OutputBuf is the buffer the
+// new OutputCell pulls from; OutputCellID is used for re-arming
+// the SubscribeOutputBuffer listener.
+type BridgeStepCellsMsg struct {
+	Cells        []Cell
+	OutputBuf    *OutputBuffer
+	OutputCellID string
+}
+
+// BridgeSectionCellMsg appends a SectionCell to the current list.
+// demokit.RenderSection fires for non-executable blocks that sit
+// between executable steps; in Phase A.1's single-step-on-screen
+// mode we treat them as standalone "step-shaped" cell lists too
+// (just a single SectionCell, no MetaCell/OutputCell).
+type BridgeSectionCellMsg struct {
+	Cell Cell
+}
+
+// BridgeOutputDoneMsg flips the active OutputCell from "live" to
+// "end" — fired when demokit.RenderResult is invoked.
+type BridgeOutputDoneMsg struct {
+	CellID string
+}
+
+// BridgeWaitMsg hands the model a channel to close when the user
+// presses the advance key. WaitForStep on the renderer side blocks
+// on the same channel — closing unblocks both the renderer and
+// frees Execute to call into the next step.
+//
+// Ch is buffered/unbuffered at the caller's choice; the model
+// only ever closes it. The model nils out its internal pointer on
+// close so a second advance press becomes a no-op rather than
+// closing twice.
+type BridgeWaitMsg struct {
+	Ch chan struct{}
+}
+
+// BridgeDoneMsg fires when demokit.RenderDone is invoked. The model
+// shows a "Done." banner and stays alive until the user presses q
+// so they can scroll back through prior cells before exiting.
+type BridgeDoneMsg struct{}

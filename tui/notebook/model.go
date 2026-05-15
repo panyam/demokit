@@ -50,9 +50,28 @@ type Model struct {
 
 	// resubscribe maps OutputAppendedMsg.CellID → a tea.Cmd that
 	// re-listens on that buffer. Registered via WithOutputSubscription
-	// so the model can keep streaming alive without knowing about
-	// OutputBuffer internals.
+	// (standalone demo path) or BridgeStepCellsMsg (renderer-bridge
+	// path) so the model can keep streaming alive without knowing
+	// about OutputBuffer internals.
 	resubscribe map[string]tea.Cmd
+
+	// waitCh, when non-nil, is the channel a NotebookRenderer
+	// WaitForStep call is blocked on. Pressing the advance key
+	// closes it (and clears the pointer so a second press doesn't
+	// double-close).
+	waitCh chan struct{}
+
+	// header / done are populated by bridge messages so the View can
+	// render a banner row above the cells.
+	header     string
+	headerDesc string
+	done       bool
+
+	// viewportOffset is the first cell-region row visible in the
+	// viewport. Auto-followed on cursor movement so the focused cell
+	// stays on screen. Bumped by ensureCursorVisible after every
+	// arrow-key navigation.
+	viewportOffset int
 }
 
 // New constructs a model over a flat cell list. Cursor starts on
@@ -152,6 +171,45 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, resub
 		}
 		return m, nil
+	case BridgeHeaderMsg:
+		m.header = msg.Title
+		m.headerDesc = msg.Description
+		return m, nil
+	case BridgeStepCellsMsg:
+		m.cells = msg.Cells
+		m.cursor = 0
+		m.mode = SelectMode
+		m.invalidateCaches()
+		if msg.OutputBuf != nil && msg.OutputCellID != "" {
+			if m.resubscribe == nil {
+				m.resubscribe = map[string]tea.Cmd{}
+			}
+			cmd := SubscribeOutputBuffer(msg.OutputBuf, msg.OutputCellID)
+			m.resubscribe[msg.OutputCellID] = cmd
+			return m, cmd
+		}
+		return m, nil
+	case BridgeSectionCellMsg:
+		m.cells = append(m.cells, msg.Cell)
+		return m, nil
+	case BridgeOutputDoneMsg:
+		// Find the OutputCell and flip its "live"→"end" indicator.
+		for _, c := range m.cells {
+			if c.ID() != msg.CellID {
+				continue
+			}
+			if oc, ok := c.(*OutputCell); ok {
+				oc.MarkDone()
+			}
+			break
+		}
+		return m, nil
+	case BridgeWaitMsg:
+		m.waitCh = msg.Ch
+		return m, nil
+	case BridgeDoneMsg:
+		m.done = true
+		return m, nil
 	case tea.KeyMsg:
 		return m.handleKey(msg)
 	}
@@ -161,6 +219,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 // handleKey dispatches keystrokes by mode. Kept separate from
 // Update so the switch over Msg types stays readable.
 func (m Model) handleKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
+	// Ctrl+L: force a full repaint. Bubble Tea uses diff rendering;
+	// when the underlying terminal is cleared by something else
+	// (most commonly the user hitting Ctrl+L themselves before we
+	// captured it), the frame cache and the visible screen go out
+	// of sync — diffs come up empty and the screen stays blank
+	// until a WindowSizeMsg invalidates the cache. tea.ClearScreen
+	// resets the cache and forces a full repaint on the next
+	// frame. Handled in both modes so the recovery key is always
+	// available.
+	if key.String() == "ctrl+l" {
+		return m, tea.ClearScreen
+	}
 	if m.mode == SelectMode {
 		switch key.String() {
 		case "ctrl+c", "q":
@@ -168,11 +238,13 @@ func (m Model) handleKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case "up", "k":
 			if m.cursor > 0 {
 				m.cursor--
+				m.ensureCursorVisible()
 			}
 			return m, nil
 		case "down", "j":
 			if m.cursor < len(m.cells)-1 {
 				m.cursor++
+				m.ensureCursorVisible()
 			}
 			return m, nil
 		case "enter":
@@ -181,6 +253,15 @@ func (m Model) handleKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		case " ", "shift+enter":
+			// Bridge path: a NotebookRenderer is blocked on waitCh.
+			// Close it to release demokit's Execute loop into the
+			// next step. Standalone path: no waitCh; the legacy
+			// AdvanceMsg fires (quitOnAdvance can pair it with Quit).
+			if m.waitCh != nil {
+				close(m.waitCh)
+				m.waitCh = nil
+				return m, nil
+			}
 			if m.quitOnAdvance {
 				return m, tea.Sequence(emitAdvance, tea.Quit)
 			}
@@ -230,9 +311,62 @@ func (m *Model) invalidateCaches() {
 	}
 }
 
+// bodyHeight returns the row count available for cell content
+// (terminal height minus reserved header + status rows).
+func (m *Model) bodyHeight() int {
+	reserved := 1 // status line
+	if m.header != "" {
+		reserved++
+	}
+	body := m.height - reserved
+	if body < 1 {
+		body = 1
+	}
+	return body
+}
+
+// cellRowSpan returns the half-open row range [start, end) the
+// cell at idx occupies in the unscrolled rendered stack. Returns
+// (0, 0) for out-of-range indices.
+func (m *Model) cellRowSpan(idx int) (int, int) {
+	if idx < 0 || idx >= len(m.cells) {
+		return 0, 0
+	}
+	start := 0
+	for i := 0; i < idx; i++ {
+		start += m.cells[i].HeightHint(m.width)
+	}
+	return start, start + m.cells[idx].HeightHint(m.width)
+}
+
+// ensureCursorVisible scrolls viewportOffset just enough to put the
+// focused cell's row span inside the body window. If the cell is
+// taller than the viewport, prefers showing the cell's top —
+// scrolling within an oversized cell is the cell's job (j/k on
+// OutputCell), not the viewport's.
+func (m *Model) ensureCursorVisible() {
+	if m.width == 0 || m.height == 0 {
+		return
+	}
+	body := m.bodyHeight()
+	start, end := m.cellRowSpan(m.cursor)
+	if start < m.viewportOffset {
+		m.viewportOffset = start
+		return
+	}
+	if end > m.viewportOffset+body {
+		m.viewportOffset = end - body
+		if m.viewportOffset > start {
+			// Cell taller than viewport — pin to its top.
+			m.viewportOffset = start
+		}
+	}
+}
+
 // View implements tea.Model. Renders cells top-to-bottom, clipping
-// to the terminal viewport. Bottom row is a status line that shows
-// the focused cell's StatusHint or a mode banner.
+// to the terminal viewport. Top row is a header banner (when the
+// renderer bridge has supplied one); bottom row is a status line
+// that shows the focused cell's StatusHint or a mode banner.
 func (m Model) View() string {
 	if m.width == 0 || m.height == 0 {
 		// Bubble Tea hasn't sent the first WindowSizeMsg yet; render
@@ -240,28 +374,64 @@ func (m Model) View() string {
 		return ""
 	}
 
-	bodyRows := m.height - 1 // reserve last row for status
+	reserved := 1 // status line at the bottom
+	if m.header != "" {
+		reserved++ // header banner at the top
+	}
+	bodyRows := m.height - reserved
 	if bodyRows < 1 {
 		bodyRows = 1
 	}
 
-	// Phase A.1: render every cell top-to-bottom in declaration
-	// order. Cross-step viewport scrolling is Phase B.
 	var lines []string
+	if m.header != "" {
+		banner := "≡ " + m.header
+		if m.done {
+			banner += "  · Done."
+		}
+		lines = append(lines, banner)
+	}
+
+	// Render cells against the viewport window. viewportOffset is
+	// auto-followed on cursor movement; per-cell scrolling (j/k on
+	// OutputCell) is handled inside the cell.
+	bodyStart := len(lines)
+	rowCursor := 0 // absolute row index inside the unscrolled stack
+	windowStart := m.viewportOffset
+	windowEnd := m.viewportOffset + bodyRows
 	for i, c := range m.cells {
 		focused := i == m.cursor
 		h := c.HeightHint(m.width)
-		rows := c.RenderRows(m.width, 0, h, focused, m.mode)
+		cellEnd := rowCursor + h
+		if cellEnd <= windowStart {
+			rowCursor = cellEnd
+			continue
+		}
+		if rowCursor >= windowEnd {
+			break
+		}
+		// Clip the cell's row range to the viewport window.
+		lo := 0
+		hi := h
+		if rowCursor < windowStart {
+			lo = windowStart - rowCursor
+		}
+		if cellEnd > windowEnd {
+			hi = h - (cellEnd - windowEnd)
+		}
+		rows := c.RenderRows(m.width, lo, hi, focused, m.mode)
 		lines = append(lines, rows...)
-		if len(lines) >= bodyRows {
+		rowCursor = cellEnd
+		if len(lines)-bodyStart >= bodyRows {
 			break
 		}
 	}
-	// Pad or trim to exactly bodyRows.
-	if len(lines) > bodyRows {
-		lines = lines[:bodyRows]
+	// Pad or trim to exactly (bodyStart + bodyRows).
+	target := bodyStart + bodyRows
+	if len(lines) > target {
+		lines = lines[:target]
 	}
-	for len(lines) < bodyRows {
+	for len(lines) < target {
 		lines = append(lines, "")
 	}
 	lines = append(lines, m.statusLine())
@@ -288,5 +458,8 @@ func (m Model) statusLine() string {
 		// At the outer level, advance is the dominant action.
 		hint = "↑/↓ navigate · Enter focus · Space advance · q quit"
 	}
-	return "[" + m.mode.Name() + "] " + c.ID() + " · " + hint
+	// Ctrl+L is the only universal recovery from a stale-cache
+	// blank screen (see model.go's handleKey comment). Surface it
+	// uniformly so the user never has to know it's there.
+	return "[" + m.mode.Name() + "] " + c.ID() + " · " + hint + " · Ctrl+L refresh"
 }

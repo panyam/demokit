@@ -61,15 +61,13 @@ func (c *MetaCell) RenderRows(width, startRow, endRow int, focused bool, mode Mo
 	if startRow >= endRow {
 		return nil
 	}
-	// Apply focus prefix on the title row only — '▸' becomes '▶' so
-	// the user can see which cell holds the cursor.
+	// Title row gets the focus marker swap; every other row is
+	// pass-through. The title is whichever row starts with a
+	// printable rune + space, so applyFocusMarker (which checks
+	// shape) does the right thing without hardcoding indices.
 	rows := make([]string, endRow-startRow)
 	for i := startRow; i < endRow; i++ {
-		line := c.cachedLines[i]
-		if focused && strings.HasPrefix(line, "▸ ") {
-			line = "▶ " + line[len("▸ "):]
-		}
-		rows[i-startRow] = line
+		rows[i-startRow] = applyFocusMarker(c.cachedLines[i], focused)
 	}
 	return rows
 }

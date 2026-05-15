@@ -140,6 +140,48 @@ func TestIsTUI(t *testing.T) {
 	})
 }
 
+// TestModeRecognizesBothForms verifies --mode=value and --mode value
+// resolve to the same string. The unset case returns "" so callers
+// can treat "" / "plain" as equivalent.
+func TestModeRecognizesBothForms(t *testing.T) {
+	withArgs(t, []string{"prog", "--mode=notebook"}, func() {
+		if got := Mode(); got != "notebook" {
+			t.Errorf("--mode=notebook → Mode() = %q, want %q", got, "notebook")
+		}
+	})
+	withArgs(t, []string{"prog", "--mode", "tui"}, func() {
+		if got := Mode(); got != "tui" {
+			t.Errorf("--mode tui → Mode() = %q, want %q", got, "tui")
+		}
+	})
+	withArgs(t, []string{"prog", "-addr", ":8081"}, func() {
+		if got := Mode(); got != "" {
+			t.Errorf("no --mode → Mode() = %q, want \"\"", got)
+		}
+	})
+}
+
+// TestModeViaTUIAlias verifies the bare --tui flag (deprecated)
+// resolves to Mode() == "tui" so examples that haven't migrated to
+// --mode yet keep working.
+func TestModeViaTUIAlias(t *testing.T) {
+	withArgs(t, []string{"prog", "--tui"}, func() {
+		if got := Mode(); got != "tui" {
+			t.Errorf("--tui alias → Mode() = %q, want %q", got, "tui")
+		}
+	})
+}
+
+// TestIsTUIHonorsMode verifies IsTUI() also recognizes --mode=tui,
+// not just the legacy bare --tui flag.
+func TestIsTUIHonorsMode(t *testing.T) {
+	withArgs(t, []string{"prog", "--mode=tui"}, func() {
+		if !IsTUI() {
+			t.Error("IsTUI() = false, want true with --mode=tui")
+		}
+	})
+}
+
 // TestIsNonInteractive verifies the same shape for --non-interactive.
 func TestIsNonInteractive(t *testing.T) {
 	withArgs(t, []string{"prog", "--non-interactive"}, func() {

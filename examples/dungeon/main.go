@@ -7,7 +7,8 @@
 // Try:
 //
 //	go run ./examples/dungeon/                              # interactive
-//	go run ./examples/dungeon/ --tui                        # styled boxes
+//	go run ./examples/dungeon/ --mode=tui                   # styled boxes (also --tui)
+//	go run ./examples/dungeon/ --mode=notebook              # Bubble Tea notebook UI
 //	go run ./examples/dungeon/ --record /tmp/dungeon.json   # save a trace
 //	go run ./examples/dungeon/ --doc json                   # for embed hosts
 //
@@ -27,12 +28,11 @@ import (
 	_ "embed"
 	"fmt"
 	"math/rand/v2"
-	"os"
-	"strings"
 	"time"
 
 	"github.com/panyam/demokit"
 	"github.com/panyam/demokit/tui"
+	"github.com/panyam/demokit/tui/notebook"
 	"github.com/panyam/demokit/web"
 )
 
@@ -302,11 +302,14 @@ func main() {
 	// `end` is a prose-only section — no Run needed.
 
 	// --- renderer flag ---
+	// --mode=plain (default) | tui | notebook. --tui is honored as
+	// a deprecated alias for --mode=tui.
 
-	for _, arg := range os.Args[1:] {
-		if strings.TrimSpace(arg) == "--tui" {
-			demo.WithRenderer(tui.New())
-		}
+	switch demokit.Mode() {
+	case "tui":
+		demo.WithRenderer(tui.New())
+	case "notebook":
+		demo.WithRenderer(notebook.NewRenderer())
 	}
 
 	demo.Execute()

@@ -9,8 +9,9 @@
 //
 // Try:
 //
-//	go run ./examples/graph/                                    # interactive
-//	go run ./examples/graph/ --tui                              # TUI box style
+//	go run ./examples/graph/                                    # interactive (plain)
+//	go run ./examples/graph/ --mode=tui                         # TUI box style (also --tui)
+//	go run ./examples/graph/ --mode=notebook                    # Bubble Tea notebook UI
 //	go run ./examples/graph/ --record /tmp/run.json             # save a trace
 //	go run ./examples/graph/ --replay /tmp/run.json             # replay it
 //	go run ./examples/graph/ --doc md --from /tmp/run.json      # markdown doc
@@ -19,12 +20,11 @@ package main
 
 import (
 	"fmt"
-	"os"
-	"strings"
 	"time"
 
 	"github.com/panyam/demokit"
 	"github.com/panyam/demokit/tui"
+	"github.com/panyam/demokit/tui/notebook"
 	"github.com/panyam/demokit/web"
 )
 
@@ -209,16 +209,14 @@ defer resp.Body.Close()`),
 	demo.Step("End").ID("end")
 
 	// --- renderer / output mode flags ---
+	// --mode=plain (default) | tui | notebook. --tui is honored as a
+	// deprecated alias for --mode=tui.
 
-	useTUI := false
-	for _, arg := range os.Args[1:] {
-		switch strings.TrimSpace(arg) {
-		case "--tui":
-			useTUI = true
-		}
-	}
-	if useTUI {
+	switch demokit.Mode() {
+	case "tui":
 		demo.WithRenderer(tui.New())
+	case "notebook":
+		demo.WithRenderer(notebook.NewRenderer())
 	}
 
 	demo.Execute()
