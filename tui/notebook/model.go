@@ -254,21 +254,20 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 // handleKey dispatches keystrokes by mode. Kept separate from
 // Update so the switch over Msg types stays readable.
 func (m Model) handleKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
-	// Ctrl+L: force a full repaint. Bubble Tea uses diff rendering;
-	// when the underlying terminal is cleared by something else
-	// (most commonly the user hitting Ctrl+L themselves before we
-	// captured it), the frame cache and the visible screen go out
-	// of sync — diffs come up empty and the screen stays blank
-	// until a WindowSizeMsg invalidates the cache. tea.ClearScreen
-	// resets the cache and forces a full repaint on the next
-	// frame. Handled in both modes so the recovery key is always
-	// available.
-	if key.String() == "ctrl+l" {
+	// Universal interrupt keys — handled before mode dispatch so a
+	// focused cell can't accidentally consume them. Ctrl+C and
+	// Ctrl+D are the standard CLI "exit now" gestures; Ctrl+L is
+	// the recovery key for the diff-renderer stale-cache failure
+	// mode (see issue 16).
+	switch key.String() {
+	case "ctrl+c", "ctrl+d":
+		return m, tea.Quit
+	case "ctrl+l":
 		return m, tea.ClearScreen
 	}
 	if m.mode == SelectMode {
 		switch key.String() {
-		case "ctrl+c", "q":
+		case "q":
 			return m, tea.Quit
 		case "up", "k":
 			if m.cursor > 0 {

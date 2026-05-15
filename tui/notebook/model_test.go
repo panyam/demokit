@@ -176,6 +176,50 @@ func TestModelResizeInvalidatesCaches(t *testing.T) {
 	}
 }
 
+func TestModelCtrlCQuitsFromAnyMode(t *testing.T) {
+	// SelectMode: Ctrl+C → Quit.
+	m := New(makeThreeCells())
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+	if cmd == nil {
+		t.Fatal("Ctrl+C in SelectMode should return a quit cmd")
+	}
+	if msg := cmd(); msg != nil {
+		if _, ok := msg.(tea.QuitMsg); !ok {
+			t.Errorf("Ctrl+C cmd returned %T, want tea.QuitMsg", msg)
+		}
+	}
+
+	// ViewMode: Ctrl+C should still quit, not pass to the cell.
+	m2 := New(makeThreeCells())
+	m2 = sendKey(t, m2, "down")
+	m2 = sendKey(t, m2, "s") // focus
+	if m2.Mode() != ViewMode {
+		t.Fatal("setup: expected ViewMode")
+	}
+	_, cmd2 := m2.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+	if cmd2 == nil {
+		t.Fatal("Ctrl+C in ViewMode should also return a quit cmd (universal interrupt)")
+	}
+	if msg := cmd2(); msg != nil {
+		if _, ok := msg.(tea.QuitMsg); !ok {
+			t.Errorf("Ctrl+C in ViewMode cmd returned %T, want tea.QuitMsg", msg)
+		}
+	}
+}
+
+func TestModelCtrlDQuits(t *testing.T) {
+	m := New(makeThreeCells())
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlD})
+	if cmd == nil {
+		t.Fatal("Ctrl+D should return a quit cmd")
+	}
+	if msg := cmd(); msg != nil {
+		if _, ok := msg.(tea.QuitMsg); !ok {
+			t.Errorf("Ctrl+D cmd returned %T, want tea.QuitMsg", msg)
+		}
+	}
+}
+
 func TestModelQuitOnQ(t *testing.T) {
 	m := New(makeThreeCells())
 	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("q")})

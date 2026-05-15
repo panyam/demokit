@@ -71,6 +71,14 @@ func (r *Renderer) ensureProgram() {
 		go func() {
 			defer close(r.progDone)
 			_, _ = r.program.Run()
+			// Bubble Tea's alt-screen exit doesn't always leave
+			// the cursor at column 0 — some terminal emulators
+			// land it at the column the cursor occupied inside
+			// the alt-screen, so the shell prompt overlaps the
+			// last visible row's content. A single CR-LF after
+			// Run() returns puts the shell prompt on a fresh
+			// line on every emulator we've tested.
+			fmt.Print("\r\n")
 			r.mu.Lock()
 			r.killed = true
 			r.mu.Unlock()
