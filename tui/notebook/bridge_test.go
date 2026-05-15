@@ -15,28 +15,76 @@ func TestBridgeHeaderMsgSetsBanner(t *testing.T) {
 	}
 }
 
-func TestBridgeStepCellsMsgReplacesAndSubscribes(t *testing.T) {
-	m := New(nil)
-	// Move-then-focus before the bridge fires.
-	m.cursor = 99
+func TestBridgeStepCellsMsgAppendsBodyOnly(t *testing.T) {
+	// Seed the model with cells from a prior step so we can assert
+	// the new step's body cells are appended (trace projection),
+	// not substituted. OutputCell for the new step is no longer
+	// part of BridgeStepCellsMsg — it's deferred until the user
+	// signals "run" via BridgeAppendOutputCellMsg.
+	prior := []Cell{
+		NewMetaCell("s0#0.meta", "Step Zero", "body"),
+		NewOutputCell("s0#0.output", NewOutputBuffer(), 6),
+	}
+	m := New(prior)
+	m.cursor = 0
 	m.mode = ViewMode
 
-	buf := NewOutputBuffer()
-	cells := []Cell{
+	newCells := []Cell{
 		NewMetaCell("s1#0.meta", "Step One", "body"),
-		NewOutputCell("s1#0.output", buf, 6),
 	}
-	next, cmd := m.Update(BridgeStepCellsMsg{Cells: cells, OutputBuf: buf, OutputCellID: "s1#0.output"})
+	next, _ := m.Update(BridgeStepCellsMsg{Cells: newCells})
+	m = next.(Model)
+
+	if got := len(m.Cells()); got != 3 {
+		t.Fatalf("cell count = %d, want 3 (2 prior + 1 new body)", got)
+	}
+	if got := m.CursorIndex(); got != 2 {
+		t.Errorf("cursor = %d, want 2 (first newly-appended cell)", got)
+	}
+	if m.Mode() != SelectMode {
+		t.Errorf("mode = %v, want SelectMode", m.Mode())
+	}
+}
+
+func TestBridgeAppendOutputCellMsgAppendsAndSubscribes(t *testing.T) {
+	// Seed with a step body already appended.
+	prior := []Cell{NewMetaCell("s1#0.meta", "Step One", "")}
+	m := New(prior)
+
+	buf := NewOutputBuffer()
+	oc := NewOutputCell("s1#0.output", buf, 6)
+	next, cmd := m.Update(BridgeAppendOutputCellMsg{
+		Cell: oc, OutputBuf: buf, OutputCellID: "s1#0.output",
+	})
 	m = next.(Model)
 
 	if got := len(m.Cells()); got != 2 {
-		t.Fatalf("cell count = %d, want 2", got)
+		t.Fatalf("cell count after append = %d, want 2", got)
 	}
-	if m.CursorIndex() != 0 || m.Mode() != SelectMode {
-		t.Errorf("BridgeStepCellsMsg did not reset cursor/mode: cursor=%d mode=%v", m.CursorIndex(), m.Mode())
+	if _, ok := m.Cells()[len(m.Cells())-1].(*OutputCell); !ok {
+		t.Errorf("tail cell is not *OutputCell")
 	}
 	if cmd == nil {
-		t.Errorf("BridgeStepCellsMsg with OutputBuf should return a SubscribeOutputBuffer cmd")
+		t.Errorf("BridgeAppendOutputCellMsg should return a SubscribeOutputBuffer cmd")
+	}
+}
+
+func TestBridgeOutputDoneMsgFlipsTailOutputCell(t *testing.T) {
+	// Per the new contract, BridgeOutputDoneMsg looks at the tail
+	// rather than searching by ID.
+	buf := NewOutputBuffer()
+	tail := NewOutputCell("tail", buf, 4)
+	m := New([]Cell{
+		NewMetaCell("m", "T", ""),
+		tail,
+	})
+	if tail.done {
+		t.Fatal("expected tail OutputCell to start not-done")
+	}
+	next, _ := m.Update(BridgeOutputDoneMsg{CellID: "tail"})
+	_ = next
+	if !tail.done {
+		t.Error("BridgeOutputDoneMsg did not flip tail OutputCell")
 	}
 }
 
@@ -97,5 +145,32 @@ func TestBridgeDoneMsgFlipsDoneFlag(t *testing.T) {
 	m = next.(Model)
 	if !m.done {
 		t.Error("BridgeDoneMsg did not flip done flag")
+	}
+}
+
+func TestCellAdvanceMsgPopsAndAdvances(t *testing.T) {
+	// Set up: focused on a cell, waiting on a bridge channel
+	// (simulates the renderer being mid-WaitForStep).
+	cells := []Cell{NewMetaCell("m", "Hi", "")}
+	m := New(cells)
+	m.cursor = 0
+	m.mode = ViewMode
+	ch := make(chan struct{})
+	m.waitCh = ch
+
+	next, _ := m.Update(cellAdvanceMsg{})
+	m = next.(Model)
+
+	if m.Mode() != SelectMode {
+		t.Errorf("cellAdvanceMsg should pop to SelectMode; got %v", m.Mode())
+	}
+	select {
+	case <-ch:
+		// expected — wait channel closed
+	default:
+		t.Error("cellAdvanceMsg should have closed the wait channel")
+	}
+	if m.waitCh != nil {
+		t.Error("waitCh should be nil after release")
 	}
 }

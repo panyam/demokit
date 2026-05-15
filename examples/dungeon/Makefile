@@ -1,4 +1,4 @@
-.PHONY: run demo serve runquiet record replay doc-md doc-html doc-json doc-bundle gen-readme
+.PHONY: run demo note serve runquiet record replay doc-md doc-html doc-json doc-bundle gen-readme
 
 TRACE := /tmp/demokit-dungeon-trace.json
 SERVE_ADDR := :8765
@@ -10,6 +10,10 @@ run:
 # Interactive, TUI styled boxes.
 demo:
 	go run . --tui
+
+# Interactive, Bubble Tea notebook UI (cells + vim-modal navigation).
+note:
+	go run . --note
 
 # Live web mode — serves the demo at http://localhost$(SERVE_ADDR)/.
 # Browser drives inputs via WebSocket; server terminal mirrors the

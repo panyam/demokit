@@ -1,10 +1,34 @@
 package notebook
 
 import (
+	"fmt"
 	"strings"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 )
+
+// repaintTickMsg fires every repaintInterval to force a fresh
+// render pass regardless of whether other messages have arrived.
+// Bubble Tea's diff renderer can leave intermediate state on
+// screen when a burst of bridge messages arrives during startup
+// (BridgeHeader / BridgeStepCells / BridgeWait in rapid succession
+// before WindowSizeMsg lands and the first paint completes). The
+// ticker guarantees the screen reconverges with model state
+// within one tick — without needing a user keypress.
+type repaintTickMsg struct{}
+
+// repaintInterval is how often the model re-arms its repaint tick.
+// 100ms = 10 paints/sec when idle, well within the diff renderer's
+// "no work to do" cost (View() is cheap when nothing changed).
+const repaintInterval = 100 * time.Millisecond
+
+// repaintTick returns a tea.Cmd that fires one repaintTickMsg
+// after repaintInterval. Re-armed on each receipt to make it
+// perpetual.
+func repaintTick() tea.Cmd {
+	return tea.Tick(repaintInterval, func(time.Time) tea.Msg { return repaintTickMsg{} })
+}
 
 // AdvanceMsg is what the model emits as a tea.Cmd when the user
 // presses Space / Shift+Enter from SelectMode (Phase A.1's
@@ -72,12 +96,27 @@ type Model struct {
 	// stays on screen. Bumped by ensureCursorVisible after every
 	// arrow-key navigation.
 	viewportOffset int
+
+	// palette is the theme used for model-owned chrome (status line,
+	// banner) and propagated to dynamically-created cells like
+	// PromptCell. Cells constructed via cellsForStep get their
+	// palette from the renderer directly.
+	palette Palette
 }
 
 // New constructs a model over a flat cell list. Cursor starts on
 // the first cell; mode starts in SelectMode (the outermost level).
+// Palette defaults to DefaultPalette; override with WithPalette.
 func New(cells []Cell) Model {
-	return Model{cells: cells, mode: SelectMode}
+	return Model{cells: cells, mode: SelectMode, palette: DefaultPalette()}
+}
+
+// WithPalette sets the model's palette. Used by the renderer
+// bridge so model-owned chrome (status, banner) and on-the-fly
+// cells (PromptCell) match the renderer's theme.
+func (m Model) WithPalette(p Palette) Model {
+	m.palette = p
+	return m
 }
 
 // WithQuitOnAdvance enables a small-demo affordance: pressing the
@@ -130,9 +169,15 @@ func (m Model) SetCells(cells []Cell) Model {
 }
 
 // Init implements tea.Model. Returns the accumulated subscription
-// commands (from WithOutputSubscription) so streaming buffers start
-// pushing OutputAppendedMsg events immediately.
-func (m Model) Init() tea.Cmd { return m.initCmd }
+// commands (from WithOutputSubscription) plus the repaint ticker
+// so the screen reconverges with model state without waiting on a
+// user keypress.
+func (m Model) Init() tea.Cmd {
+	if m.initCmd == nil {
+		return repaintTick()
+	}
+	return tea.Batch(m.initCmd, repaintTick())
+}
 
 // Update implements tea.Model. Routes input by mode:
 //
@@ -176,10 +221,28 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.headerDesc = msg.Description
 		return m, nil
 	case BridgeStepCellsMsg:
-		m.cells = msg.Cells
-		m.cursor = 0
+		// Append: the cell list is the trace projection. Each
+		// visited step stays present so the user can scroll back
+		// through prior steps. Cursor snaps to the first newly-
+		// appended cell (the MetaCell of the just-rendered step)
+		// so further keypresses act on the fresh content;
+		// viewport follows.
+		firstNew := len(m.cells)
+		m.cells = append(m.cells, msg.Cells...)
+		m.cursor = firstNew
 		m.mode = SelectMode
 		m.invalidateCaches()
+		m.ensureCursorVisible()
+		return m, nil
+	case BridgeAppendOutputCellMsg:
+		// OutputCell flushed by the renderer once the user has
+		// signalled "run" (WaitForStep released or Prompt
+		// submitted). Append at the tail and register the
+		// SubscribeOutputBuffer listener so streamed lines reach
+		// the model as OutputAppendedMsg.
+		m.cells = append(m.cells, msg.Cell)
+		m.invalidateCaches()
+		m.ensureCursorVisible()
 		if msg.OutputBuf != nil && msg.OutputCellID != "" {
 			if m.resubscribe == nil {
 				m.resubscribe = map[string]tea.Cmd{}
@@ -193,15 +256,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.cells = append(m.cells, msg.Cell)
 		return m, nil
 	case BridgeOutputDoneMsg:
-		// Find the OutputCell and flip its "live"→"end" indicator.
-		for _, c := range m.cells {
-			if c.ID() != msg.CellID {
-				continue
-			}
-			if oc, ok := c.(*OutputCell); ok {
+		// Flip the most-recently-appended OutputCell to "end".
+		// At this point in the flow it MUST be the last cell —
+		// it was just added by BridgeAppendOutputCellMsg and
+		// nothing else has been appended since. No need to scan
+		// the whole list by ID; the tail tells the story.
+		if len(m.cells) > 0 {
+			if oc, ok := m.cells[len(m.cells)-1].(*OutputCell); ok {
 				oc.MarkDone()
 			}
-			break
 		}
 		return m, nil
 	case BridgeWaitMsg:
@@ -209,6 +272,35 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case BridgeDoneMsg:
 		m.done = true
+		return m, nil
+	case repaintTickMsg:
+		// Re-arm the perpetual paint tick. The handler itself is
+		// a no-op; the Update return is what triggers BT to call
+		// View() and emit any pending diff.
+		return m, repaintTick()
+	case cellAdvanceMsg:
+		// A focused cell finished and wants us to pop back to
+		// SelectMode + advance to the next step in one motion.
+		m.mode = SelectMode
+		if m.waitCh != nil {
+			close(m.waitCh)
+			m.waitCh = nil
+			return m, nil
+		}
+		if m.quitOnAdvance {
+			return m, tea.Sequence(emitAdvance, tea.Quit)
+		}
+		return m, emitAdvance
+	case BridgePromptMsg:
+		// Append a PromptCell to the current cell list and auto-
+		// focus it; the user starts typing immediately. The cell
+		// holds the reply channel and closes it on submit.
+		pid := fmt.Sprintf("prompt#%d", len(m.cells))
+		cell := NewPromptCell(pid, msg.Inputs, msg.Reply, m.palette)
+		m.cells = append(m.cells, cell)
+		m.cursor = len(m.cells) - 1
+		m.mode = ViewMode
+		m.ensureCursorVisible()
 		return m, nil
 	case tea.KeyMsg:
 		return m.handleKey(msg)
@@ -219,21 +311,20 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 // handleKey dispatches keystrokes by mode. Kept separate from
 // Update so the switch over Msg types stays readable.
 func (m Model) handleKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
-	// Ctrl+L: force a full repaint. Bubble Tea uses diff rendering;
-	// when the underlying terminal is cleared by something else
-	// (most commonly the user hitting Ctrl+L themselves before we
-	// captured it), the frame cache and the visible screen go out
-	// of sync — diffs come up empty and the screen stays blank
-	// until a WindowSizeMsg invalidates the cache. tea.ClearScreen
-	// resets the cache and forces a full repaint on the next
-	// frame. Handled in both modes so the recovery key is always
-	// available.
-	if key.String() == "ctrl+l" {
+	// Universal interrupt keys — handled before mode dispatch so a
+	// focused cell can't accidentally consume them. Ctrl+C and
+	// Ctrl+D are the standard CLI "exit now" gestures; Ctrl+L is
+	// the recovery key for the diff-renderer stale-cache failure
+	// mode (see issue 16).
+	switch key.String() {
+	case "ctrl+c", "ctrl+d":
+		return m, tea.Quit
+	case "ctrl+l":
 		return m, tea.ClearScreen
 	}
 	if m.mode == SelectMode {
 		switch key.String() {
-		case "ctrl+c", "q":
+		case "q":
 			return m, tea.Quit
 		case "up", "k":
 			if m.cursor > 0 {
@@ -247,16 +338,31 @@ func (m Model) handleKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.ensureCursorVisible()
 			}
 			return m, nil
-		case "enter":
+		case "s", "f":
+			// Step / focus into the focused cell. Two mnemonics
+			// for the same action — "s" for step-into, "f" for
+			// focus — so users land on whichever they reach for
+			// first. Both intentionally distinct from Enter
+			// (advance) and Space (advance) to keep the gesture
+			// the same across plain / tui / notebook modes.
 			if m.cursorOnFocusable() {
 				m.mode = ViewMode
 			}
 			return m, nil
-		case " ", "shift+enter":
+		case "enter", " ":
+			// Demo finished (BridgeDoneMsg flipped m.done) → Enter
+			// becomes "exit". Without this Enter fires a no-op
+			// AdvanceMsg into the void and the user has to hit
+			// q / Ctrl+C just to get the shell back.
+			if m.done {
+				return m, tea.Quit
+			}
 			// Bridge path: a NotebookRenderer is blocked on waitCh.
 			// Close it to release demokit's Execute loop into the
 			// next step. Standalone path: no waitCh; the legacy
 			// AdvanceMsg fires (quitOnAdvance can pair it with Quit).
+			// Space is kept as a secondary advance key for muscle
+			// memory; both have identical semantics.
 			if m.waitCh != nil {
 				close(m.waitCh)
 				m.waitCh = nil
@@ -455,8 +561,14 @@ func (m Model) statusLine() string {
 	c := m.cells[m.cursor]
 	hint := c.StatusHint(m.mode)
 	if m.mode == SelectMode {
-		// At the outer level, advance is the dominant action.
-		hint = "↑/↓ navigate · Enter focus · Space advance · q quit"
+		// At the outer level, advance is the dominant action,
+		// except when the demo is done — Enter then becomes
+		// "exit" so the user doesn't have to learn q at the end.
+		if m.done {
+			hint = "↑/↓ navigate · Enter exit · q quit"
+		} else {
+			hint = "↑/↓ navigate · Enter advance · s/f focus · q quit"
+		}
 	}
 	// Ctrl+L is the only universal recovery from a stale-cache
 	// blank screen (see model.go's handleKey comment). Surface it

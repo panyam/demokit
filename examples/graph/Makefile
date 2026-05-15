@@ -1,10 +1,14 @@
-.PHONY: run demo runquiet record replay gen-readme doc-md doc-md-default doc-md-python doc-html doc-json doc-bundle
+.PHONY: run demo note runquiet record replay gen-readme doc-md doc-md-default doc-md-python doc-html doc-json doc-bundle
 
 TRACE := /tmp/demokit-graph-trace.json
 
 # Interactive, TUI styled boxes
 demo:
 	go run . --tui
+
+# Interactive, Bubble Tea notebook UI (cells + vim-modal navigation)
+note:
+	go run . --note
 
 # Interactive, plain text — pick a symptom and walk the recovery path
 run:

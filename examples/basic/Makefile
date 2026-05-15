@@ -1,10 +1,14 @@
-.PHONY: run demo runsmooth runquiet demo-quiet record replay gen-readme doc-md doc-html doc-json
+.PHONY: run demo note runsmooth runquiet demo-quiet record replay gen-readme doc-md doc-html doc-json
 
 TRACE := /tmp/demokit-basic-trace.json
 
 # Interactive, TUI styled boxes
 demo:
 	go run . --tui
+
+# Interactive, Bubble Tea notebook UI (cells + vim-modal navigation)
+note:
+	go run . --note
 
 # Interactive, plain text
 run:

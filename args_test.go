@@ -182,6 +182,39 @@ func TestIsTUIHonorsMode(t *testing.T) {
 	})
 }
 
+// TestNoteAliasResolvesToNotebook verifies --note is honored both
+// by Mode() and IsNotebook(), mirroring the --tui alias contract.
+func TestNoteAliasResolvesToNotebook(t *testing.T) {
+	withArgs(t, []string{"prog", "--note"}, func() {
+		if got := Mode(); got != "notebook" {
+			t.Errorf("--note → Mode() = %q, want %q", got, "notebook")
+		}
+		if !IsNotebook() {
+			t.Error("--note → IsNotebook() = false, want true")
+		}
+	})
+}
+
+// TestIsNotebookHonorsMode verifies IsNotebook() also recognizes
+// --mode=notebook, not just the shorthand --note flag.
+func TestIsNotebookHonorsMode(t *testing.T) {
+	withArgs(t, []string{"prog", "--mode=notebook"}, func() {
+		if !IsNotebook() {
+			t.Error("IsNotebook() = false, want true with --mode=notebook")
+		}
+	})
+}
+
+// TestFilterArgsStripsNoteAlias verifies --note is stripped from
+// arg lists handed to caller-side flag.Parse, the same way --tui is.
+func TestFilterArgsStripsNoteAlias(t *testing.T) {
+	got := FilterArgs([]string{"--note", "-addr", ":8081", "positional"})
+	want := []string{"-addr", ":8081", "positional"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("FilterArgs --note strip:\n got:  %v\n want: %v", got, want)
+	}
+}
+
 // TestIsNonInteractive verifies the same shape for --non-interactive.
 func TestIsNonInteractive(t *testing.T) {
 	withArgs(t, []string{"prog", "--non-interactive"}, func() {

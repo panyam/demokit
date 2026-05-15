@@ -3,10 +3,12 @@ package notebook
 import (
 	"fmt"
 	"io"
+	"os"
 	"strings"
 	"sync"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/x/term"
 
 	"github.com/panyam/demokit"
 )
@@ -17,24 +19,27 @@ import (
 // tea.Msg sent into the program; WaitForStep blocks on a channel
 // the model closes when the user presses the advance key.
 //
-// Phase A.2 contract:
+// Contract:
 //
 //   - Bubble Tea owns the screen for the entire demo lifetime
 //     (lazy-started on the first Render call, exits on RenderDone
 //     or when the user presses q).
-//   - Single-step-on-screen: each RenderStep replaces the cell list
-//     (Phase B keeps prior steps).
-//   - Step inputs are not supported (Prompt panics). Phase A.3
-//     adds textinput-driven prompts.
+//   - The cell list IS the trace projection — each RenderStep
+//     appends its cells; prior steps stay navigable so the user
+//     can scroll back, re-copy variants, or read past output.
+//   - Step inputs render as a PromptCell driven by
+//     bubbles/textinput; Renderer.Prompt blocks until submission.
 type Renderer struct {
 	once     sync.Once
 	program  *tea.Program
 	progDone chan struct{}
 
-	mu             sync.Mutex
-	activeBuf      *OutputBuffer
-	activeCellID   string
-	stepCount      int
+	mu                sync.Mutex
+	activeBuf         *OutputBuffer
+	activeCellID      string
+	stepCount         int
+	palette           Palette
+	pendingOutputCell Cell // OutputCell stashed by RenderStep, flushed by appendOutputCell
 
 	// killed is set when the user pressed q (program exited).
 	// Subsequent bridge calls become no-ops; WaitForStep returns
@@ -45,21 +50,49 @@ type Renderer struct {
 
 // NewRenderer constructs a fresh notebook renderer. The Bubble Tea
 // program is started lazily on the first Render call so cheap test
-// constructions don't grab a terminal.
+// constructions don't grab a terminal. Default palette is auto-
+// detected against the terminal background; override via
+// WithPalette before the first Render call.
 func NewRenderer() *Renderer {
-	return &Renderer{}
+	return &Renderer{palette: DefaultPalette()}
+}
+
+// WithPalette overrides the palette used to construct cells. Must
+// be called before the first Render call.
+func (r *Renderer) WithPalette(p Palette) *Renderer {
+	r.palette = p
+	return r
 }
 
 // ensureProgram lazily starts the tea.Program in a background
 // goroutine. Idempotent; safe to call from every Render method.
 func (r *Renderer) ensureProgram() {
 	r.once.Do(func() {
+		// Capture stdin termios before Bubble Tea raw-modes it.
+		// Bubble Tea is supposed to restore on its own when Run()
+		// returns, but some exit paths (signal-driven SIGINT,
+		// panic-during-render) skip the restore — leaving the
+		// terminal with ONLCR off so the user's shell output
+		// staircases. Saving the state ourselves and restoring
+		// unconditionally guarantees the shell is back to normal
+		// regardless of how the program exits.
+		var origTermState *term.State
+		if fd := os.Stdin.Fd(); term.IsTerminal(fd) {
+			origTermState, _ = term.GetState(fd)
+		}
+
 		m := New(nil)
 		r.program = tea.NewProgram(m, tea.WithAltScreen())
 		r.progDone = make(chan struct{})
 		go func() {
 			defer close(r.progDone)
 			_, _ = r.program.Run()
+			if origTermState != nil {
+				_ = term.Restore(os.Stdin.Fd(), origTermState)
+			}
+			// A trailing CR-LF settles the cursor onto a fresh
+			// line in case alt-screen exit left it mid-row.
+			fmt.Print("\r\n")
 			r.mu.Lock()
 			r.killed = true
 			r.mu.Unlock()
@@ -89,17 +122,46 @@ func (r *Renderer) RenderHeader(title, description string, stepCount int) {
 	r.send(BridgeHeaderMsg{Title: title, Description: description, StepCount: stepCount})
 }
 
-// RenderStep builds the cell list for the visited step and ships it
-// to the model. The OutputCell created here is what subsequent
-// StreamOutput chunks feed into.
+// RenderStep builds the cell list for the visited step's body
+// (MetaCell + 0..N VerbatimCells) and ships it to the model. The
+// OutputCell is constructed here and stashed on the renderer but
+// NOT sent yet — appendOutputCell flushes it later, once the user
+// has actually signalled "run" (WaitForStep released or Prompt
+// submitted). That keeps the visual order honest:
+//
+//	[meta]
+//	[verbatim]
+//	[prompt or "Enter to run"]
+//	[output appears here — just before it starts streaming]
 func (r *Renderer) RenderStep(stepNum, totalSteps int, step *demokit.StepDef) {
 	r.ensureProgram()
-	cells, buf, outputID := cellsForStep(stepNum, step)
+	bodyCells, outputCell, buf, outputID := cellsForStep(stepNum, step, r.palette)
 	r.mu.Lock()
 	r.activeBuf = buf
 	r.activeCellID = outputID
+	r.pendingOutputCell = outputCell
 	r.mu.Unlock()
-	r.send(BridgeStepCellsMsg{Cells: cells, OutputBuf: buf, OutputCellID: outputID})
+	r.send(BridgeStepCellsMsg{Cells: bodyCells})
+}
+
+// appendOutputCell flushes the OutputCell stashed by RenderStep to
+// the model. Called from WaitForStep (after the user pressed
+// advance) or Prompt (after the user submitted) so the cell only
+// materializes when the step is actually about to run.
+//
+// Safe to call multiple times — the second call is a no-op
+// because pendingOutputCell is nil'd after the first flush.
+func (r *Renderer) appendOutputCell() {
+	r.mu.Lock()
+	cell := r.pendingOutputCell
+	buf := r.activeBuf
+	cellID := r.activeCellID
+	r.pendingOutputCell = nil
+	r.mu.Unlock()
+	if cell == nil {
+		return
+	}
+	r.send(BridgeAppendOutputCellMsg{Cell: cell, OutputBuf: buf, OutputCellID: cellID})
 }
 
 // RenderResult marks the active OutputCell as done. If demokit
@@ -134,6 +196,7 @@ func (r *Renderer) RenderSection(section *demokit.SectionDef) {
 	r.ensureProgram()
 	id := fmt.Sprintf("section#%s", slugify(section.Title()))
 	cell := NewSectionCell(id, section.Title(), section.Body())
+	cell.SetPalette(r.palette)
 	r.send(BridgeSectionCellMsg{Cell: cell})
 }
 
@@ -148,8 +211,8 @@ func (r *Renderer) RenderDone() {
 
 // WaitForStep blocks demokit's Execute loop until the user presses
 // the advance key in the model. The model closes the channel on
-// receipt of Space (or Shift+Enter); WaitForStep returns
-// immediately afterward so the next step can run.
+// receipt of Enter / Space; WaitForStep flushes the pending
+// OutputCell to the model and returns so the step can run.
 //
 // If the program has already exited (user pressed q mid-demo),
 // WaitForStep returns immediately so Execute can finish naturally.
@@ -165,17 +228,52 @@ func (r *Renderer) WaitForStep(opts demokit.WaitOpts) {
 	r.send(BridgeWaitMsg{Ch: ch})
 	select {
 	case <-ch:
+		r.appendOutputCell()
 	case <-r.progDone:
 	}
 }
 
-// Prompt is unimplemented in Phase A.2. demokit only calls Prompt
-// when a step declares inputs; until Phase A.3 adds a textinput-
-// driven prompt UI, notebook mode panics so the user notices.
+// Prompt appends a PromptCell to the current cell list and blocks
+// until the user submits valid answers. The cell drives the
+// textinput-based UI; the model closes Reply after sending the
+// answer map.
 //
-// To opt out: don't pass --mode=notebook for demos that prompt.
+// If the user quits the program (q / Ctrl+C) before submitting,
+// Reply never receives and Prompt unblocks via the program-done
+// channel, returning an empty map. demokit's Execute treats that
+// as "no answers" — the step's Run sees an empty Inputs map.
 func (r *Renderer) Prompt(stepID string, inputs []demokit.InputDef) map[string]any {
-	panic("notebook mode does not support step inputs yet — re-run without --mode=notebook (Phase A.3 will add textinput-driven prompts)")
+	r.ensureProgram()
+	reply := make(chan map[string]any, 1)
+	r.send(BridgePromptMsg{Inputs: promptInputsFrom(inputs), Reply: reply})
+	select {
+	case ans, ok := <-reply:
+		r.appendOutputCell()
+		if !ok || ans == nil {
+			return map[string]any{}
+		}
+		return ans
+	case <-r.progDone:
+		return map[string]any{}
+	}
+}
+
+// promptInputsFrom projects demokit.InputDef into the notebook's
+// per-field shape, capturing the Parse closure so the PromptCell
+// can validate each entry without depending on the demokit type.
+func promptInputsFrom(inputs []demokit.InputDef) []promptInput {
+	out := make([]promptInput, len(inputs))
+	for i, in := range inputs {
+		out[i] = promptInput{
+			Name:    in.Name,
+			Prompt:  in.Prompt,
+			Default: in.Default,
+			Kind:    in.Kind,
+			Options: in.Options,
+			parse:   in.Parse,
+		}
+	}
+	return out
 }
 
 // --- demokit.StreamingRenderer ---
@@ -201,10 +299,15 @@ func (r *Renderer) StreamOutput(stepNum int, chunk []byte, out io.Writer) {
 
 // --- helpers ---
 
-// cellsForStep builds the cell list for one step visit. Output is
-// (cells, buffer, outputCellID); the renderer holds buffer +
-// outputCellID for subsequent StreamOutput / RenderResult routing.
-func cellsForStep(visit int, s *demokit.StepDef) ([]Cell, *OutputBuffer, string) {
+// cellsForStep builds the cell list for one step visit, split
+// into the body (always shown immediately at RenderStep time) and
+// the OutputCell (deferred until the user signals "run"). Returns
+// (bodyCells, outputCell, outputBuf, outputCellID).
+//
+// The renderer holds outputCell as pending until appendOutputCell
+// flushes it; outputBuf / outputCellID stay on the renderer for
+// StreamOutput / RenderResult routing.
+func cellsForStep(visit int, s *demokit.StepDef, palette Palette) ([]Cell, Cell, *OutputBuffer, string) {
 	base := slugify(s.StepID())
 	if base == "" {
 		base = fmt.Sprintf("step%d", visit)
@@ -212,17 +315,22 @@ func cellsForStep(visit int, s *demokit.StepDef) ([]Cell, *OutputBuffer, string)
 
 	body := buildMetaBody(s)
 	metaID := fmt.Sprintf("%s#%d.meta", base, visit)
-	cells := []Cell{NewMetaCell(metaID, s.Title(), body)}
+	meta := NewMetaCell(metaID, s.Title(), body)
+	meta.SetPalette(palette)
+	cells := []Cell{meta}
 
 	for i, vb := range s.VerbatimBlocks() {
 		vid := fmt.Sprintf("%s#%d.verbatim%d", base, visit, i)
-		cells = append(cells, NewVerbatimCell(vid, vb.Label, variantsFromView(vb.Variants)))
+		vc := NewVerbatimCell(vid, vb.Label, variantsFromView(vb.Variants))
+		vc.SetPalette(palette)
+		cells = append(cells, vc)
 	}
 
 	buf := NewOutputBuffer()
 	outputID := fmt.Sprintf("%s#%d.output", base, visit)
-	cells = append(cells, NewOutputCell(outputID, buf, 12))
-	return cells, buf, outputID
+	oc := NewOutputCell(outputID, buf, 12)
+	oc.SetPalette(palette)
+	return cells, oc, buf, outputID
 }
 
 // buildMetaBody renders the step's note + arrows + refs into a

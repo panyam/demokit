@@ -4,65 +4,61 @@ import (
 	"fmt"
 	"strings"
 
+	"charm.land/lipgloss/v2"
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/panyam/demokit"
 )
 
-// OutputCell renders a step's captured stdout. The cell's height is
-// capped by maxBody rows; when content exceeds the cap the focused
-// cell exposes j/k (and PgUp/PgDn) to scroll within its own
-// viewport. ↑/↓ at the model level still navigates between cells —
-// the two key vocabularies are intentionally distinct.
+// OutputCell renders a step's captured stdout in a bordered box.
+// The cell's box height is capped by maxBody rows; when content
+// exceeds the cap the focused cell exposes j/k (and PgUp/PgDn,
+// g/G) to scroll within the box. ↑/↓ at the model level still
+// navigates between cells.
 //
 // Content is read from an OutputBuffer on every RenderRows so live
-// streaming Just Works — the cell holds a pointer, not a snapshot.
-// 'c' copies the entire current buffer via demokit.Copy.
+// streaming Just Works. 'c' copies the entire current buffer.
 type OutputCell struct {
-	id     string
-	buf    *OutputBuffer
-	maxBody int // soft cap on visible-body rows (default 12)
+	id      string
+	buf     *OutputBuffer
+	maxBody int
+	palette Palette
 
-	scrollOffset int // first body line shown
+	scrollOffset int
 	copyMsg      string
-
-	// done indicates the step has finished streaming. Renders a
-	// trailing "(end)" hint so the user can tell live vs. complete.
-	done bool
+	done         bool
 }
 
 // NewOutputCell builds a cell over the given buffer. maxBody == 0
-// uses the package default (12). The buffer's wakeups should be
-// forwarded to the Bubble Tea program by the renderer bridge (PR2);
-// the cell itself is content-pull and doesn't subscribe.
+// uses the package default (12).
 func NewOutputCell(id string, buf *OutputBuffer, maxBody int) *OutputCell {
 	if maxBody <= 0 {
 		maxBody = 12
 	}
-	return &OutputCell{id: id, buf: buf, maxBody: maxBody}
+	return &OutputCell{id: id, buf: buf, maxBody: maxBody, palette: DefaultPalette()}
 }
 
-// MarkDone is called by the renderer bridge when the underlying
-// step's Run returns. Adds the "(end)" hint and stops the cell
-// from drawing "..." for in-progress streams.
+// SetPalette overrides the cell's palette.
+func (c *OutputCell) SetPalette(p Palette) { c.palette = p }
+
+// MarkDone flips the box title from "» output (live)" to "(end)".
 func (c *OutputCell) MarkDone() { c.done = true }
 
 // ID implements Cell.
 func (c *OutputCell) ID() string { return c.id }
 
-// HeightHint implements Cell. Two parts:
-//
-//   - Header: blank + "» output" + blank = 3 rows.
-//   - Body: min(buf.LineCount(), maxBody) + trailing status row.
-//
-// The cell does not grow indefinitely — once buf.LineCount() exceeds
-// maxBody the height is fixed and the user scrolls in-cell.
+// HeightHint implements Cell. Rendered box = top border + title +
+// body + status + bottom border. The empty-buffer placeholder
+// "(no output yet)" still takes one body row.
 func (c *OutputCell) HeightHint(_ int) int {
 	bodyRows := c.buf.LineCount()
+	if bodyRows == 0 {
+		bodyRows = 1
+	}
 	if bodyRows > c.maxBody {
 		bodyRows = c.maxBody
 	}
-	h := 3 + bodyRows + 1 // header(3) + body + status(1)
+	h := bodyRows + 4
 	if c.copyMsg != "" {
 		h++
 	}
@@ -70,40 +66,56 @@ func (c *OutputCell) HeightHint(_ int) int {
 }
 
 // RenderRows implements Cell.
-func (c *OutputCell) RenderRows(width, startRow, endRow int, focused bool, mode Mode) []string {
+func (c *OutputCell) RenderRows(width, startRow, endRow int, focused bool, _ Mode) []string {
 	c.clampScroll()
+
+	border := c.palette.OutputBorder
+	if focused {
+		border = c.palette.FocusBorder
+	}
 
 	totalLines := c.buf.LineCount()
 	bodyRows := totalLines
 	if bodyRows > c.maxBody {
 		bodyRows = c.maxBody
 	}
-
-	// Slice the visible body window from the buffer.
-	bodyStart := c.scrollOffset
-	bodyEnd := bodyStart + bodyRows
-	if bodyEnd > totalLines {
-		bodyEnd = totalLines
-	}
-	body := c.buf.Lines(bodyStart, bodyEnd)
-
-	// Compose the full row list, then clip to [startRow, endRow).
-	var rows []string
-	rows = append(rows, "")
-	header := "» output"
-	if focused {
-		header = "▶ output"
-	}
-	rows = append(rows, header)
-	rows = append(rows, "")
-	for _, line := range body {
+	body := c.buf.Lines(c.scrollOffset, c.scrollOffset+bodyRows)
+	// Hard-truncate long lines so lipgloss doesn't wrap them: a
+	// wrap would silently push the box past HeightHint's
+	// reported height and desync the viewport's row math.
+	innerWidth := maxBoxWidth(width)
+	for i, line := range body {
 		line = strings.TrimRight(line, "\r")
-		if w := width - 4; w > 0 && len(line) > w {
-			line = line[:w]
+		if len(line) > innerWidth {
+			line = line[:innerWidth]
 		}
-		rows = append(rows, "    "+line)
+		body[i] = line
 	}
-	rows = append(rows, "    "+c.statusLine(totalLines))
+
+	titleStyle := lipgloss.NewStyle().Bold(true).Foreground(c.palette.Title)
+	dim := lipgloss.NewStyle().Foreground(c.palette.Dim)
+	state := "live"
+	stateStyle := lipgloss.NewStyle().Foreground(c.palette.Header)
+	if c.done {
+		state = "end"
+		stateStyle = lipgloss.NewStyle().Foreground(c.palette.Success)
+	}
+
+	title := titleStyle.Render("output") + " " + stateStyle.Render("·"+state)
+	bodyText := strings.Join(body, "\n")
+	if bodyText == "" {
+		bodyText = dim.Render("(no output yet)")
+	}
+	status := dim.Render(c.statusLine(totalLines))
+	content := title + "\n" + bodyText + "\n" + status
+
+	boxStyle := lipgloss.NewStyle().
+		Border(focusedBorder(focused)).
+		BorderForeground(border).
+		Padding(0, 1).
+		Width(maxBoxWidth(width))
+	rendered := boxStyle.Render(content)
+	rows := strings.Split(rendered, "\n")
 	if c.copyMsg != "" {
 		rows = append(rows, "  "+c.copyMsg)
 	}
@@ -122,9 +134,7 @@ func (c *OutputCell) RenderRows(width, startRow, endRow int, focused bool, mode 
 	return out
 }
 
-// Update implements Cell. Handles j/k/pgup/pgdn scroll and `c` copy
-// when in view mode. Also accepts clearCopyMsg routed back from
-// tea.Tick.
+// Update implements Cell.
 func (c *OutputCell) Update(msg tea.Msg, mode Mode) (Cell, tea.Cmd) {
 	if cm, ok := msg.(clearCopyMsg); ok && cm.cellID == c.id {
 		c.copyMsg = ""
@@ -138,6 +148,9 @@ func (c *OutputCell) Update(msg tea.Msg, mode Mode) (Cell, tea.Cmd) {
 		return c, nil
 	}
 	switch keyMsg.String() {
+	case "enter":
+		// Cell doesn't use Enter — signal release + advance.
+		return c, cellAdvance
 	case "j", "down":
 		c.scrollOffset++
 		c.clampScroll()
@@ -153,7 +166,7 @@ func (c *OutputCell) Update(msg tea.Msg, mode Mode) (Cell, tea.Cmd) {
 	case "g":
 		c.scrollOffset = 0
 	case "G":
-		c.scrollOffset = c.buf.LineCount() // clamp will pull back to last page
+		c.scrollOffset = c.buf.LineCount()
 		c.clampScroll()
 	case "c":
 		all := strings.Join(c.buf.AllLines(), "\n")
@@ -176,9 +189,7 @@ func (c *OutputCell) StatusHint(_ Mode) string {
 	return "c copy"
 }
 
-// clampScroll pins scrollOffset to a valid range: 0 ≤ off ≤
-// max(0, totalLines − maxBody). Cheap; called on every nav and
-// before each render to defend against width-shrink desync.
+// clampScroll pins scrollOffset to [0, max(0, total-maxBody)].
 func (c *OutputCell) clampScroll() {
 	total := c.buf.LineCount()
 	max := total - c.maxBody
@@ -193,20 +204,14 @@ func (c *OutputCell) clampScroll() {
 	}
 }
 
-// statusLine builds the right-aligned "[ x/y, running… ]" indicator
-// shown under the body. Distinguishes streaming-in-progress from
-// completed runs.
+// statusLine builds the "[ x-y / total ]" indicator.
 func (c *OutputCell) statusLine(total int) string {
 	end := c.scrollOffset + c.maxBody
 	if end > total {
 		end = total
 	}
-	state := "live"
-	if c.done {
-		state = "end"
-	}
 	if total <= c.maxBody {
-		return fmt.Sprintf("[ %d line(s) · %s ]", total, state)
+		return fmt.Sprintf("[ %d line(s) ]", total)
 	}
-	return fmt.Sprintf("[ %d-%d / %d · %s ]", c.scrollOffset+1, end, total, state)
+	return fmt.Sprintf("[ %d-%d / %d ]", c.scrollOffset+1, end, total)
 }

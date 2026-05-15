@@ -1,6 +1,9 @@
 package notebook
 
 import (
+	"strings"
+
+	"charm.land/lipgloss/v2"
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/panyam/demokit"
@@ -12,31 +15,36 @@ import (
 //
 // Read-only otherwise; future EditMode would expose body editing.
 type SectionCell struct {
-	id    string
-	title string
-	body  string
+	id      string
+	title   string
+	body    string
+	palette Palette
 
-	cachedWidth  int
-	cachedLines  []string
-	cachedHeight int
+	cachedWidth   int
+	cachedFocused bool
+	cachedLines   []string
+	cachedHeight  int
 
-	// copyMsg holds the transient status line shown right under the
-	// section body for a few ticks after `c`. The model drives the
-	// fade via the clearCopyMsg tea.Cmd returned from Update.
+	// copyMsg holds the transient "(copied …)" status line. Rendered
+	// below the box so it doesn't reflow the cell geometry; cleared
+	// via clearCopyMsgAfter on a tea.Tick.
 	copyMsg string
 }
 
 // NewSectionCell builds a section cell.
 func NewSectionCell(id, title, body string) *SectionCell {
-	return &SectionCell{id: id, title: title, body: body}
+	return &SectionCell{id: id, title: title, body: body, palette: DefaultPalette()}
 }
+
+// SetPalette overrides the cell's palette.
+func (c *SectionCell) SetPalette(p Palette) { c.palette = p; c.cachedLines = nil }
 
 // ID implements Cell.
 func (c *SectionCell) ID() string { return c.id }
 
 // HeightHint implements Cell.
 func (c *SectionCell) HeightHint(width int) int {
-	c.materialize(width)
+	c.materialize(width, c.cachedFocused)
 	h := c.cachedHeight
 	if c.copyMsg != "" {
 		h++
@@ -45,8 +53,8 @@ func (c *SectionCell) HeightHint(width int) int {
 }
 
 // RenderRows implements Cell.
-func (c *SectionCell) RenderRows(width, startRow, endRow int, focused bool, mode Mode) []string {
-	c.materialize(width)
+func (c *SectionCell) RenderRows(width, startRow, endRow int, focused bool, _ Mode) []string {
+	c.materialize(width, focused)
 	total := c.cachedHeight
 	if c.copyMsg != "" {
 		total++
@@ -62,20 +70,21 @@ func (c *SectionCell) RenderRows(width, startRow, endRow int, focused bool, mode
 	}
 	rows := make([]string, endRow-startRow)
 	for i := startRow; i < endRow; i++ {
-		var line string
-		switch {
-		case i < c.cachedHeight:
-			line = c.cachedLines[i]
-		default:
-			line = "  " + c.copyMsg
+		if i < c.cachedHeight {
+			rows[i-startRow] = c.cachedLines[i]
+			continue
 		}
-		rows[i-startRow] = applyFocusMarker(line, focused)
+		rows[i-startRow] = "  " + c.copyMsg
 	}
 	return rows
 }
 
-// Update implements Cell. In focused/view mode, `c` copies the body.
+// Update implements Cell. In ViewMode, `c` copies the body.
 func (c *SectionCell) Update(msg tea.Msg, mode Mode) (Cell, tea.Cmd) {
+	if cm, ok := msg.(clearCopyMsg); ok && cm.cellID == c.id {
+		c.copyMsg = ""
+		return c, nil
+	}
 	if mode != ViewMode {
 		return c, nil
 	}
@@ -83,7 +92,11 @@ func (c *SectionCell) Update(msg tea.Msg, mode Mode) (Cell, tea.Cmd) {
 	if !ok {
 		return c, nil
 	}
-	if keyMsg.String() == "c" {
+	switch keyMsg.String() {
+	case "enter":
+		// Cell doesn't use Enter — signal release + advance.
+		return c, cellAdvance
+	case "c":
 		strategy, ok := demokit.Copy(c.body)
 		if ok {
 			c.copyMsg = "(copied via " + strategy + ")"
@@ -92,32 +105,37 @@ func (c *SectionCell) Update(msg tea.Msg, mode Mode) (Cell, tea.Cmd) {
 		}
 		return c, clearCopyMsgAfter(c.id)
 	}
-	if _, isClear := msg.(clearCopyMsg); isClear {
-		c.copyMsg = ""
-		return c, nil
-	}
 	return c, nil
 }
 
 // StatusHint implements Cell.
 func (c *SectionCell) StatusHint(_ Mode) string { return "c copy" }
 
-func (c *SectionCell) materialize(width int) {
+func (c *SectionCell) materialize(width int, focused bool) {
 	if width <= 0 {
 		width = 80
 	}
-	if c.cachedWidth == width && c.cachedLines != nil {
+	if c.cachedWidth == width && c.cachedFocused == focused && c.cachedLines != nil {
 		return
 	}
-	var rows []string
-	rows = append(rows, "")
-	rows = append(rows, "§ "+c.title)
-	rows = append(rows, "")
-	for _, line := range wrapPlain(c.body, width-2) {
-		rows = append(rows, "  "+line)
+	border := c.palette.SectionBorder
+	if focused {
+		border = c.palette.FocusBorder
 	}
-	rows = append(rows, "")
+
+	titleStyle := lipgloss.NewStyle().Italic(true).Foreground(c.palette.Title)
+	bodyStyle := lipgloss.NewStyle().Foreground(c.palette.Note)
+	content := titleStyle.Render(c.title) + "\n\n" + bodyStyle.Render(c.body)
+
+	boxStyle := lipgloss.NewStyle().
+		Border(focusedBorder(focused)).
+		BorderForeground(border).
+		Padding(0, 1).
+		Width(maxBoxWidth(width))
+
+	rendered := boxStyle.Render(content)
 	c.cachedWidth = width
-	c.cachedLines = rows
-	c.cachedHeight = len(rows)
+	c.cachedFocused = focused
+	c.cachedLines = strings.Split(rendered, "\n")
+	c.cachedHeight = len(c.cachedLines)
 }
