@@ -15,6 +15,7 @@ import (
 //
 //   - --mode <plain|tui|notebook>  (value; selects the renderer)
 //   - --tui                   (bare; alias for --mode=tui; deprecated)
+//   - --note                  (bare; alias for --mode=notebook)
 //   - --non-interactive       (bare; skips between-step pauses)
 //   - --doc <format>          (value; routes to doc emission)
 //   - --from <trace-path>     (value; trace input for --doc)
@@ -33,6 +34,7 @@ import (
 func FilterArgs(args []string, extra ...ExtraFlag) []string {
 	bare := map[string]bool{
 		"--tui":             true,
+		"--note":            true,
 		"--non-interactive": true,
 	}
 	value := map[string]bool{
@@ -108,17 +110,31 @@ func IsTUI() bool {
 	return Mode() == "tui"
 }
 
+// IsNotebook reports whether the user asked for the notebook
+// renderer — either by the bare --note flag (shorthand) or by
+// --mode=notebook / --mode notebook. Mirrors [IsTUI].
+//
+// Examples use this to gate `demo.WithRenderer(notebook.NewRenderer())`
+// without scanning os.Args inline; [Mode] is the underlying source
+// of truth.
+func IsNotebook() bool {
+	if slices.Contains(os.Args[1:], "--note") {
+		return true
+	}
+	return Mode() == "notebook"
+}
+
 // Mode returns the renderer mode the user asked for via --mode. The
 // recognized values are:
 //
 //   - "plain"    (the default — PlainRenderer)
 //   - "tui"      (today's lipgloss-styled tui.Renderer)
-//   - "notebook" (Phase A.2 Bubble Tea notebook UI)
+//   - "notebook" (Bubble Tea notebook UI)
 //
 // Returns "" when --mode is absent — examples typically branch on
-// "" the same way they branch on "plain". The bare --tui flag is
-// honored as an alias for "tui" so existing scripts keep working
-// while examples migrate to --mode.
+// "" the same way they branch on "plain". The bare --tui and --note
+// flags are honored as aliases for "tui" and "notebook"
+// respectively so callers can write either form.
 //
 // Unrecognized mode strings are returned as-is so the caller can
 // surface a helpful error rather than silently falling back.
@@ -131,6 +147,9 @@ func Mode() string {
 		if strings.HasPrefix(a, "--mode=") {
 			return strings.TrimPrefix(a, "--mode=")
 		}
+	}
+	if slices.Contains(args, "--note") {
+		return "notebook"
 	}
 	if slices.Contains(args, "--tui") {
 		return "tui"
