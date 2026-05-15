@@ -13,7 +13,8 @@ import (
 //
 // Built-in strip set — the flags demokit's dispatcher consumes:
 //
-//   - --tui                   (bare; selects the TUI renderer)
+//   - --mode <plain|tui|notebook>  (value; selects the renderer)
+//   - --tui                   (bare; alias for --mode=tui; deprecated)
 //   - --non-interactive       (bare; skips between-step pauses)
 //   - --doc <format>          (value; routes to doc emission)
 //   - --from <trace-path>     (value; trace input for --doc)
@@ -38,6 +39,7 @@ func FilterArgs(args []string, extra ...ExtraFlag) []string {
 		"--doc":     true,
 		"--from":    true,
 		"--variant": true,
+		"--mode":    true,
 	}
 	for _, e := range extra {
 		if e.TakesValue {
@@ -90,13 +92,50 @@ func ValueFlag(name string) ExtraFlag {
 	return ExtraFlag{Name: name, TakesValue: true}
 }
 
-// IsTUI reports whether --tui appears in os.Args. Examples use this to
-// gate the TUI renderer (`demo.WithRenderer(tui.New())`) without having
-// to scan os.Args inline. Mirrors [FilterArgs]'s --tui recognition so
-// the convention is honored consistently across the dispatcher and
-// caller-side renderer selection.
+// IsTUI reports whether the user asked for the legacy TUI renderer —
+// either by the bare --tui flag (deprecated) or by --mode=tui /
+// --mode tui. Examples use this to gate the TUI renderer
+// (`demo.WithRenderer(tui.New())`) without having to scan os.Args
+// inline.
+//
+// Prefer [Mode] for new code: it returns the explicit mode string
+// and handles "plain" / "notebook" too. IsTUI is kept as a
+// convenience for examples that pre-date --mode.
 func IsTUI() bool {
-	return slices.Contains(os.Args[1:], "--tui")
+	if slices.Contains(os.Args[1:], "--tui") {
+		return true
+	}
+	return Mode() == "tui"
+}
+
+// Mode returns the renderer mode the user asked for via --mode. The
+// recognized values are:
+//
+//   - "plain"    (the default — PlainRenderer)
+//   - "tui"      (today's lipgloss-styled tui.Renderer)
+//   - "notebook" (Phase A.2 Bubble Tea notebook UI)
+//
+// Returns "" when --mode is absent — examples typically branch on
+// "" the same way they branch on "plain". The bare --tui flag is
+// honored as an alias for "tui" so existing scripts keep working
+// while examples migrate to --mode.
+//
+// Unrecognized mode strings are returned as-is so the caller can
+// surface a helpful error rather than silently falling back.
+func Mode() string {
+	args := os.Args[1:]
+	for i, a := range args {
+		if a == "--mode" && i+1 < len(args) {
+			return args[i+1]
+		}
+		if strings.HasPrefix(a, "--mode=") {
+			return strings.TrimPrefix(a, "--mode=")
+		}
+	}
+	if slices.Contains(args, "--tui") {
+		return "tui"
+	}
+	return ""
 }
 
 // IsNonInteractive reports whether --non-interactive appears in
