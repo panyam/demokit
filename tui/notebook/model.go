@@ -282,16 +282,24 @@ func (m Model) handleKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.ensureCursorVisible()
 			}
 			return m, nil
-		case "enter":
+		case "s", "f":
+			// Step / focus into the focused cell. Two mnemonics
+			// for the same action — "s" for step-into, "f" for
+			// focus — so users land on whichever they reach for
+			// first. Both intentionally distinct from Enter
+			// (advance) and Space (advance) to keep the gesture
+			// the same across plain / tui / notebook modes.
 			if m.cursorOnFocusable() {
 				m.mode = ViewMode
 			}
 			return m, nil
-		case " ", "shift+enter":
+		case "enter", " ":
 			// Bridge path: a NotebookRenderer is blocked on waitCh.
 			// Close it to release demokit's Execute loop into the
 			// next step. Standalone path: no waitCh; the legacy
 			// AdvanceMsg fires (quitOnAdvance can pair it with Quit).
+			// Space is kept as a secondary advance key for muscle
+			// memory; both have identical semantics.
 			if m.waitCh != nil {
 				close(m.waitCh)
 				m.waitCh = nil
@@ -491,7 +499,7 @@ func (m Model) statusLine() string {
 	hint := c.StatusHint(m.mode)
 	if m.mode == SelectMode {
 		// At the outer level, advance is the dominant action.
-		hint = "↑/↓ navigate · Enter focus · Space advance · q quit"
+		hint = "↑/↓ navigate · Enter advance · s/f focus · q quit"
 	}
 	// Ctrl+L is the only universal recovery from a stale-cache
 	// blank screen (see model.go's handleKey comment). Surface it

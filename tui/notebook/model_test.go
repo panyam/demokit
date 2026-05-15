@@ -83,12 +83,12 @@ func TestModelArrowsMoveCursor(t *testing.T) {
 	}
 }
 
-func TestModelEnterFocusesEscReleases(t *testing.T) {
+func TestModelSFocusesEscReleases(t *testing.T) {
 	m := New(makeThreeCells())
 	m = sendKey(t, m, "down") // onto VerbatimCell
-	m = sendKey(t, m, "enter")
+	m = sendKey(t, m, "s")
 	if m.Mode() != ViewMode {
-		t.Errorf("after enter, mode = %v, want ViewMode", m.Mode())
+		t.Errorf("after s, mode = %v, want ViewMode", m.Mode())
 	}
 	m = sendKey(t, m, "esc")
 	if m.Mode() != SelectMode {
@@ -96,28 +96,54 @@ func TestModelEnterFocusesEscReleases(t *testing.T) {
 	}
 }
 
+func TestModelFAlsoFocuses(t *testing.T) {
+	// "f" is the alternate focus mnemonic alongside "s". Both
+	// should reach ViewMode identically.
+	m := New(makeThreeCells())
+	m = sendKey(t, m, "down")
+	m = sendKey(t, m, "f")
+	if m.Mode() != ViewMode {
+		t.Errorf("after f, mode = %v, want ViewMode", m.Mode())
+	}
+}
+
 func TestModelFocusedKeysReachCell(t *testing.T) {
 	cells := makeThreeCells()
 	m := New(cells)
-	m = sendKey(t, m, "down")   // onto VerbatimCell
-	m = sendKey(t, m, "enter")  // focus → ViewMode
-	m = sendKey(t, m, "tab")    // cycle variant
+	m = sendKey(t, m, "down") // onto VerbatimCell
+	m = sendKey(t, m, "s")    // step into → ViewMode
+	m = sendKey(t, m, "tab")  // cycle variant
 	vc := m.Cells()[1].(*VerbatimCell)
 	if vc.active != 1 {
 		t.Errorf("Tab through model did not reach VerbatimCell; active = %d", vc.active)
 	}
 }
 
-func TestModelAdvanceEmitsAdvanceMsg(t *testing.T) {
+func TestModelEnterAdvanceEmitsAdvanceMsg(t *testing.T) {
+	// Enter is the universal advance key (matches PlainRenderer).
+	m := New(makeThreeCells())
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd == nil {
+		t.Fatal("Enter in SelectMode should return a tea.Cmd")
+	}
+	if msg := cmd(); msg == nil {
+		t.Fatal("advance cmd returned nil msg")
+	} else if _, ok := msg.(AdvanceMsg); !ok {
+		t.Errorf("advance cmd returned %T, want AdvanceMsg", msg)
+	}
+}
+
+func TestModelSpaceAlsoAdvances(t *testing.T) {
+	// Space is the secondary advance key kept for muscle memory.
 	m := New(makeThreeCells())
 	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeySpace})
 	if cmd == nil {
 		t.Fatal("Space in SelectMode should return a tea.Cmd")
 	}
 	if msg := cmd(); msg == nil {
-		t.Fatal("advance cmd returned nil msg")
+		t.Fatal("space cmd returned nil msg")
 	} else if _, ok := msg.(AdvanceMsg); !ok {
-		t.Errorf("advance cmd returned %T, want AdvanceMsg", msg)
+		t.Errorf("space cmd returned %T, want AdvanceMsg", msg)
 	}
 }
 
