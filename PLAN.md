@@ -1,365 +1,277 @@
-# PLAN: Verbatim variants + copy
+# PLAN: TUI keystroke dispatch (v1.1)
+
+> Short-term planning artifact for this branch only. Deleted at merge.
+> Long-term references live in GitHub issues / PR descriptions.
 
 ## Goal
 
-Two related additions to demokit's verbatim block:
+Replace the line-based pause dispatcher (`c<Enter>`, `c <label><Enter>`,
+`<label><Enter>`) with a proper TUI keypress UI built on Bubble Tea. The
+data model and clipboard primitive landed in PR 10 are unchanged — this
+PR is purely the interactive surface.
 
-1. **Variants** — a single labeled snippet ("Fetch a user") can carry N alternative
-   forms (curl / gcloud CLI / Python). Renderers pick what to show; in TUI, the user
-   tabs between them.
-2. **Copy** — a clipboard primitive (`demokit.Copy(s)`) that combines OSC 52 with
-   OS shell fallbacks (`pbcopy` / `wl-copy` / `xclip` / `xsel` / `clip.exe`). When a
-   step's verbatim block is rendered "boxed" in TUI, the user can copy the focused
-   variant via the `c` key.
+Concretely, deliver these from the v1.1 list in PR 10's description:
 
-Both are opt-in at the **demo level**, not per-block. Today's single-variant unboxed
-verbatim — the existing surface — keeps working unchanged. A new demo flag
-(`Demo.BoxedVerbatim()`) flips all verbatim into the boxed + interactive form in
-TUI. Multi-variant blocks auto-box regardless of the flag (tabs need a frame).
+- Raw-mode for the entire pause prompt (not just countdown)
+- `Tab` / `Shift+Tab` to cycle variants of the focused block
+- `1`–`9` to jump variant of the focused block
+- `[` / `]` to cycle focused block (multi-block steps)
+- Single-keystroke `c` (no Enter)
+- In-place redraw — no scrollback accumulation
+- Visual copy indicator (status flash ~1s)
+- Countdown integration with the new key handling
+- Reserved `↑` / `↓` — still no-op, reserved for cross-step history
 
-## Surface
+Out of scope (still): sidecar markdown variant syntax, web player tabbed
+UI, cross-step history navigation.
 
-### Variant data model
+## Approach
+
+Two parallel UIs over the same data model + clipboard primitive — both
+in this PR for parity:
+
+- **TUI (`tui.Renderer`)** uses **Bubble Tea** (`github.com/charmbracelet/bubbletea`)
+  for a proper keypress-driven overlay only during the pause prompt.
+  Tab cycles, single-keystroke `c`, in-place redraw, toast confirmation.
+- **Plain (`PlainRenderer`)** adds a line-mode copy dispatcher to its
+  pause prompt. Keystrokes commit on Enter; each reprint pushes the
+  prompt down a line (no cursor positioning). Acceptable per user
+  feedback — Plain explicitly doesn't need a proper TUI, just feature
+  parity. Same commands (`c` / `c <label>` / `<label>` / `<n>`),
+  same countdown integration (any input cancels via
+  `WaitForLineOrTimeout`).
+
+The rest of the renderer stays procedural — `RenderHeader`,
+`RenderStep`, `RenderResult`, `RenderSection`, `RenderDone`,
+`StreamOutput`, `Prompt` all continue with `fmt.Println`-style output
+as today. **Only `WaitForStep` swaps out** to the new dispatchers.
+
+This keeps:
+
+- Streaming step output (`captureOutput` → `StreamOutput`) compatible —
+  Bubble Tea owns the terminal only during the TUI pause overlay; Plain
+  is always cooked-mode.
+- `web.webRenderer` untouched — `--serve` mode doesn't pause for stdin.
+- Renderer interface unchanged — `WaitForStep(WaitOpts)` keeps its
+  signature; both implementations swap internally.
+
+### Why not extend further (e.g. a full Bubble Tea TUI from header → done)?
+
+A full-screen Bubble Tea program conflicts with demokit's streaming
+output contract — a step's `Run` can `fmt.Println` while executing,
+and the renderer streams via `StreamOutput`. Bubble Tea captures the
+viewport; mixing streaming `Println` with a tea.Program is messy.
+Per-pause overlay sidesteps that: tea owns the screen only while the
+pause is active, and the program exits before the next `Run`.
+
+## Pause-overlay model
+
+### State
 
 ```go
-// Variant is one labeled form of a verbatim snippet.
-type Variant struct {
-    Label   string  // "curl", "gcloud", "Python" — empty on single-variant blocks
-    Lang    string  // fenced-code hint
-    Content string
-    Default bool    // marks the preferred form for non-interactive / doc default
-}
-
-// Constructor + fluent default marker.
-func Variant(label, lang, content string) Variant
-func (v Variant) Default() Variant
-```
-
-### Multi-variant constructor on StepDef
-
-```go
-// VerbatimVariants attaches a multi-variant snippet to the step. The first
-// variant is the implicit default if no .Default() marker is set.
-func (s *StepDef) VerbatimVariants(label string, variants ...Variant) *StepDef
-```
-
-Existing single-variant setters (`Verbatim`, `VerbatimLang`, `Shell`) keep their
-current signatures and return type (`*StepDef`) — no API change, no new public
-type, chained step setters continue to work identically.
-
-Usage:
-
-```go
-demo.Step("Fetch the user").
-    Note("Same API, three idioms.").
-    VerbatimVariants("Fetch user 123",
-        demokit.Variant("curl",   "bash",   `curl -X GET https://api/users/123`).Default(),
-        demokit.Variant("gcloud", "bash",   `gcloud users describe 123`),
-        demokit.Variant("Python", "python", `import requests; r = requests.get(...)`),
-    ).
-    Run(...)
-```
-
-### Demo-level boxing — `Demo.BoxedVerbatim()`
-
-```go
-// BoxedVerbatim enables the boxed + interactive rendering of verbatim
-// blocks in TUI mode. When unset (default), single-variant blocks render
-// outside the TUI box (mouse-select-friendly) as today. Multi-variant
-// blocks always render boxed regardless of this flag — tabs require a
-// frame.
+// pauseModel is the Bubble Tea model for the line-up-to-pause-end
+// overlay on a step. It owns:
 //
-// Plain renderer, markdown, HTML, and JSON output are unaffected by
-// this flag (no "box" concept outside the TUI).
-func (d *Demo) BoxedVerbatim() *Demo
-```
-
-Effective per-block boxing at render time:
-
-| Block type | `BoxedVerbatim()` unset | `BoxedVerbatim()` set |
-|---|---|---|
-| Single variant | unboxed (today's behavior) | boxed + `c`-to-copy |
-| Multi variant  | boxed + tabs + `c`-to-copy | boxed + tabs + `c`-to-copy |
-
-The rationale for auto-boxing multi-variant regardless of the flag: calling
-`VerbatimVariants(...)` is itself an opt-in to interactivity (tabs require a
-frame). Forcing authors to also set `BoxedVerbatim()` would be a second knob for
-no extra signal.
-
-### `verbatimBlock` updated
-
-```go
-type verbatimBlock struct {
-    Label    string
-    Variants []Variant
-    // No explicit `Boxed` field — derived at render time from
-    // (demo.BoxedVerbatim flag) OR (len(Variants) > 1).
+//   - the rendered step (lastStep + active variant per block)
+//   - the auto-accept deadline (or zero for no countdown)
+//   - transient toast state (copy confirmation, error messages)
+type pauseModel struct {
+    step          *demokit.StepDef
+    blocks        []demokit.VerbatimView // copyable subset
+    activeBlock   int                    // index into blocks
+    activeVariant []int                  // per-block active variant index
+    deadline      time.Time              // zero = no countdown
+    toast         string                 // transient status line ("(copied …)")
+    toastUntil    time.Time              // when to clear the toast
+    palette       Palette
+    width         int
 }
 ```
 
-Single-variant constructors fill `Variants` with a one-element slice keyed by the
-existing Lang/Content. The legacy `Lang`/`Content` fields on `verbatimBlock` are
-removed — `Variants[0]` carries them.
+### View
 
-`VerbatimView` (the read-only projection) grows a `Variants []VariantView` field;
-existing `Lang`/`Content` accessors are sugar over `Variants[0]` for callers that
-ignore variants.
+```
+[ Block label, bold + Title ]
 
-### Demo flag — `--variant`
+<curl (default)>   python    go    ← tab strip (lipgloss)
+╭──────────────────────────────╮
+│ <active variant content>     │
+╰──────────────────────────────╯
 
-Added to `RegisterFlags`, `scanOwnArgs`, and `FilterArgs`'s value-flag strip set.
+  Tab/Shift+Tab cycle · 1-3 jump · c copy · Enter run · 4.2s
+       ↑ toast appears here for ~1s after copy
+```
 
-| `--variant` value | Effect on plain / `--non-interactive` / `--doc md|html|json` |
+The renderer prints up to the box, then `tea.Program` takes over and
+draws the tab strip + box + status line. On every `Update`, the View is
+re-rendered (Bubble Tea handles the cursor positioning and clears).
+
+### Updates
+
+| Key | Effect |
 |---|---|
-| _omitted_ | If a variant is `.Default()`-marked, render only that one. Else render all. |
-| `--variant=all` | Render all variants. |
-| `--variant=default` | Render the default-marked variant; error if none marked. |
-| `--variant=<label>` | Render the named variant; error (stderr, exit) if no block has it. |
+| `Enter` | program returns; main loop continues to next step |
+| `Tab` | active variant of focused block → next (wraps) |
+| `Shift+Tab` | active variant of focused block → previous (wraps) |
+| `1`–`9` | active variant of focused block → index (1-based) |
+| `[` | focused block → previous (wraps) |
+| `]` | focused block → next (wraps) |
+| `c` | copy active variant of focused block; toast "(copied curl via osc52)" for ~1s |
+| `↑` / `↓` | no-op; reserved |
+| any printable char that doesn't match above | no-op (or visual nudge?) |
+| countdown tick | redraws status line with remaining time; on expiry, returns (auto-advance) |
 
-**TUI ignores `--variant`** — the user picks interactively. Documenting this in
-the flag help text avoids surprise.
+### Toast
 
-## TUI interaction
+A `tea.Cmd` schedules a `clearToastMsg` after ~1s; on receipt, clears
+`toast` / `toastUntil` and triggers a re-render. Standard Bubble Tea
+pattern.
 
-A verbatim block is "boxed" if `Demo.BoxedVerbatim()` is set OR the block has
-multiple variants (auto-box).
+## Single-block / single-variant degradation
 
-### v1: line-based copy
+- **No copyable blocks on step:** the overlay shows just a status line
+  (`Press Enter to run...`) and reads for Enter. No tab strip, no box.
+- **Single block, single variant + `BoxedVerbatim()` set:** the overlay
+  shows the box without a tab strip; `c` copies; no `Tab` / `1` / `[`.
+- **Single block, multi-variant:** tab strip + box; no `[`/`]`.
+- **Multiple blocks, multi-variant:** full UI.
 
-The interactive key dispatch (Tab cycling, single-keystroke `c`, numeric jump,
-`[`/`]` block focus) requires raw terminal mode + cursor-positioned redraws.
-Those land in a follow-up PR. v1 ships a line-based copy UX that delivers the
-core value (variants visible + keyboard copy via OSC 52 / pbcopy) without
-adding a raw-mode dependency:
+The overlay reads the step's blocks at start; the prompt hint adapts.
 
-- **Single-variant boxed** (e.g. `BoxedVerbatim()` set on a step with one
-  snippet): block renders in a styled box. Pause prompt:
-  ```
-  Press Enter to continue · type `c` to copy
-  ```
-  Reading: `bufio.NewReader(os.Stdin).ReadString('\n')`. On `c`, the clipboard
-  primitive copies the block's only variant; status line shows the strategy
-  (`(copied via osc52)`); prompt re-displays. On empty Enter, continue.
+## Countdown integration
 
-- **Multi-variant** (always boxed): block renders inside a single box with
-  every variant printed stacked, each prefixed by its `**label**`. Pause
-  prompt:
-  ```
-  Press Enter to continue · type `c` to copy default · `c <label>` for a named variant
-  ```
-  `c` alone copies the default-marked variant (or the first if none marked).
-  `c curl` copies the variant labeled `curl`; case-insensitive match. Unknown
-  label re-prompts with an error line.
+Bubble Tea's `tea.Tick` runs a 100ms ticker. The model's `Update`
+checks `deadline` each tick:
 
-- **Unboxed verbatim** (single-variant, `BoxedVerbatim()` unset): unchanged
-  from today — rendered outside the box, mouse-select copies. No `c` key in
-  the prompt.
+- If `deadline.Sub(time.Now()) <= 0` → return `tea.Quit` (auto-advance)
+- Else → re-render status line with remaining time
 
-### v1.1 (follow-up): raw-mode interactivity
+On any keypress during the countdown, the model **clears `deadline`**
+(setting to zero) — the user signaled intent to interact, the countdown
+is paid. The keypress itself dispatches normally (Tab cycles, c copies,
+etc.). Enter still returns (advance). This matches PR 10's "any key
+interrupts" semantic but without the line-mode awkwardness.
 
-Will replace the line-based UX with the bindings already designed:
+## Plain-mode dispatcher (simpler than TUI — all visible, pick to copy)
 
-| Key | Scope | Effect |
-|---|---|---|
-| `Tab` / `Shift+Tab` | block (focused) | cycle variants forward / back |
-| `1`–`9` | block (focused) | jump to variant N of focused block |
-| `[` / `]` | step | cycle which block is focused |
-| `c` | block (focused) | copy focused variant |
-| `↑` / `↓` | **reserved** | future history mode |
-| `Enter` | step | continue (unchanged) |
+Plain mode shows every variant up front (no tab cycling needed — the
+content is already on screen), so the only interaction is "which one do
+you want copied?". No `c`, no `<label>`, no switching state — just a
+single number maps to a single variant.
 
-Reserved tab strip render (`[1] curl  <2> gcloud  [3] Python`) lands then.
+### Plain-mode rendering of verbatim blocks
 
-### Block ID scheme
-
-Independent of v1 vs v1.1: `<step-id>:verbatim:<index-within-step>`. Reserved
-in v1 for future focus addressing.
-
-## Clipboard primitive — new `clipboard.go`
-
-```go
-// Copy writes s to the system clipboard. Strategy order:
-//   1. OSC 52 escape sequence (terminal-side; works over SSH if the
-//      terminal allows it; tmux 3.3+ honors it with set-clipboard on).
-//   2. pbcopy   (darwin)
-//   3. wl-copy  (Wayland)
-//   4. xclip    (X11)
-//   5. xsel     (X11 fallback)
-//   6. clip.exe (Windows / WSL)
-//
-// Returns the strategy that worked and ok=true, or ("", false) if all
-// failed. Missing tools are silent skips, not errors.
-func Copy(s string) (strategy string, ok bool)
-```
-
-OSC 52 implementation writes `\x1b]52;c;<base64(s)>\x07` to a writer chosen at
-package init (`os.Stderr` default — stdout is captured during step Run). We expose
-a small `clipboardWriter` seam for tests to assert the sequence without actually
-shelling out.
-
-Shell fallbacks use `exec.LookPath` first; only execute if the binary exists.
-Each invocation pipes `s` to stdin with a short context timeout (2s) so a hung
-clipboard daemon never blocks the TUI.
-
-No third-party dependency.
-
-## Markdown rendering
-
-Sub-headings per variant (your preference):
-
-```markdown
-#### Fetch user 123
-
-**curl**
-
-​```bash
-curl -X GET https://api/users/123
-​```
-
-**gcloud**
-
-​```bash
-gcloud users describe 123
-​```
-
-**Python**
-
-​```python
-import requests; r = requests.get(...)
-​```
-```
-
-Same shape in both `markdown.go` (the rich static visitor) and `render_trace.go`
-(per-entry trace renderer). `writeVerbatimMD` is updated to emit either:
-
-- One variant — current single block format (no `**label**` line); or
-- N variants — `**label**` line above each fenced block, in declaration order.
-
-`--variant=<label>` filters to that one in markdown output; default behavior is
-"default-marked if set, else all."
-
-## HTML rendering
-
-The minimal standalone HTML (`render_trace.go::RenderDocumentHTML`) uses
-`<h4>` for the outer label and bolded `<strong>` lines for each variant label
-plus `<pre><code class="language-X">` per snippet. No JS, no tabs — same model
-as the markdown render.
-
-**Web player tabbed UI (the `<demokit-demo>` custom element + bundle) is
-deferred to a follow-up PR.** The JSON projection lands now so embed hosts have
-the data; the player's vanilla-JS UI for tabs is its own work.
-
-## JSON projection
-
-```go
-type VariantView struct {
-    Label   string `json:"label,omitempty"`
-    Lang    string `json:"lang,omitempty"`
-    Content string `json:"content"`
-    Default bool   `json:"default,omitempty"`
-}
-
-type VerbatimView struct {
-    Label    string        `json:"label,omitempty"`
-    Variants []VariantView `json:"variants"`
-}
-```
-
-A single-variant block emits a one-element `variants` array — embed hosts read
-the same shape unconditionally. No `lang`/`content` on the outer view; everything
-lives in variants for symmetry. No `Boxed` field — boxing is a TUI rendering
-concern, derived at render time from the demo flag + variant count, not a per-
-block property worth wire-projecting.
-
-## Block identity for future history nav
-
-Each rendered verbatim block gets an addressable ID:
+**Plain mode currently renders nothing for verbatim blocks at all** —
+that's a pre-existing gap (PR 10 added variant data + non-TUI markdown
+rendering but didn't touch `PlainRenderer.RenderStep`). v1.1 fixes
+that. The plain render numbers variants globally across all copyable
+blocks on the step so the copy prompt can refer to them uniformly:
 
 ```
-<step-id>:verbatim:<index-within-step>
+Step 4: Refresh succeeds
+----------------------------------------------------------------------
+  App ->> AS: POST /token (refresh)
+  AS -->> App: {access_token, expires_in: 3600}
+
+Refresh the token
+  [1] curl (default)
+      curl -s -X POST https://auth.example/oauth2/token \
+        -H 'Content-Type: application/x-www-form-urlencoded' \
+        -d 'grant_type=refresh_token&refresh_token=eyJhbGci...'
+  [2] python
+      import requests
+      r = requests.post(...)
+  [3] go
+      resp, _ := http.PostForm(...)
 ```
 
-E.g. `triage:verbatim:0`, `triage:verbatim:1`. The ID is computed in the renderer
-and stored on the in-memory block state. v1 doesn't read these IDs (no history
-nav yet), but reserving the scheme avoids retrofitting when history mode lands.
+For non-interactive runs (`--non-interactive`, `--replay`, `--doc`),
+the `--variant` selection filters which variants render — same as
+markdown today. `[N]` numbering still aligns with whatever's shown.
 
-## What stays out of the trace
+### Plain-mode pause prompt
 
-Variants are static (author-time). The trace does NOT record which variant the
-user copied (or "viewed") — variants don't affect demo flow. `TraceEntry` is
-unchanged. Replays don't need to know about variants.
+```
+[Enter to accept, [1-3] to copy]:
+```
+
+`[1-N]` adapts to the actual count of copyable variants on the step:
+
+- N copyables → `[Enter to accept, [1-N] to copy]:`
+- 1 copyable → `[Enter to accept, [1] to copy]:`
+- 0 copyables → today's `Press Enter to run this step...`
+
+Behavior:
+
+- Read a line. Empty → return (advance). Single digit in range →
+  copy that variant via `demokit.Copy(...)`, print `(copied python via
+  osc52)`, reprint the prompt. Anything else → reprint the prompt (no
+  error message; the prompt itself shows the valid form).
+- Countdown: `WaitForLineOrTimeout` races a 100ms ticker against
+  stdin. Any non-empty input cancels (clears the deadline); subsequent
+  reads are pure line mode (no countdown).
+
+No active-variant state to track. No switching. Just print the numbered
+variants once, accept a digit to copy, advance on Enter.
 
 ## File-level changes
 
 | File | Change |
 |---|---|
-| `step.go` | `Variant` type + `.Default()`; `verbatimBlock` rewritten with `Variants []Variant` (no Boxed field); `VerbatimVariants` constructor returning `*StepDef`; existing single-variant constructors unchanged in signature; `VerbatimView` updated. |
-| `clipboard.go` (new) | `Copy(s string) (strategy string, ok bool)`; OSC 52 emitter; shell-fallback dispatch. |
-| `clipboard_test.go` (new) | Asserts OSC 52 byte sequence via a fake writer; asserts LookPath-miss falls through; asserts no exec when all tools missing. |
-| `args.go` | Add `--variant` to FilterArgs value-flag strip set. |
-| `demokit.go` | `flagVariant string` + `boxedVerbatim bool` fields; `Demo.BoxedVerbatim() *Demo` setter; `RegisterFlags` / `scanOwnArgs` updates for `--variant`; expose `Demo.VariantSelection() VariantSelection` helper used by renderers to pick variants for non-interactive output; expose `Demo.IsBoxedVerbatim() bool` for TUI to consult at render time. |
-| `markdown.go` | `writeVerbatimMD` rewritten to emit one-or-many variants with sub-headings; applies `VariantSelection` filter. |
-| `render_trace.go` | `writeVerbatimMD/HTML` reuse; same selection filter; HTML output uses `<strong>` per variant. |
-| `render_json.go` | `VariantView`; `VerbatimView` reshaped; `inputView` untouched. |
-| `tui/` | Render single-variant inside the box when `Demo.IsBoxedVerbatim()` is true. Multi-variant always boxed with stacked-with-labels rendering. After step render, the TUI's pause loop reads a line: empty = continue, `c` = copy default/single variant, `c <label>` = copy named variant. `clipboard.Copy()` integration, status-line "(copied via X)" feedback. **Raw-mode key dispatch (Tab, single-key c, 1-9, [/], focus model) deferred to follow-up PR.** |
-| `renderer.go` | `PlainRenderer.RenderStep` applies the `--variant` selection (no interactivity). |
-| `examples/graph/` | Demo calls `.BoxedVerbatim()`; the "Refresh succeeds" step's `.Shell(...)` is converted to `.VerbatimVariants("Refresh the token", curl.Default(), python, go)` — three client forms; curl is the default. The "Retry succeeds" step keeps its single-variant `.VerbatimLang(...)` so it exercises the demo-flag-driven boxing path. |
-| `examples/dungeon/` | Spot-check that sidecar-md path still loads (no markdown variant syntax in v1). |
-
-## Sidecar markdown
-
-Out of scope for v1. Sidecar-loaded verbatim blocks stay single-variant; the
-goldmark fenced-code parser doesn't get a `variants` block type in this PR.
-Authors who need variants in a sidecar demo declare them via `Demo.Bind(id)` and
-call `VerbatimVariants(...)` from Go (mirrors how `Run` / `Coalesce` are
-Go-only). Follow-up can add a `variants` reserved fence info-string.
+| `go.mod` | Add `github.com/charmbracelet/bubbletea` |
+| `tui/pause.go` (new) | `pauseModel` + Init/Update/View + key bindings + toast Cmd |
+| `tui/tui.go` | `WaitForStep` becomes a thin wrapper that constructs `pauseModel` and runs a `tea.Program`; removes line-mode `copyPromptLoop`, `waitWithCountdown`, `echoActiveVariant`. The `lastStep` / `activeVariant` fields move to the model. |
+| `tui/copy.go` | `handleCopyCommand` is replaced by the model's `Update` — file becomes much smaller (just the OSC52 invocation helper). |
+| `tui/copy_test.go` | Rewritten against the model: send `tea.KeyMsg`s, assert state changes (active variant, toast text) and side effects (OSC52 byte write). |
+| `renderer.go` | `PlainRenderer.RenderStep` grows verbatim rendering: numbered variants, one block per outer label. `PlainRenderer.WaitForStep` adopts the digit-to-copy dispatcher, integrating with `WaitForLineOrTimeout` for the countdown race. `WaitForKeyOrTimeout` removed (unused after the TUI moves to Bubble Tea). `WaitForLineOrTimeout` + `WaitForEnterOrTimeout` stay — Plain uses them. |
+| `examples/graph/main.go` | No changes needed — same API. |
 
 ## Tests
 
-- `TestVariantConstruction` — `Variant("curl", "bash", "...").Default()` sets Default; `Variant(...)` without it leaves Default false.
-- `TestSingleVariantBackcompat` — `Verbatim("l", "c")`, `VerbatimLang("l", "py", "c")`, `Shell("c")` each produce one-element `Variants` slices preserving label / lang / content; rendered markdown / JSON / HTML byte-equal pre-change reference output. Existing chain shape (`step.Verbatim(...).Shell(...).Run(...)`) compiles unchanged.
-- `TestBoxedVerbatimFlag` — `Demo.BoxedVerbatim()` toggles the flag; `Demo.IsBoxedVerbatim()` reads it; default is false.
-- `TestMultiVariantAutoBoxed` — TUI render of a step with a multi-variant block produces the boxed/tabbed layout even when `BoxedVerbatim()` is unset.
-- `TestSingleVariantUnboxedByDefault` — TUI render of a step with a single-variant block produces today's unboxed output when `BoxedVerbatim()` is unset; the same step produces boxed output when `BoxedVerbatim()` is set.
-- `TestRenderMarkdownVariants` — multi-variant block emits `#### <label>` + `**variant-label**` + fenced block per variant; single-variant block emits the legacy shape unchanged.
-- `TestRenderJSONVariants` — multi-variant block produces a `variants` array; single-variant block produces a one-element array.
-- `TestRenderHTMLVariants` — same shape via `<strong>` labels.
-- `TestVariantFlagDefault` — `--variant` unset + one variant marked Default → render only Default. Unset + no Default → render all.
-- `TestVariantFlagExplicit` — `--variant=all` renders all; `--variant=curl` renders only curl; `--variant=does-not-exist` exits with stderr error.
-- `TestFilterArgsStripsVariant` — both `--variant foo` and `--variant=foo` are removed from caller-side args.
-- `TestClipboardOSC52` — `Copy("hello")` with a fake writer emits `\x1b]52;c;aGVsbG8=\x07`.
-- `TestClipboardShellFallback` — when `exec.LookPath("pbcopy")` is stubbed to fail, the next strategy is tried; when all fail, `Copy` returns `("", false)`.
-- `TestClipboardTimeout` — a hanging stub binary is killed after the 2s context deadline; `Copy` returns `("", false)`.
+### TUI (Bubble Tea pauseModel)
 
-TUI interaction (line-based `c` / `c <label>` copy command parsing) is
-exercised by feeding lines into the renderer's pause loop through a stdin pipe
-— same pattern as the existing `cancel_test.go` cancellable-stdin tests. The
-raw-mode key dispatch tests land in the v1.1 follow-up PR.
+Bubble Tea models are unit-testable by sending `tea.Msg`s directly to
+`Update` and checking returned state / `tea.Cmd`s. No raw TTY required.
+
+- `TestPauseModelTabCycles` — `Tab` rotates `activeVariant`, wraps at end.
+- `TestPauseModelShiftTabCycles` — `Shift+Tab` rotates backward.
+- `TestPauseModelNumericJump` — `1`/`2`/`3` jump to index N-1; out-of-range no-ops.
+- `TestPauseModelBlockFocus` — `[`/`]` rotates `activeBlock` for multi-block steps; no-op for single-block.
+- `TestPauseModelCopy` — `c` writes OSC 52 of active variant content (byte-exact base64); toast set to "(copied … via osc52)".
+- `TestPauseModelToastClears` — `clearToastMsg` clears the toast.
+- `TestPauseModelEnterQuits` — `Enter` returns `tea.Quit`.
+- `TestPauseModelCountdown` — `tea.Tick` decrements; expiry returns `tea.Quit`; any non-Enter key cancels the countdown without quitting.
+- `TestPauseModelReservedArrows` — `↑` / `↓` are no-ops.
+
+### Plain renderer
+
+- `TestPlainRenderStepEmitsNumberedVariants` — multi-variant block renders with `[1]` / `[2]` / `[3]` prefixes; outer block label + variant labels appear; default-marked variant gets `(default)` tag.
+- `TestPlainRenderStepRespectsVariantFlag` — `--variant=python` filters the numbered list to only the python variant (renumbered `[1]`); `--variant=all` renders all.
+- `TestPlainWaitForStepCopiesByDigit` — fed `2\n\n` to the pause prompt, asserts OSC 52 contains the python variant's content (byte-exact base64) and pause returns on the trailing blank line.
+- `TestPlainWaitForStepInvalidReprompts` — fed `xyz\n\n` (invalid then blank Enter), asserts no copy happens and pause returns after the blank.
+- `TestPlainCountdownCancelOnInput` — fed `2\n\n` during a 5s countdown, asserts countdown stops on the first input, copy fires, then a blank Enter advances.
 
 ## Build sequence
 
 1. PLAN.md (this file) — review.
-2. `step.go` — data model + `Variant` type + `VerbatimVariants` constructor; `verbatimBlock` rewritten around `Variants []Variant`; existing single-variant constructors keep signature/return type. Existing tests adjusted for internal shape change only.
-3. `clipboard.go` + `clipboard_test.go` — standalone primitive, no other code depends on it yet.
-4. `markdown.go`, `render_trace.go`, `render_json.go` — variant-aware renderers; `--variant` flag wired in.
-5. `args.go` + `demokit.go` — `--variant` flag registration + strip set; `BoxedVerbatim()` / `IsBoxedVerbatim()`; `VariantSelection` helper.
-6. `tui/` — interactive variant tabs, focus model, clipboard integration.
-7. `examples/graph/` smoke; manual TUI exercise of Tab/`c`/`[`/`]`.
-8. `ARCHITECTURE.md` + `README.md` short additions describing the surface.
+2. `renderer.go` — `PlainRenderer.RenderStep` numbers + emits verbatim variants; respects `--variant` filter. Tests pass with the existing pause behavior (no copy interaction yet).
+3. `renderer.go` — `PlainRenderer.WaitForStep` digit-to-copy prompt, countdown integration. Plain-mode interactive tests pass.
+4. `go get bubbletea` + go.mod / go.sum.
+5. `tui/pause.go` — new Bubble Tea model + Init/Update/View + tests.
+6. `tui/tui.go` — replace `WaitForStep` internals with the `tea.Program`; remove line-mode `copyPromptLoop` / `waitWithCountdown` / `echoActiveVariant`.
+7. `tui/copy.go` — trim to clipboard invocation helper; tests rewritten against the Bubble Tea model.
+8. `renderer.go` — remove unused `WaitForKeyOrTimeout`.
+9. Smoke: `make demo` (TUI) and `make run` (Plain) in `examples/graph/`. Verify Tab cycling + toast (TUI), digit-to-copy (Plain), countdown integration end-to-end in both modes.
+10. Delete this `PLAN.md` in the merge commit.
 
-## Open questions resolved
+## Risk / blast radius
 
-- **Box opt-in**: **demo-level only** via `Demo.BoxedVerbatim()`. Multi-variant blocks auto-box regardless of the flag (tabs need a frame); single-variant blocks honor the flag (default unboxed = today's behavior). No per-block `.Boxed()` API, no `VerbatimRef` type — keeps the chain shape and API surface unchanged.
-- **`.Default()` placement**: marker on `Variant` (local; one source of truth per option).
-- **Numeric quick-jump**: `1-9` acts on focused block's variants. `[` / `]` switches block focus. Preserves `↑` / `↓` for future history mode.
-- **`--variant` scope**: applies to plain / non-interactive / `--doc`. TUI ignores it (interactive selection).
-- **Block ID**: `<step-id>:verbatim:<index>` scheme reserved now; unused in v1.
-- **Trace impact**: none. Variants are static.
+- **Bubble Tea adoption:** new dep on a well-maintained, popular package; no incompatibilities expected with our existing lipgloss usage.
+- **Terminal state:** Bubble Tea handles raw-mode setup + restore + signal handling internally. Smaller surface for "left the terminal in raw mode after panic" than hand-rolling.
+- **Streaming compatibility:** Bubble Tea owns the terminal only during the pause overlay; `Run` execution + `StreamOutput` continue outside. Worth a manual test with a step that writes during execution to confirm no interaction.
+- **Behavioral break:** the line-mode commands (`c<Enter>`, `c <label><Enter>`, `<label><Enter>`, `<n><Enter>`) go away entirely. Any user who scripted demokit by piping text into stdin during a TUI pause stops working — but TUI mode was always intended for human interaction, not scripting (scripts use `--non-interactive` + `--replay`). Acceptable.
 
-## Out of scope (explicit)
+## Cleanup at merge
 
-- Sidecar-markdown `variants` fenced-block syntax.
-- Web player (`<demokit-demo>` custom element) tabbed UI — JSON projection lands; player JS is a follow-up.
-- Cross-step history navigation (`↑` / `↓` mode). Reserved bindings only.
-- Per-block boxing override (e.g. "this demo is mostly boxed but THIS block should be mouse-select"). YAGNI until a real demo asks for it.
-- Per-variant copy in non-TUI contexts (e.g. a "copy" button in the static HTML render). HTML stays static; web player gets the dynamic UX.
+- Delete `PLAN.md` (this file).
+- Keep `considered-rejected.md` (rejected scenario-filtering design — enduring record).

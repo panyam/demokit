@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -75,6 +76,12 @@ type PlainRenderer struct {
 	MaxWidth int
 	// Fraction of terminal width to use. 0 means 0.90.
 	Fraction float64
+
+	// lastStep is set by RenderStep and consulted by WaitForStep to
+	// build the digit-to-copy prompt from the step's numbered copyable
+	// variants. Cleared at the next RenderStep so a step with no
+	// copyables falls through to the plain Enter pause.
+	lastStep *StepDef
 }
 
 // width returns the usable output width.
@@ -151,6 +158,7 @@ func (r *PlainRenderer) RenderHeader(title, description string, stepCount int) {
 }
 
 func (r *PlainRenderer) RenderStep(stepNum, totalSteps int, step *StepDef) {
+	r.lastStep = step
 	w := r.width()
 	// totalSteps == 0 means "no denominator" — Demo.ShowStepDenominator
 	// defaults off because the count is misleading for cyclic graphs.
@@ -185,6 +193,78 @@ func (r *PlainRenderer) RenderStep(stepNum, totalSteps int, step *StepDef) {
 	if step.note != "" {
 		r.printLine("\n%s\n", wrapText(step.note, w, "    "))
 	}
+
+	r.printVerbatim(step)
+}
+
+// printVerbatim emits a step's verbatim blocks in plain-text form.
+// Layout:
+//
+//	  <Block label>
+//
+//	    [N] variant-label (default)
+//	        content line 1
+//	        content line 2
+//
+//	    [N+1] other-variant
+//	        ...
+//
+// Copyable variants are numbered globally across the step — the same N
+// a user types at the pause prompt to copy the variant. Non-copyable
+// single-variant blocks render their content under the block label
+// with no [N] prefix (mouse-select copy stays the natural affordance
+// in unboxed demos).
+//
+// Numbering walks the same iteration order as
+// StepDef.NumberedCopyables, so the rendered N matches the prompt's
+// accepted digit one-for-one.
+//
+// --variant filtering is intentionally NOT applied here: interactive
+// users need every variant visible so they can pick by number. The
+// filter is for documentation output (markdown / HTML / JSON), where
+// reference docs do want trimmable output.
+func (r *PlainRenderer) printVerbatim(step *StepDef) {
+	blocks := step.VerbatimBlocks()
+	if len(blocks) == 0 {
+		return
+	}
+	demo := step.Demo()
+	boxedDefault := demo != nil && demo.IsBoxedVerbatim()
+
+	counter := 0
+	for _, b := range blocks {
+		if len(b.Variants) == 0 {
+			continue
+		}
+		copyable := boxedDefault || len(b.Variants) > 1
+
+		fmt.Println()
+		if b.Label != "" {
+			r.printLine("  %s\n", b.Label)
+		}
+		for _, va := range b.Variants {
+			fmt.Println()
+			if copyable {
+				counter++
+				label := va.Label
+				if label == "" {
+					label = b.Label
+				}
+				if va.IsDefault {
+					label += " (default)"
+				}
+				if label != "" {
+					r.printLine("    [%d] %s\n", counter, label)
+				} else {
+					r.printLine("    [%d]\n", counter)
+				}
+			}
+			for _, line := range strings.Split(strings.TrimRight(va.Content, "\n"), "\n") {
+				r.printLine("        %s\n", line)
+			}
+		}
+	}
+	fmt.Println()
 }
 
 func (r *PlainRenderer) RenderResult(_ int, output string, result *StepResult) {
@@ -236,6 +316,12 @@ func (r *PlainRenderer) StreamOutput(_ int, chunk []byte, out io.Writer) {
 }
 
 func (r *PlainRenderer) WaitForStep(opts WaitOpts) {
+	copyables := r.lastStep.NumberedCopyables()
+	if len(copyables) > 0 {
+		r.waitWithCopyPrompt(opts, copyables)
+		return
+	}
+
 	if opts.AutoAcceptAfter <= 0 {
 		fmt.Print("\n    Press Enter to run this step...")
 		bufio.NewReader(os.Stdin).ReadString('\n')
@@ -243,19 +329,102 @@ func (r *PlainRenderer) WaitForStep(opts WaitOpts) {
 		return
 	}
 
+	var key byte
+	var gotKey bool
 	if !opts.ShowCountdown {
-		fmt.Printf("\n    Press Enter to run (auto in %s)...", opts.AutoAcceptAfter.Round(time.Second))
-		WaitForEnterOrTimeout(opts.AutoAcceptAfter, nil)
+		fmt.Printf("\n    Press Enter to run (auto in %s · any key to hold)...", opts.AutoAcceptAfter.Round(time.Second))
+		key, gotKey = WaitForKeyOrTimeout(opts.AutoAcceptAfter, nil)
 		fmt.Println()
-		return
+	} else {
+		fmt.Println()
+		key, gotKey = WaitForKeyOrTimeout(opts.AutoAcceptAfter, func(remaining time.Duration) {
+			bar := countdownBar(remaining, opts.AutoAcceptAfter, 20)
+			fmt.Printf("\r    %s  %4.1fs  (Enter to accept · any key to hold)", bar, remaining.Seconds())
+		})
+		fmt.Printf("\r    %s\n", strings.Repeat(" ", 60))
 	}
 
-	fmt.Println()
-	WaitForEnterOrTimeout(opts.AutoAcceptAfter, func(remaining time.Duration) {
-		bar := countdownBar(remaining, opts.AutoAcceptAfter, 20)
-		fmt.Printf("\r    %s  %4.1fs  (Enter to accept now)", bar, remaining.Seconds())
-	})
-	fmt.Printf("\r    %s\n", strings.Repeat(" ", 60))
+	if !gotKey || key == KeyEnter || key == '\n' {
+		return // timer fired or Enter — advance
+	}
+	// Any other key cancels the countdown. Drop into a cooked-mode
+	// "press Enter to continue" hold so the user can read the screen
+	// before advancing.
+	fmt.Print("    (countdown stopped — press Enter to continue) ")
+	bufio.NewReader(os.Stdin).ReadString('\n')
+}
+
+// waitWithCopyPrompt is PlainRenderer's pause when the step exposes
+// one or more copyable variants (numbered [1]..[N] in the prior
+// RenderStep). Empty Enter advances; a digit in range copies the
+// corresponding variant via demokit.Copy and reprints the prompt;
+// anything else silently reprints the prompt (the prompt itself
+// describes the valid form).
+//
+// Countdown: the first read is a single-keypress raw-mode race against
+// the timer. Enter or timer expiry → advance. Any other key cancels
+// the countdown and drops into the cooked-mode loop below; the user
+// then types their actual command (digit / Enter) with Enter as
+// usual. Matches the TUI's "any key holds" mental model.
+func (r *PlainRenderer) waitWithCopyPrompt(opts WaitOpts, copyables []NumberedCopyable) {
+	hint := promptFromCopyables(copyables)
+
+	if opts.AutoAcceptAfter > 0 {
+		fmt.Printf("\n    %s · any key holds (auto in %s): ", hint, opts.AutoAcceptAfter.Round(time.Second))
+		key, gotKey := WaitForKeyOrTimeout(opts.AutoAcceptAfter, nil)
+		fmt.Println() // newline after the dangling prompt
+		if !gotKey {
+			return // timer fired — auto-advance
+		}
+		if key == KeyEnter || key == '\n' {
+			return // user accepted with Enter
+		}
+		// Any other key — fall through to the cooked-mode loop below.
+	}
+
+	for {
+		fmt.Printf("\n    %s: ", hint)
+		text, _ := bufio.NewReader(os.Stdin).ReadString('\n')
+		line := strings.TrimRight(text, "\r\n")
+
+		cmd := strings.TrimSpace(line)
+		if cmd == "" {
+			return // user accepted with Enter
+		}
+		// Single digit (or short int) → copy that variant.
+		if n, err := strconv.Atoi(cmd); err == nil {
+			if n >= 1 && n <= len(copyables) {
+				c := copyables[n-1]
+				strategy, ok := Copy(c.Content)
+				if !ok {
+					fmt.Println("    (copy failed — no clipboard provider available)")
+					continue
+				}
+				if c.Label != "" {
+					fmt.Printf("    (copied %s via %s)\n", c.Label, strategy)
+				} else {
+					fmt.Printf("    (copied via %s)\n", strategy)
+				}
+				continue
+			}
+		}
+		// Anything else: silently reprompt. The prompt line already
+		// shows the valid form; verbose errors would just add noise.
+	}
+}
+
+// promptFromCopyables builds the one-line digit-to-copy hint shown at
+// the pause. Adapts to the count: "[1]" for a single copyable,
+// "[1-N]" for multiple.
+func promptFromCopyables(copyables []NumberedCopyable) string {
+	switch len(copyables) {
+	case 0:
+		return "Press Enter to run this step"
+	case 1:
+		return "Enter to run · [1] to copy"
+	default:
+		return fmt.Sprintf("Enter to run · [1-%d] to copy", len(copyables))
+	}
 }
 
 // WaitForEnterOrTimeout blocks until the user presses Enter on stdin or

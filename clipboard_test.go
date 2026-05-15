@@ -88,3 +88,54 @@ func TestCopyOSC52WriteFailFallsThrough(t *testing.T) {
 		t.Errorf("expected empty strategy on full failure, got %q", strategy)
 	}
 }
+
+func TestCopyStrategyOrderLocalPrefersShellTools(t *testing.T) {
+	t.Setenv("SSH_CONNECTION", "")
+	t.Setenv("SSH_TTY", "")
+
+	shells := []shellCopyCandidate{
+		{name: "pbcopy", cmd: "pbcopy"},
+	}
+	got := copyStrategyNames(shells)
+	want := []string{"pbcopy", "osc52"}
+	if !stringSliceEqual(got, want) {
+		t.Errorf("local order = %v, want %v", got, want)
+	}
+}
+
+func TestCopyStrategyOrderRemotePrefersOSC52(t *testing.T) {
+	t.Setenv("SSH_CONNECTION", "10.0.0.1 22 10.0.0.2 41234")
+
+	shells := []shellCopyCandidate{
+		{name: "xclip", cmd: "xclip"},
+		{name: "xsel", cmd: "xsel"},
+	}
+	got := copyStrategyNames(shells)
+	want := []string{"osc52", "xclip", "xsel"}
+	if !stringSliceEqual(got, want) {
+		t.Errorf("remote order = %v, want %v", got, want)
+	}
+}
+
+func TestCopyStrategyOrderRemoteViaSSHTTY(t *testing.T) {
+	t.Setenv("SSH_CONNECTION", "")
+	t.Setenv("SSH_TTY", "/dev/pts/0")
+
+	got := copyStrategyNames(nil)
+	want := []string{"osc52"}
+	if !stringSliceEqual(got, want) {
+		t.Errorf("SSH_TTY-only remote order = %v, want %v", got, want)
+	}
+}
+
+func stringSliceEqual(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
