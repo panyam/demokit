@@ -1,6 +1,8 @@
 package notebook
 
 import (
+	"strings"
+
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/panyam/demokit"
@@ -69,9 +71,8 @@ func (c *SectionCell) RenderRows(width, startRow, endRow int, focused bool, mode
 		default:
 			line = "  " + c.copyMsg
 		}
-		// Mark the focused cell's title row.
-		if focused && i == 1 && len(line) >= 2 && line[:2] == "§ " {
-			line = "▸ " + line[2:]
+		if focused && i == 1 && strings.HasPrefix(line, "§ ") {
+			line = "▶ " + line[len("§ "):]
 		}
 		rows[i-startRow] = line
 	}
