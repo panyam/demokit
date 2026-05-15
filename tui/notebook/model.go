@@ -458,5 +458,8 @@ func (m Model) statusLine() string {
 		// At the outer level, advance is the dominant action.
 		hint = "↑/↓ navigate · Enter focus · Space advance · q quit"
 	}
-	return "[" + m.mode.Name() + "] " + c.ID() + " · " + hint
+	// Ctrl+L is the only universal recovery from a stale-cache
+	// blank screen (see model.go's handleKey comment). Surface it
+	// uniformly so the user never has to know it's there.
+	return "[" + m.mode.Name() + "] " + c.ID() + " · " + hint + " · Ctrl+L refresh"
 }
