@@ -110,3 +110,30 @@ func TestBridgeDoneMsgFlipsDoneFlag(t *testing.T) {
 		t.Error("BridgeDoneMsg did not flip done flag")
 	}
 }
+
+func TestCellAdvanceMsgPopsAndAdvances(t *testing.T) {
+	// Set up: focused on a cell, waiting on a bridge channel
+	// (simulates the renderer being mid-WaitForStep).
+	cells := []Cell{NewMetaCell("m", "Hi", "")}
+	m := New(cells)
+	m.cursor = 0
+	m.mode = ViewMode
+	ch := make(chan struct{})
+	m.waitCh = ch
+
+	next, _ := m.Update(cellAdvanceMsg{})
+	m = next.(Model)
+
+	if m.Mode() != SelectMode {
+		t.Errorf("cellAdvanceMsg should pop to SelectMode; got %v", m.Mode())
+	}
+	select {
+	case <-ch:
+		// expected — wait channel closed
+	default:
+		t.Error("cellAdvanceMsg should have closed the wait channel")
+	}
+	if m.waitCh != nil {
+		t.Error("waitCh should be nil after release")
+	}
+}

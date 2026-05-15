@@ -118,6 +118,25 @@ type BridgeWaitMsg struct {
 // so they can scroll back through prior cells before exiting.
 type BridgeDoneMsg struct{}
 
+// cellAdvanceMsg is the model-internal signal that a focused cell
+// has finished its work and the user should be returned to
+// SelectMode AND the demo advanced to the next step.
+//
+// Cells that don't use Enter for their own purposes (Verbatim,
+// Output, Section) return cellAdvance as a tea.Cmd from Update on
+// Enter so the default UX matches SelectMode Enter — Enter always
+// continues unless a cell explicitly opts in.
+//
+// PromptCell consumes Enter for form submission; on a successful
+// submit it returns cellAdvance too, so the user lands back in
+// SelectMode with the demo advancing. A future multiline-input
+// cell that wants to insert literal newlines on Enter simply
+// doesn't return this cmd.
+type cellAdvanceMsg struct{}
+
+// cellAdvance is the tea.Cmd that emits cellAdvanceMsg.
+func cellAdvance() tea.Msg { return cellAdvanceMsg{} }
+
 // BridgePromptMsg appends a PromptCell to the current cell list
 // and blocks the renderer's Prompt call on Reply. The model
 // auto-focuses the new cell so the user can start typing

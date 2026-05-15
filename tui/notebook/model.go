@@ -234,6 +234,19 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case BridgeDoneMsg:
 		m.done = true
 		return m, nil
+	case cellAdvanceMsg:
+		// A focused cell finished and wants us to pop back to
+		// SelectMode + advance to the next step in one motion.
+		m.mode = SelectMode
+		if m.waitCh != nil {
+			close(m.waitCh)
+			m.waitCh = nil
+			return m, nil
+		}
+		if m.quitOnAdvance {
+			return m, tea.Sequence(emitAdvance, tea.Quit)
+		}
+		return m, emitAdvance
 	case BridgePromptMsg:
 		// Append a PromptCell to the current cell list and auto-
 		// focus it; the user starts typing immediately. The cell

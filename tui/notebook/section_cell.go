@@ -92,7 +92,11 @@ func (c *SectionCell) Update(msg tea.Msg, mode Mode) (Cell, tea.Cmd) {
 	if !ok {
 		return c, nil
 	}
-	if keyMsg.String() == "c" {
+	switch keyMsg.String() {
+	case "enter":
+		// Cell doesn't use Enter — signal release + advance.
+		return c, cellAdvance
+	case "c":
 		strategy, ok := demokit.Copy(c.body)
 		if ok {
 			c.copyMsg = "(copied via " + strategy + ")"

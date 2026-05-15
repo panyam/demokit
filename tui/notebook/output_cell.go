@@ -148,6 +148,9 @@ func (c *OutputCell) Update(msg tea.Msg, mode Mode) (Cell, tea.Cmd) {
 		return c, nil
 	}
 	switch keyMsg.String() {
+	case "enter":
+		// Cell doesn't use Enter — signal release + advance.
+		return c, cellAdvance
 	case "j", "down":
 		c.scrollOffset++
 		c.clampScroll()

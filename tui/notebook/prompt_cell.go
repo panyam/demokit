@@ -227,7 +227,10 @@ func (c *PromptCell) trySubmit() (Cell, tea.Cmd) {
 		c.reply <- answers
 		close(c.reply)
 	}
-	return c, nil
+	// Submit succeeded → pop focus and advance. The user
+	// shouldn't need to Esc-then-Enter after entering valid
+	// answers; Enter on a complete form should "just continue."
+	return c, cellAdvance
 }
 
 // buildHint composes the per-field hint line: shows the default

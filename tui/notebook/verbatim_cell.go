@@ -109,6 +109,9 @@ func (c *VerbatimCell) Update(msg tea.Msg, mode Mode) (Cell, tea.Cmd) {
 		return c, nil
 	}
 	switch keyMsg.String() {
+	case "enter":
+		// Cell doesn't use Enter — signal release + advance.
+		return c, cellAdvance
 	case "tab":
 		c.cycle(+1)
 	case "shift+tab":
