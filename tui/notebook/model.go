@@ -3,9 +3,31 @@ package notebook
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 )
+
+// repaintInterval is the cadence of the perpetual repaint tick.
+// Bubble Tea's default renderer batches paints at frame-rate
+// intervals, and events arriving via Update don't always produce
+// a visible frame until input or another Cmd-emit cycle nudges
+// the renderer. That breaks live-cell updates — drip-drip
+// streaming output appears as one final dump instead of arriving
+// incrementally. The tick gives the renderer a reliable "go
+// paint" signal at 60Hz: cheap (View() returns the same string
+// when nothing changed; no paint actually writes), but
+// guarantees that fresh state lands on screen within ~16ms of
+// applyEvent committing it.
+const repaintInterval = 16 * time.Millisecond
+
+type repaintTickMsg struct{}
+
+// repaintTick returns a tea.Cmd that fires one repaintTickMsg
+// after repaintInterval. Update re-arms it on each receipt.
+func repaintTick() tea.Cmd {
+	return tea.Tick(repaintInterval, func(time.Time) tea.Msg { return repaintTickMsg{} })
+}
 
 // AdvanceMsg is emitted as a tea.Cmd when the user presses
 // Enter / Space from SelectMode in the standalone demo path
@@ -103,21 +125,17 @@ func (m Model) CursorIndex() int { return m.cursor }
 // Mode returns the current mode.
 func (m Model) Mode() Mode { return m.mode }
 
-// Init implements tea.Model. Returns the queue listener if one is
-// attached; otherwise nil. The first call to Update with an
-// eventsAvailableMsg drains everything queued before BT started,
-// fixing the startup race by construction.
+// Init implements tea.Model. Returns the queue listener (if a
+// queue is attached) batched with the repaint tick. The first
+// call to Update with an eventsAvailableMsg drains everything
+// queued before BT started, fixing the startup race by
+// construction. The tick ensures the renderer reliably paints
+// state changes — needed for live OutputCell streaming.
 func (m Model) Init() tea.Cmd {
 	if m.queue == nil {
-		return nil
+		return repaintTick()
 	}
-	// Eager wake-up: even if no event has been appended yet, the
-	// listener returns the moment one arrives. If events were
-	// already queued before Init (the common case — demokit's
-	// Execute starts firing events before BT's Run completes
-	// setup), the notify channel's capacity-1 buffer holds the
-	// wake-up and the listener returns immediately.
-	return listenForEvents(m.queue)
+	return tea.Batch(listenForEvents(m.queue), repaintTick())
 }
 
 // listenForEvents returns a tea.Cmd that blocks on the queue's
@@ -148,6 +166,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.offset = newOffset
 		return m, listenForEvents(m.queue)
+	case repaintTickMsg:
+		// Re-arm. The handler itself is a no-op; the Update return
+		// signals BT to call View() and emit any pending diff.
+		return m, repaintTick()
 	case clearCopyMsg:
 		// Route to the cell that owns the toast; cells that don't
 		// match ignore it.
@@ -454,6 +476,11 @@ func (m Model) statusLine() string {
 		} else {
 			hint = "↑/↓ navigate · Enter advance · s/f focus · q quit"
 		}
+	} else {
+		// ViewMode: surface Esc explicitly so the user can always
+		// find the way back to SelectMode for ↑/↓ navigation. The
+		// cell's own StatusHint covers the in-cell gestures.
+		hint = hint + " · Esc back"
 	}
 	return "[" + m.mode.Name() + "] " + c.ID() + " · " + hint + " · Ctrl+L refresh"
 }
