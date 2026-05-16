@@ -2,7 +2,6 @@ package notebook
 
 import (
 	"image/color"
-	"os"
 
 	"charm.land/lipgloss/v2"
 )
@@ -50,25 +49,30 @@ func focusedBorder(focused bool) lipgloss.Border {
 	return lipgloss.RoundedBorder()
 }
 
-// DefaultPalette returns a palette adapted to the terminal's
-// background. Uses lipgloss.HasDarkBackground for auto detection,
-// same as tui.DefaultPalette.
+// DefaultPalette returns a palette tuned for dark-background
+// terminals (the common case). Auto-detection via
+// lipgloss.HasDarkBackground is intentionally avoided here:
+// HasDarkBackground writes an OSC query to the terminal and reads
+// the reply from stdin. Called at construction time (before BT has
+// entered alt-screen + raw mode), the reply echoes to the visible
+// screen — leaving a `^[[?64;...c` escape sequence stuck above
+// the notebook UI until something repaints. Light-terminal users
+// can supply their own palette via Renderer.WithPalette.
 func DefaultPalette() Palette {
-	ld := lipgloss.LightDark(lipgloss.HasDarkBackground(os.Stdin, os.Stderr))
 	return Palette{
-		FocusBorder:    ld(lipgloss.Color("#D04040"), lipgloss.Color("#FF6B6B")),
-		MetaBorder:     ld(lipgloss.Color("#6C3FC7"), lipgloss.Color("#7D56F4")),
-		SectionBorder:  ld(lipgloss.Color("#999999"), lipgloss.Color("#626262")),
-		VerbatimBorder: ld(lipgloss.Color("#0070CC"), lipgloss.Color("#5BB1FF")),
-		OutputBorder:   ld(lipgloss.Color("#039960"), lipgloss.Color("#04B575")),
-		PromptBorder:   ld(lipgloss.Color("#B8860B"), lipgloss.Color("#FFD700")),
+		FocusBorder:    lipgloss.Color("#FF6B6B"),
+		MetaBorder:     lipgloss.Color("#7D56F4"),
+		SectionBorder:  lipgloss.Color("#626262"),
+		VerbatimBorder: lipgloss.Color("#5BB1FF"),
+		OutputBorder:   lipgloss.Color("#04B575"),
+		PromptBorder:   lipgloss.Color("#FFD700"),
 
-		Title:   ld(lipgloss.Color("#1A1A1A"), lipgloss.Color("#FAFAFA")),
-		Note:    ld(lipgloss.Color("#555555"), lipgloss.Color("#CCCCCC")),
-		Dim:     ld(lipgloss.Color("#999999"), lipgloss.Color("#888888")),
-		Active:  ld(lipgloss.Color("#D04040"), lipgloss.Color("#FF6B6B")),
-		Error:   ld(lipgloss.Color("#CC2222"), lipgloss.Color("#FF4444")),
-		Success: ld(lipgloss.Color("#039960"), lipgloss.Color("#04B575")),
-		Header:  ld(lipgloss.Color("#D04040"), lipgloss.Color("#FF6B6B")),
+		Title:   lipgloss.Color("#FAFAFA"),
+		Note:    lipgloss.Color("#CCCCCC"),
+		Dim:     lipgloss.Color("#888888"),
+		Active:  lipgloss.Color("#FF6B6B"),
+		Error:   lipgloss.Color("#FF4444"),
+		Success: lipgloss.Color("#04B575"),
+		Header:  lipgloss.Color("#FF6B6B"),
 	}
 }

@@ -85,6 +85,14 @@ func (r *Renderer) ensureProgram() {
 			r.mu.Lock()
 			r.killed = true
 			r.mu.Unlock()
+			// BT has exited (q / Ctrl+C / Ctrl+D / Done+Enter).
+			// demokit.Execute may still be mid-step — its runFn
+			// reading from an empty Inputs map will panic.
+			// os.Exit cuts the cord cleanly. Deferred cleanup in
+			// main() is skipped, which is acceptable for a demo
+			// program; the recorder has already flushed every
+			// step before this point.
+			os.Exit(0)
 		}()
 	})
 }
