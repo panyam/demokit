@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/panyam/demokit"
+	"github.com/panyam/demokit/events"
 )
 
 func TestSlugifyNormalizesCommonShapes(t *testing.T) {
@@ -26,68 +26,46 @@ func TestSlugifyNormalizesCommonShapes(t *testing.T) {
 	}
 }
 
-func TestVariantsFromViewPreservesFields(t *testing.T) {
-	in := []demokit.VariantView{
-		{Label: "curl", Lang: "bash", Content: "curl -s ...", IsDefault: true},
-		{Label: "python", Lang: "python", Content: "import requests", IsDefault: false},
+func TestBuildCellsFromStepStartBuildsExpectedShape(t *testing.T) {
+	e := events.StepStart{
+		Visit:  0,
+		StepID: "refresh",
+		Title:  "Refresh the token",
+		Note:   "The access_token expires after 3600 seconds.",
+		Arrows: []events.Arrow{{From: "App", To: "AS", Label: "POST /token (refresh)"}},
+		Refs:   []events.Ref{{Name: "RFC 6749 §6"}},
+		Verbatims: []events.Verbatim{
+			{Label: "Body", Variants: []events.Variant{
+				{Label: "curl", Lang: "bash", Content: "curl -s ...", IsDefault: true},
+				{Label: "python", Lang: "python", Content: "import requests"},
+			}},
+		},
 	}
-	out := variantsFromView(in)
-	if len(out) != len(in) {
-		t.Fatalf("len = %d, want %d", len(out), len(in))
+	cells := buildCellsFromStepStart(e, DefaultPalette())
+	if len(cells) != 2 {
+		t.Fatalf("cells = %d, want 2 (meta + verbatim)", len(cells))
 	}
-	for i, v := range out {
-		if v.Label != in[i].Label || v.Lang != in[i].Lang || v.Content != in[i].Content || v.IsDefault != in[i].IsDefault {
-			t.Errorf("variant %d: got %+v, want %+v", i, v, in[i])
-		}
+	if _, ok := cells[0].(*MetaCell); !ok {
+		t.Errorf("cells[0] = %T, want *MetaCell", cells[0])
 	}
-}
-
-func TestCellsForStepBuildsExpectedShape(t *testing.T) {
-	d := demokit.New("test")
-	d.Step("Refresh the token").ID("refresh").
-		Note("The access_token expires after 3600 seconds.").
-		Arrow("App", "AS", "POST /token (refresh)").
-		Ref(demokit.Ref{Name: "RFC 6749 §6"}).
-		VerbatimVariants("Body",
-			demokit.MakeVariant("curl", "bash", "curl -s ...").Default(),
-			demokit.MakeVariant("python", "python", "import requests"),
-		)
-	step := d.StepByID("refresh")
-	if step == nil {
-		t.Fatal("expected step with ID refresh")
-	}
-	bodyCells, outputCell, buf, oid := cellsForStep(0, step, DefaultPalette())
-	// Body is meta + verbatim only — OutputCell is deferred until
-	// the user has signalled "run" (handled separately by the
-	// renderer's appendOutputCell flush).
-	if len(bodyCells) != 2 {
-		t.Fatalf("body cells: got %d, want 2 (meta + verbatim)", len(bodyCells))
-	}
-	if _, ok := bodyCells[0].(*MetaCell); !ok {
-		t.Errorf("bodyCells[0] = %T, want *MetaCell", bodyCells[0])
-	}
-	if _, ok := bodyCells[1].(*VerbatimCell); !ok {
-		t.Errorf("bodyCells[1] = %T, want *VerbatimCell", bodyCells[1])
-	}
-	oc, ok := outputCell.(*OutputCell)
+	vc, ok := cells[1].(*VerbatimCell)
 	if !ok {
-		t.Fatalf("outputCell = %T, want *OutputCell", outputCell)
+		t.Fatalf("cells[1] = %T, want *VerbatimCell", cells[1])
 	}
-	if oc.ID() != oid {
-		t.Errorf("output cell ID mismatch: oc.ID()=%q, returned oid=%q", oc.ID(), oid)
-	}
-	if buf == nil {
-		t.Fatal("returned OutputBuffer is nil")
+	if vc.ID() != "refresh#0.verbatim0" {
+		t.Errorf("verbatim cell ID = %q, want %q", vc.ID(), "refresh#0.verbatim0")
 	}
 }
 
 func TestBuildMetaBodyJoinsNoteArrowsRefs(t *testing.T) {
-	d := demokit.New("t")
-	d.Step("S").ID("s").
-		Note("hello world").
-		Arrow("A", "B", "label").
-		Ref(demokit.Ref{Name: "RFC 1", URL: "https://example/rfc1"})
-	body := buildMetaBody(d.StepByID("s"))
+	e := events.StepStart{
+		StepID: "s",
+		Title:  "S",
+		Note:   "hello world",
+		Arrows: []events.Arrow{{From: "A", To: "B", Label: "label"}},
+		Refs:   []events.Ref{{Name: "RFC 1", URL: "https://example/rfc1"}},
+	}
+	body := buildMetaBody(e)
 	for _, want := range []string{"hello world", "A -> B: label", "ref: RFC 1 (https://example/rfc1)"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("meta body missing %q, got:\n%s", want, body)

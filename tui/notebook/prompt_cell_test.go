@@ -1,16 +1,15 @@
 package notebook
 
 import (
-	"fmt"
-	"strconv"
-	"strings"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
+
+	"github.com/panyam/demokit/events"
 )
 
-// sendKeyToCell pushes a key through the cell's Update and returns
-// the updated cell. Convenience wrapper over the tea.KeyMsg shapes.
+// sendKeyToCell pushes a key through the cell's Update and
+// returns the updated cell. Convenience wrapper.
 func sendKeyToCell(t *testing.T, c Cell, key string) Cell {
 	t.Helper()
 	var km tea.KeyMsg
@@ -28,45 +27,34 @@ func sendKeyToCell(t *testing.T, c Cell, key string) Cell {
 	return got
 }
 
-func choiceInput(name, prompt string, opts ...string) promptInput {
-	return promptInput{
-		Name:    name,
-		Prompt:  prompt,
-		Kind:    "choice",
-		Options: opts,
-		parse: func(s string) (any, error) {
-			got := strings.TrimSpace(s)
-			for _, o := range opts {
-				if strings.EqualFold(got, o) {
-					return o, nil
-				}
-			}
-			return nil, fmt.Errorf("must be one of: %s", strings.Join(opts, ", "))
-		},
-	}
+// makePromptCell sets up a queue + a PromptOpen event and
+// constructs a PromptCell that resolves on submit. Returns the
+// cell, the queue, and the prompt's queue offset.
+func makePromptCell(t *testing.T, inputs ...events.Input) (*PromptCell, *events.EventQueue, int) {
+	t.Helper()
+	q := events.NewQueue()
+	offset := q.Append(events.PromptOpen{Visit: 1, Inputs: inputs})
+	cell := NewPromptCell("p", inputs, q, offset, DefaultPalette())
+	return cell, q, offset
 }
 
-func intInput(name, prompt string, def int) promptInput {
-	return promptInput{
-		Name:    name,
-		Prompt:  prompt,
-		Default: def,
-		Kind:    "int",
-		parse: func(s string) (any, error) {
-			n, err := strconv.Atoi(strings.TrimSpace(s))
-			if err != nil {
-				return nil, fmt.Errorf("not an integer: %q", s)
-			}
-			return n, nil
-		},
+// resolutionOf reads the PromptOpen at offset and returns its
+// resolution (or nil if unresolved). Helper for assertions.
+func resolutionOf(t *testing.T, q *events.EventQueue, offset int) *events.PromptResolution {
+	t.Helper()
+	e, _ := q.ReadAt(offset)
+	p, ok := e.(events.PromptOpen)
+	if !ok {
+		t.Fatalf("event at %d is %T, want PromptOpen", offset, e)
 	}
+	return p.Resolution
 }
 
 func TestPromptCellTabAdvancesActive(t *testing.T) {
-	c := NewPromptCell("p", []promptInput{
-		choiceInput("color", "Pick a color", "red", "blue"),
-		intInput("age", "Your age", 0),
-	}, nil, DefaultPalette())
+	c, _, _ := makePromptCell(t,
+		events.NewChoiceInput("color", "Pick a color", "red", []string{"red", "blue"}),
+		events.NewIntInput("age", "Your age", 0),
+	)
 	if c.active != 0 {
 		t.Fatalf("initial active = %d, want 0", c.active)
 	}
@@ -80,13 +68,10 @@ func TestPromptCellTabAdvancesActive(t *testing.T) {
 	}
 }
 
-func TestPromptCellSubmitsValidAnswers(t *testing.T) {
-	reply := make(chan map[string]any, 1)
-	inputs := []promptInput{
-		choiceInput("color", "Color", "red", "blue"),
-	}
-	c := NewPromptCell("p", inputs, reply, DefaultPalette())
-	// Type "red" into the textinput.
+func TestPromptCellSubmitsValidAnswersViaQueue(t *testing.T) {
+	c, q, offset := makePromptCell(t,
+		events.NewChoiceInput("color", "Color", "red", []string{"red", "blue"}),
+	)
 	for _, r := range "red" {
 		c = sendKeyToCell(t, c, string(r)).(*PromptCell)
 	}
@@ -94,28 +79,23 @@ func TestPromptCellSubmitsValidAnswers(t *testing.T) {
 	if !c.done {
 		t.Fatal("cell should be done after valid submit")
 	}
-	select {
-	case got := <-reply:
-		if got["color"] != "red" {
-			t.Errorf("answers[color] = %v, want %q", got["color"], "red")
-		}
-	default:
-		t.Fatal("reply channel never received")
+	res := resolutionOf(t, q, offset)
+	if res == nil {
+		t.Fatal("PromptOpen.Resolution still nil after submit")
 	}
-	// Channel should be closed after the send.
-	if _, ok := <-reply; ok {
-		t.Errorf("reply channel should be closed after submit")
+	if res.Answers["color"] != "red" {
+		t.Errorf("answers[color] = %v, want %q", res.Answers["color"], "red")
+	}
+	if res.Source != "user-submitted" {
+		t.Errorf("Source = %q, want %q", res.Source, "user-submitted")
 	}
 }
 
 func TestPromptCellInvalidJumpsToFirstError(t *testing.T) {
-	reply := make(chan map[string]any, 1)
-	inputs := []promptInput{
-		intInput("a", "A", 0),
-		intInput("b", "B", 0),
-	}
-	c := NewPromptCell("p", inputs, reply, DefaultPalette())
-	// Move to second field, type garbage there.
+	c, q, offset := makePromptCell(t,
+		events.NewIntInput("a", "A", 0),
+		events.NewIntInput("b", "B", 0),
+	)
 	c = sendKeyToCell(t, c, "tab").(*PromptCell)
 	for _, r := range "xyz" {
 		c = sendKeyToCell(t, c, string(r)).(*PromptCell)
@@ -130,25 +110,24 @@ func TestPromptCellInvalidJumpsToFirstError(t *testing.T) {
 	if c.errors[1] == "" {
 		t.Errorf("expected an error message on field 1")
 	}
-	select {
-	case <-reply:
-		t.Fatal("reply channel should not have received on invalid submit")
-	default:
+	if res := resolutionOf(t, q, offset); res != nil {
+		t.Errorf("invalid submit should NOT resolve the queue; got %+v", res)
 	}
 }
 
 func TestPromptCellUsesDefaultWhenEmpty(t *testing.T) {
-	reply := make(chan map[string]any, 1)
-	inputs := []promptInput{
-		intInput("count", "Count", 42),
-	}
-	c := NewPromptCell("p", inputs, reply, DefaultPalette())
+	c, q, offset := makePromptCell(t,
+		events.NewIntInput("count", "Count", 42),
+	)
 	c = sendKeyToCell(t, c, "enter").(*PromptCell)
 	if !c.done {
 		t.Fatal("cell should submit with default-filled value")
 	}
-	got := <-reply
-	if got["count"] != 42 {
-		t.Errorf("answers[count] = %v, want 42 (the default)", got["count"])
+	res := resolutionOf(t, q, offset)
+	if res == nil {
+		t.Fatal("Resolution nil after default-only submit")
+	}
+	if res.Answers["count"] != 42 {
+		t.Errorf("answers[count] = %v, want 42 (the default)", res.Answers["count"])
 	}
 }
