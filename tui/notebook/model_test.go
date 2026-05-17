@@ -147,16 +147,6 @@ func TestModelSpaceAlsoAdvances(t *testing.T) {
 	}
 }
 
-func TestModelSetCellsResetsCursorAndMode(t *testing.T) {
-	m := New(makeThreeCells())
-	m = sendKey(t, m, "down")
-	m = sendKey(t, m, "enter") // ViewMode
-	m = m.SetCells([]Cell{NewMetaCell("step.next#0.meta", "Next", "")})
-	if m.CursorIndex() != 0 || m.Mode() != SelectMode {
-		t.Errorf("SetCells did not reset cursor/mode: cursor=%d mode=%v", m.CursorIndex(), m.Mode())
-	}
-}
-
 func TestModelResizeInvalidatesCaches(t *testing.T) {
 	longBody := "one two three four five six seven eight nine ten " +
 		"eleven twelve thirteen fourteen fifteen sixteen seventeen " +

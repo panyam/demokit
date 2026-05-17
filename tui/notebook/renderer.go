@@ -14,74 +14,63 @@ import (
 )
 
 // Renderer implements demokit.Renderer + demokit.StreamingRenderer
-// on top of a running Bubble Tea program. It bridges demokit's
-// procedural Execute loop to the model: each Render* method is a
-// tea.Msg sent into the program; WaitForStep blocks on a channel
-// the model closes when the user presses the advance key.
+// on top of an event-sourced architecture. Each lifecycle method
+// appends an Event to the renderer's queue; the Bubble Tea model
+// drains the queue and projects events into cell state.
 //
-// Contract:
+// The queue makes the producer race-free against BT startup:
+// events queued before Run() has finished initializing are still
+// applied in order when the model's first drain fires.
 //
-//   - Bubble Tea owns the screen for the entire demo lifetime
-//     (lazy-started on the first Render call, exits on RenderDone
-//     or when the user presses q).
-//   - The cell list IS the trace projection — each RenderStep
-//     appends its cells; prior steps stay navigable so the user
-//     can scroll back, re-copy variants, or read past output.
-//   - Step inputs render as a PromptCell driven by
-//     bubbles/textinput; Renderer.Prompt blocks until submission.
+// Sync points (WaitForStep, Prompt) carry their per-call rendezvous
+// channels in the event payload; the model installs them in its
+// state and the user's keypress closes them. RenderDone blocks
+// the producer goroutine until progDone closes.
 type Renderer struct {
 	once     sync.Once
 	program  *tea.Program
 	progDone chan struct{}
 
+	queue *eventQueue
+
 	mu                sync.Mutex
-	activeBuf         *OutputBuffer
-	activeCellID      string
+	currentVisit      int
+	pendingOutputCell Cell          // OutputCell waiting for eventStepReadyToRun flush
+	pendingOutputBuf  *OutputBuffer // buffer for the pending OutputCell
 	stepCount         int
 	palette           Palette
-	pendingOutputCell Cell // OutputCell stashed by RenderStep, flushed by appendOutputCell
 
-	// killed is set when the user pressed q (program exited).
-	// Subsequent bridge calls become no-ops; WaitForStep returns
-	// immediately so demokit's Execute loop can run to completion
-	// without trying to drive a dead UI.
 	killed bool
 }
 
-// NewRenderer constructs a fresh notebook renderer. The Bubble Tea
-// program is started lazily on the first Render call so cheap test
-// constructions don't grab a terminal. Default palette is auto-
-// detected against the terminal background; override via
-// WithPalette before the first Render call.
+// NewRenderer constructs a fresh notebook renderer. Palette is
+// auto-detected; override via WithPalette before the first Render
+// call.
 func NewRenderer() *Renderer {
-	return &Renderer{palette: DefaultPalette()}
+	return &Renderer{
+		queue:   newEventQueue(),
+		palette: DefaultPalette(),
+	}
 }
 
-// WithPalette overrides the palette used to construct cells. Must
-// be called before the first Render call.
+// WithPalette overrides the palette used to construct cells.
 func (r *Renderer) WithPalette(p Palette) *Renderer {
 	r.palette = p
 	return r
 }
 
 // ensureProgram lazily starts the tea.Program in a background
-// goroutine. Idempotent; safe to call from every Render method.
+// goroutine.
 func (r *Renderer) ensureProgram() {
 	r.once.Do(func() {
-		// Capture stdin termios before Bubble Tea raw-modes it.
-		// Bubble Tea is supposed to restore on its own when Run()
-		// returns, but some exit paths (signal-driven SIGINT,
-		// panic-during-render) skip the restore — leaving the
-		// terminal with ONLCR off so the user's shell output
-		// staircases. Saving the state ourselves and restoring
-		// unconditionally guarantees the shell is back to normal
-		// regardless of how the program exits.
+		// Snapshot termios so we can guarantee restoration even
+		// if BT's own cleanup misses a flag on signal-driven exit.
 		var origTermState *term.State
 		if fd := os.Stdin.Fd(); term.IsTerminal(fd) {
 			origTermState, _ = term.GetState(fd)
 		}
 
-		m := New(nil)
+		m := New(nil).WithQueue(r.queue).WithPalette(r.palette)
 		r.program = tea.NewProgram(m, tea.WithAltScreen())
 		r.progDone = make(chan struct{})
 		go func() {
@@ -90,132 +79,105 @@ func (r *Renderer) ensureProgram() {
 			if origTermState != nil {
 				_ = term.Restore(os.Stdin.Fd(), origTermState)
 			}
-			// A trailing CR-LF settles the cursor onto a fresh
-			// line in case alt-screen exit left it mid-row.
+			// CR-LF guards against alt-screen exit leaving the
+			// cursor mid-row.
 			fmt.Print("\r\n")
 			r.mu.Lock()
 			r.killed = true
 			r.mu.Unlock()
+			// BT has exited (q / Ctrl+C / Ctrl+D / Done+Enter).
+			// demokit.Execute may still be mid-step — its runFn
+			// reading from an empty Inputs map will panic.
+			// os.Exit cuts the cord cleanly. Deferred cleanup in
+			// main() is skipped, which is acceptable for a demo
+			// program; the recorder has already flushed every
+			// step before this point.
+			os.Exit(0)
 		}()
 	})
 }
 
-// send is a thin wrapper that suppresses message dispatch after the
-// program has exited (user pressed q, or RenderDone closed it).
-func (r *Renderer) send(msg tea.Msg) {
+// append is a thin wrapper that suppresses event emission after
+// the program has exited (Ctrl+C / q during the demo).
+func (r *Renderer) append(e Event) {
 	r.mu.Lock()
 	dead := r.killed
 	r.mu.Unlock()
-	if dead || r.program == nil {
+	if dead {
 		return
 	}
-	r.program.Send(msg)
+	r.queue.Append(e)
 }
 
 // --- demokit.Renderer ---
 
-// RenderHeader records the demo title/description for the model's
-// top banner. Fires once at the start of the demo.
+// RenderHeader emits eventHeader once at the start of the demo.
 func (r *Renderer) RenderHeader(title, description string, stepCount int) {
 	r.ensureProgram()
 	r.stepCount = stepCount
-	r.send(BridgeHeaderMsg{Title: title, Description: description, StepCount: stepCount})
+	r.append(eventHeader{Title: title, Description: description, StepCount: stepCount})
 }
 
-// RenderStep builds the cell list for the visited step's body
-// (MetaCell + 0..N VerbatimCells) and ships it to the model. The
-// OutputCell is constructed here and stashed on the renderer but
-// NOT sent yet — appendOutputCell flushes it later, once the user
-// has actually signalled "run" (WaitForStep released or Prompt
-// submitted). That keeps the visual order honest:
-//
-//	[meta]
-//	[verbatim]
-//	[prompt or "Enter to run"]
-//	[output appears here — just before it starts streaming]
+// RenderStep emits eventStepStart with the step's body cells.
+// The OutputCell is stashed for emission at eventStepReadyToRun
+// time (after the user has signalled "run").
 func (r *Renderer) RenderStep(stepNum, totalSteps int, step *demokit.StepDef) {
 	r.ensureProgram()
-	bodyCells, outputCell, buf, outputID := cellsForStep(stepNum, step, r.palette)
+	bodyCells, outputCell, buf, _ := cellsForStep(stepNum, step, r.palette)
 	r.mu.Lock()
-	r.activeBuf = buf
-	r.activeCellID = outputID
+	r.currentVisit = stepNum
 	r.pendingOutputCell = outputCell
+	r.pendingOutputBuf = buf
 	r.mu.Unlock()
-	r.send(BridgeStepCellsMsg{Cells: bodyCells})
+	r.append(eventStepStart{Visit: stepNum, StepID: step.StepID(), BodyCells: bodyCells})
 }
 
-// appendOutputCell flushes the OutputCell stashed by RenderStep to
-// the model. Called from WaitForStep (after the user pressed
-// advance) or Prompt (after the user submitted) so the cell only
-// materializes when the step is actually about to run.
-//
-// Safe to call multiple times — the second call is a no-op
-// because pendingOutputCell is nil'd after the first flush.
+// appendOutputCell emits eventStepReadyToRun with the OutputCell
+// stashed by RenderStep. Called by WaitForStep / Prompt after the
+// user has signalled "run." Safe to call multiple times — the
+// second call is a no-op because pendingOutputCell is nil'd.
 func (r *Renderer) appendOutputCell() {
 	r.mu.Lock()
 	cell := r.pendingOutputCell
-	buf := r.activeBuf
-	cellID := r.activeCellID
+	buf := r.pendingOutputBuf
+	visit := r.currentVisit
 	r.pendingOutputCell = nil
+	r.pendingOutputBuf = nil
 	r.mu.Unlock()
 	if cell == nil {
 		return
 	}
-	r.send(BridgeAppendOutputCellMsg{Cell: cell, OutputBuf: buf, OutputCellID: cellID})
+	r.append(eventStepReadyToRun{Visit: visit, Output: cell, OutputBuf: buf})
 }
 
-// RenderResult marks the active OutputCell as done. If demokit
-// invoked us via the non-streaming path (output passed as a string),
-// we flush it into the buffer first so it shows up in the cell.
+// RenderResult emits eventStepEnd for the current step.
 func (r *Renderer) RenderResult(stepNum int, output string, result *demokit.StepResult) {
 	r.ensureProgram()
-	r.mu.Lock()
-	buf := r.activeBuf
-	cellID := r.activeCellID
-	r.mu.Unlock()
-	if output != "" && buf != nil {
-		buf.Append([]byte(output))
+	// Non-streaming captured output flushed as a single chunk for
+	// renderers that didn't get StreamOutput calls.
+	if output != "" {
+		r.append(eventOutputChunk{Visit: stepNum, Chunk: []byte(output)})
 	}
-	if cellID != "" {
-		r.send(BridgeOutputDoneMsg{CellID: cellID})
-	}
-	if result != nil && result.Err != nil {
-		// Surface the error as a trailing line in the output buffer
-		// — it's the closest analog to PlainRenderer's "ERROR: ..."
-		// suffix and keeps the user looking at the output cell.
-		if buf != nil {
-			buf.Append([]byte("\n[error] " + result.Err.Error() + "\n"))
-		}
-	}
+	r.append(eventStepEnd{Visit: stepNum, Result: result})
 }
 
-// RenderSection appends a SectionCell to the current cell list.
-// SectionDefs sit between steps in the demo declaration and don't
-// trigger Run, so there's no associated OutputCell.
+// RenderSection emits eventSection.
 func (r *Renderer) RenderSection(section *demokit.SectionDef) {
 	r.ensureProgram()
-	id := fmt.Sprintf("section#%s", slugify(section.Title()))
-	cell := NewSectionCell(id, section.Title(), section.Body())
-	cell.SetPalette(r.palette)
-	r.send(BridgeSectionCellMsg{Cell: cell})
+	r.append(eventSection{Title: section.Title(), Body: section.Body()})
 }
 
-// RenderDone tells the model to flip the header banner to a "Done."
-// state, then blocks until the user presses q (or the program is
-// already dead, in which case progDone is already closed).
+// RenderDone emits eventDone and blocks until the program exits.
 func (r *Renderer) RenderDone() {
 	r.ensureProgram()
-	r.send(BridgeDoneMsg{})
+	r.append(eventDone{})
 	<-r.progDone
 }
 
-// WaitForStep blocks demokit's Execute loop until the user presses
-// the advance key in the model. The model closes the channel on
-// receipt of Enter / Space; WaitForStep flushes the pending
-// OutputCell to the model and returns so the step can run.
-//
-// If the program has already exited (user pressed q mid-demo),
-// WaitForStep returns immediately so Execute can finish naturally.
+// WaitForStep emits eventWaitForAdvance and blocks on the channel
+// the model closes when the user presses Enter. Flushes the
+// pending OutputCell on release so it appears just before the
+// step's output starts.
 func (r *Renderer) WaitForStep(opts demokit.WaitOpts) {
 	r.mu.Lock()
 	dead := r.killed
@@ -225,7 +187,7 @@ func (r *Renderer) WaitForStep(opts demokit.WaitOpts) {
 	}
 	r.ensureProgram()
 	ch := make(chan struct{})
-	r.send(BridgeWaitMsg{Ch: ch})
+	r.append(eventWaitForAdvance{Visit: r.currentVisit, Done: ch})
 	select {
 	case <-ch:
 		r.appendOutputCell()
@@ -233,19 +195,18 @@ func (r *Renderer) WaitForStep(opts demokit.WaitOpts) {
 	}
 }
 
-// Prompt appends a PromptCell to the current cell list and blocks
-// until the user submits valid answers. The cell drives the
-// textinput-based UI; the model closes Reply after sending the
-// answer map.
-//
-// If the user quits the program (q / Ctrl+C) before submitting,
-// Reply never receives and Prompt unblocks via the program-done
-// channel, returning an empty map. demokit's Execute treats that
-// as "no answers" — the step's Run sees an empty Inputs map.
+// Prompt emits eventPromptOpen and blocks on the reply channel.
+// Flushes the pending OutputCell after submission.
 func (r *Renderer) Prompt(stepID string, inputs []demokit.InputDef) map[string]any {
+	r.mu.Lock()
+	dead := r.killed
+	r.mu.Unlock()
+	if dead {
+		return map[string]any{}
+	}
 	r.ensureProgram()
 	reply := make(chan map[string]any, 1)
-	r.send(BridgePromptMsg{Inputs: promptInputsFrom(inputs), Reply: reply})
+	r.append(eventPromptOpen{Visit: r.currentVisit, Inputs: promptInputsFrom(inputs), Reply: reply})
 	select {
 	case ans, ok := <-reply:
 		r.appendOutputCell()
@@ -258,55 +219,28 @@ func (r *Renderer) Prompt(stepID string, inputs []demokit.InputDef) map[string]a
 	}
 }
 
-// promptInputsFrom projects demokit.InputDef into the notebook's
-// per-field shape, capturing the Parse closure so the PromptCell
-// can validate each entry without depending on the demokit type.
-func promptInputsFrom(inputs []demokit.InputDef) []promptInput {
-	out := make([]promptInput, len(inputs))
-	for i, in := range inputs {
-		out[i] = promptInput{
-			Name:    in.Name,
-			Prompt:  in.Prompt,
-			Default: in.Default,
-			Kind:    in.Kind,
-			Options: in.Options,
-			parse:   in.Parse,
-		}
-	}
-	return out
-}
-
 // --- demokit.StreamingRenderer ---
 
-// StreamOutput feeds each chunk into the active OutputBuffer. The
-// model receives debounced OutputAppendedMsg events via the
-// SubscribeOutputBuffer cmd installed on the current step.
-//
-// Writes never go to `out` (the user's real stdout) because Bubble
-// Tea owns the screen — emitting bytes directly would corrupt the
-// alt-screen rendering. demokit's interface gives us `out` for
-// renderers that prefer to passthrough; the notebook is buffer-
-// only.
+// StreamOutput emits eventOutputChunk for every captured chunk.
+// The model's Apply routes by Visit to the right OutputCell's
+// buffer — and keeps routing even after eventStepEnd, so a step
+// that spawns a background goroutine can keep feeding its cell.
 func (r *Renderer) StreamOutput(stepNum int, chunk []byte, out io.Writer) {
-	r.mu.Lock()
-	buf := r.activeBuf
-	r.mu.Unlock()
-	if buf == nil {
+	if len(chunk) == 0 {
 		return
 	}
-	buf.Append(chunk)
+	// Defensive copy: captureOutput may reuse the chunk slice
+	// across calls; events are stored in the queue indefinitely.
+	c := make([]byte, len(chunk))
+	copy(c, chunk)
+	r.append(eventOutputChunk{Visit: stepNum, Chunk: c})
 }
 
 // --- helpers ---
 
 // cellsForStep builds the cell list for one step visit, split
-// into the body (always shown immediately at RenderStep time) and
-// the OutputCell (deferred until the user signals "run"). Returns
-// (bodyCells, outputCell, outputBuf, outputCellID).
-//
-// The renderer holds outputCell as pending until appendOutputCell
-// flushes it; outputBuf / outputCellID stay on the renderer for
-// StreamOutput / RenderResult routing.
+// into body + OutputCell. Body always shown immediately at
+// eventStepStart; OutputCell deferred to eventStepReadyToRun.
 func cellsForStep(visit int, s *demokit.StepDef, palette Palette) ([]Cell, Cell, *OutputBuffer, string) {
 	base := slugify(s.StepID())
 	if base == "" {
@@ -334,9 +268,7 @@ func cellsForStep(visit int, s *demokit.StepDef, palette Palette) ([]Cell, Cell,
 }
 
 // buildMetaBody renders the step's note + arrows + refs into a
-// single body string for the MetaCell. Order: note first (the
-// human-readable summary), then sequence diagram arrows, then refs
-// (RFC / CVE links).
+// single body string for the MetaCell.
 func buildMetaBody(s *demokit.StepDef) string {
 	var parts []string
 	if note := strings.TrimSpace(s.NoteText()); note != "" {
@@ -375,10 +307,7 @@ func buildMetaBody(s *demokit.StepDef) string {
 	return strings.Join(parts, "\n\n")
 }
 
-// variantsFromView converts demokit's JSON-projection VariantView
-// (what *StepDef.VerbatimBlocks() exposes) into the canonical
-// Variant struct VerbatimCell consumes. The fields line up 1:1;
-// this exists only to bridge the type names.
+// variantsFromView converts demokit.VariantView to demokit.Variant.
 func variantsFromView(vs []demokit.VariantView) []demokit.Variant {
 	out := make([]demokit.Variant, len(vs))
 	for i, v := range vs {
@@ -387,9 +316,24 @@ func variantsFromView(vs []demokit.VariantView) []demokit.Variant {
 	return out
 }
 
-// slugify lowercases and dash-normalizes a string so cell IDs stay
-// terminal-friendly without spaces / special chars. Empty input
-// returns empty so callers can fall back to a positional ID.
+// promptInputsFrom projects demokit.InputDef into the cell-side
+// promptInput shape, capturing the Parse closure.
+func promptInputsFrom(inputs []demokit.InputDef) []promptInput {
+	out := make([]promptInput, len(inputs))
+	for i, in := range inputs {
+		out[i] = promptInput{
+			Name:    in.Name,
+			Prompt:  in.Prompt,
+			Default: in.Default,
+			Kind:    in.Kind,
+			Options: in.Options,
+			parse:   in.Parse,
+		}
+	}
+	return out
+}
+
+// slugify lowercases and dash-normalizes a string for cell IDs.
 func slugify(s string) string {
 	s = strings.TrimSpace(strings.ToLower(s))
 	if s == "" {
@@ -412,7 +356,5 @@ func slugify(s string) string {
 			}
 		}
 	}
-	out := b.String()
-	out = strings.TrimRight(out, "-")
-	return out
+	return strings.TrimRight(b.String(), "-")
 }
