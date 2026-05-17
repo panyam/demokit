@@ -30,7 +30,24 @@ import (
 	"os"
 	"strings"
 	"time"
+
+	"github.com/panyam/demokit/events"
 )
+
+// EventAwareRenderer is an optional interface a Renderer can
+// implement to receive the demo's event queue. Renderers that
+// consume from the queue retain the reference and drain it
+// themselves; Execute then skips the blocking Renderer.WaitForStep
+// / Renderer.Prompt calls for them, since the queue-side
+// resolution covers the sync rendezvous.
+//
+// Legacy renderers (Plain, TUI) don't implement this; Execute
+// continues to call WaitForStep / Prompt directly and mirrors the
+// resolution into the queue afterward for consistency.
+type EventAwareRenderer interface {
+	Renderer
+	AttachEventQueue(q *events.EventQueue)
+}
 
 // Demo is the top-level container for an interactive example.
 type Demo struct {
@@ -79,7 +96,19 @@ type Demo struct {
 	// one process don't collide and tests don't share state.
 	docHandlers  map[string]DocHandler
 	serveHandler ServeHandler
+
+	// events is the per-Execute event queue. Renderers that
+	// implement EventAwareRenderer consume from it; legacy
+	// renderers don't reference it, but events are still emitted
+	// so future consumers (web, --record) can hook in.
+	events *events.EventQueue
 }
+
+// Events returns the demo's event queue. nil until Execute has
+// initialized it. Renderers and external observers can consume
+// the queue to drive their own UI; see the events package docs
+// for the event vocabulary.
+func (d *Demo) Events() *events.EventQueue { return d.events }
 
 // New creates a new Demo with the given title.
 func New(title string) *Demo {
@@ -573,6 +602,18 @@ func (d *Demo) RunLoop() {
 		ShowCountdown:   d.showCountdown,
 	}
 
+	// Event queue: fresh per Execute. Renderers implementing
+	// EventAwareRenderer attach here and drain it themselves;
+	// legacy renderers see only the Renderer interface calls but
+	// the queue is still populated so future consumers (web,
+	// --record) can hook in.
+	d.events = events.NewQueue()
+	eventAware, isEventAware := r.(EventAwareRenderer)
+	if isEventAware {
+		eventAware.AttachEventQueue(d.events)
+	}
+
+	d.events.Append(events.Header{Title: d.title, Description: d.description, StepCount: d.stepCount})
 	r.RenderHeader(d.title, d.description, d.stepCount)
 
 	visits := make(map[string]int)
@@ -609,6 +650,7 @@ walk:
 			if d.showStepDenominator {
 				declared = d.stepCount
 			}
+			d.events.Append(stepStartEvent(totalVisits, v))
 			r.RenderStep(totalVisits, declared, v)
 
 			// Replay mode pulls inputs and the next-step path from the
@@ -625,7 +667,23 @@ walk:
 			// (or auto-accept countdown). Skipped in --serve mode — no
 			// stdin to wait on; the browser advances events as they arrive.
 			if stdinAttached && len(v.inputs) == 0 {
-				r.WaitForStep(waitOpts)
+				offset := d.events.Append(events.WaitForAdvance{Visit: totalVisits})
+				if isEventAware {
+					// Queue-side rendezvous: event-aware renderer's
+					// user input calls q.Resolve. Blocks here until
+					// that happens (or program shutdown).
+					_ = d.events.AwaitResolution(offset)
+				} else {
+					// Legacy renderer: it does the blocking via
+					// stdin / raw-mode keypress. Mirror the
+					// resolution into the queue afterward so the
+					// event log is complete for any other consumer
+					// observing the queue (e.g. --record).
+					r.WaitForStep(waitOpts)
+					_ = d.events.Resolve(offset, &events.AdvanceResolution{
+						Source: "legacy-renderer", Timestamp: time.Now(),
+					})
+				}
 			}
 
 			var inputs map[string]any
@@ -635,7 +693,7 @@ walk:
 					inputs = map[string]any{}
 				}
 			} else {
-				inputs = collectInputs(r, v, interactive)
+				inputs = d.collectInputsWithEvents(r, v, interactive, isEventAware, totalVisits)
 			}
 			// Build a per-step context for cancellation. Steps without
 			// Timeout or Cancellable get a never-cancelled background
@@ -674,14 +732,26 @@ walk:
 			// back into the capture pipe.
 			var onChunk func([]byte)
 			streaming := false
-			if sr, ok := r.(StreamingRenderer); ok {
+			sr, srOk := r.(StreamingRenderer)
+			if srOk {
 				streaming = true
-				stepNum := totalVisits
-				originalStdout := os.Stdout
-				onChunk = func(chunk []byte) {
+			}
+			stepNum := totalVisits
+			originalStdout := os.Stdout
+			// Always emit OutputChunk events (so the queue is the
+			// canonical log for any consumer); pass through to
+			// the streaming renderer when present.
+			onChunk = func(chunk []byte) {
+				d.events.Append(events.OutputChunk{Visit: stepNum, Chunk: chunk})
+				if srOk {
 					sr.StreamOutput(stepNum, chunk, originalStdout)
 				}
 			}
+			// StepReadyToRun marks the boundary between "user has
+			// signalled advance" and "runFn is about to execute."
+			// Event-aware renderers use this to materialize their
+			// output widget at the right visual position.
+			d.events.Append(events.StepReadyToRun{Visit: totalVisits})
 			if v.runFn != nil {
 				output, result = captureOutput(v.runFn, ctx, onChunk)
 			}
@@ -714,11 +784,18 @@ walk:
 				result.Next = replayEntry.Next
 			}
 
-			// When the body has already been streamed, hand RenderResult
-			// an empty output so it doesn't double-print. The trace
-			// entry below still carries the full captured string.
+			// Emit the StepEnd event before RenderResult — the
+			// queue is the canonical log; the renderer call is
+			// for legacy paths.
+			d.events.Append(stepEndEvent(totalVisits, result))
+
+			// When the body has already been streamed (legacy
+			// StreamingRenderer) or when an event-aware renderer
+			// is in use, hand RenderResult an empty output so the
+			// legacy path doesn't double-print. The trace entry
+			// below still carries the full captured string.
 			displayOutput := output
-			if streaming {
+			if streaming || isEventAware {
 				displayOutput = ""
 			}
 			r.RenderResult(totalVisits, displayOutput, result)
@@ -762,6 +839,7 @@ walk:
 			cur++
 
 		case *SectionDef:
+			d.events.Append(events.Section{Title: v.title, Body: v.body})
 			r.RenderSection(v)
 			if d.recorder != nil {
 				d.recorder.Record(TraceEntry{
@@ -798,6 +876,7 @@ walk:
 		_ = closeRecorder(d.recorder)
 	}
 
+	d.events.Append(events.Done{})
 	r.RenderDone()
 }
 
@@ -851,23 +930,51 @@ func (d *Demo) emitDoc(format, from string) {
 	}
 }
 
-// collectInputs gathers a step's input payload. In interactive mode the
-// renderer prompts; in non-interactive mode (or when no inputs are
-// declared) defaults are filled in directly.
-func collectInputs(r Renderer, s *StepDef, interactive bool) map[string]any {
+// collectInputsWithEvents gathers a step's input payload via the
+// event queue. Behaviour:
+//
+//   - Non-interactive: defaults only; a PromptOpen is appended
+//     and auto-resolved so the event log records the resolution.
+//   - Event-aware renderer: PromptOpen → AwaitResolution returns
+//     the user's answers from the queue. The renderer's own
+//     Prompt method is not called.
+//   - Legacy renderer: PromptOpen appended; r.Prompt called; the
+//     returned answers are mirrored into the queue via Resolve.
+func (d *Demo) collectInputsWithEvents(r Renderer, s *StepDef, interactive, isEventAware bool, visit int) map[string]any {
 	if len(s.inputs) == 0 {
 		return map[string]any{}
 	}
-	if interactive {
-		return r.Prompt(s.id, s.inputs)
-	}
-	out := make(map[string]any, len(s.inputs))
-	for _, in := range s.inputs {
-		if in.Default != nil {
-			out[in.Name] = in.Default
+	offset := d.events.Append(events.PromptOpen{
+		Visit:  visit,
+		Inputs: inputsToEvents(s.inputs),
+	})
+	if !interactive {
+		out := make(map[string]any, len(s.inputs))
+		for _, in := range s.inputs {
+			if in.Default != nil {
+				out[in.Name] = in.Default
+			}
 		}
+		_ = d.events.Resolve(offset, &events.PromptResolution{
+			Answers: out, Source: "default", Timestamp: time.Now(),
+		})
+		return out
 	}
-	return out
+	if isEventAware {
+		res, _ := d.events.AwaitResolution(offset).(*events.PromptResolution)
+		if res == nil || res.Answers == nil {
+			return map[string]any{}
+		}
+		return res.Answers
+	}
+	answers := r.Prompt(s.id, s.inputs)
+	if answers == nil {
+		answers = map[string]any{}
+	}
+	_ = d.events.Resolve(offset, &events.PromptResolution{
+		Answers: answers, Source: "legacy-renderer", Timestamp: time.Now(),
+	})
+	return answers
 }
 
 // assignStepIDs fills in any unset step IDs with auto-generated ones
