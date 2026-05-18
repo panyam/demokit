@@ -9,7 +9,7 @@ require (
 	github.com/charmbracelet/x/term v0.2.2
 	github.com/gorilla/websocket v1.5.0
 	github.com/muesli/cancelreader v0.2.2
-	github.com/panyam/gocurrent v0.0.16
+	github.com/panyam/gocurrent v0.0.17
 	github.com/panyam/servicekit v0.0.20
 	github.com/panyam/templar v0.1.0
 	github.com/yuin/goldmark v1.8.2
