@@ -38,16 +38,20 @@ func makePromptCell(t *testing.T, inputs ...events.Input) (*PromptCell, *events.
 	return cell, q, offset
 }
 
-// resolutionOf reads the PromptOpen at offset and returns its
-// resolution (or nil if unresolved). Helper for assertions.
+// resolutionOf reads the queue's side-map resolution for the
+// PromptOpen at offset, or nil if unresolved. Helper for
+// assertions.
 func resolutionOf(t *testing.T, q *events.EventQueue, offset int) *events.PromptResolution {
 	t.Helper()
-	e, _ := q.ReadAt(offset)
-	p, ok := e.(events.PromptOpen)
+	r, ok := q.Resolution(offset)
 	if !ok {
-		t.Fatalf("event at %d is %T, want PromptOpen", offset, e)
+		return nil
 	}
-	return p.Resolution
+	pr, ok := r.(*events.PromptResolution)
+	if !ok {
+		t.Fatalf("resolution at %d is %T, want *PromptResolution", offset, r)
+	}
+	return pr
 }
 
 func TestPromptCellTabAdvancesActive(t *testing.T) {

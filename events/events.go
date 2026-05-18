@@ -190,14 +190,19 @@ type Done struct{}
 
 // --- Sync events ---
 
-// WaitForAdvance is a sync event: Execute appends it, blocks via
-// q.AwaitResolution(offset), proceeds when a consumer resolves it
-// with AdvanceResolution. Resolution is nil while pending; the
-// queue's Resolve(offset, …) call fills it in atomically — first
-// writer wins under multi-consumer.
+// WaitForAdvance is a sync event: demokit.Execute calls
+// q.AppendBarrier(WaitForAdvance{...}); a consumer (notebook,
+// web, etc.) resolves the queue offset with *AdvanceResolution
+// when the user advances. AppendBarrier unblocks with that
+// resolution value.
+//
+// Resolution data is NOT stored on the event — it lives in the
+// queue's side map (q.Resolution(offset) to peek; the resolution
+// returned by AppendBarrier or AwaitResolution is the canonical
+// access). Keeping events as pure data preserves the immutable-
+// log invariant.
 type WaitForAdvance struct {
-	Visit      int
-	Resolution *AdvanceResolution
+	Visit int
 }
 
 // AdvanceResolution carries the data resolving a WaitForAdvance.
@@ -208,14 +213,17 @@ type AdvanceResolution struct {
 	Timestamp time.Time
 }
 
-// PromptOpen is a sync event: Execute appends it, blocks via
-// q.AwaitResolution(offset), proceeds when a consumer resolves it
-// with PromptResolution. Same first-writer-wins semantics as
+// PromptOpen is a sync event: demokit.Execute calls
+// q.AppendBarrier(PromptOpen{...}); a consumer renders a prompt
+// UI and on submit resolves the queue offset with
+// *PromptResolution. Same first-writer-wins semantics as
 // WaitForAdvance.
+//
+// Resolution data is NOT stored on the event (see
+// WaitForAdvance docs).
 type PromptOpen struct {
-	Visit      int
-	Inputs     []Input
-	Resolution *PromptResolution
+	Visit  int
+	Inputs []Input
 }
 
 // PromptResolution carries the user's typed answers + provenance.

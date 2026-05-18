@@ -182,13 +182,16 @@ func TestEnterResolvesPendingWait(t *testing.T) {
 	if got.pendingWaitOffset != -1 {
 		t.Errorf("pendingWaitOffset = %d, want -1 after resolve", got.pendingWaitOffset)
 	}
-	e, _ := q.ReadAt(off)
-	w := e.(events.WaitForAdvance)
-	if w.Resolution == nil {
-		t.Fatal("WaitForAdvance resolution not filled in after Enter")
+	r, ok := q.Resolution(off)
+	if !ok {
+		t.Fatal("WaitForAdvance not resolved after Enter")
 	}
-	if w.Resolution.Source != "user-enter" {
-		t.Errorf("Resolution.Source = %q, want %q", w.Resolution.Source, "user-enter")
+	ar, ok := r.(*events.AdvanceResolution)
+	if !ok {
+		t.Fatalf("resolution = %T, want *AdvanceResolution", r)
+	}
+	if ar.Source != "user-enter" {
+		t.Errorf("Resolution.Source = %q, want %q", ar.Source, "user-enter")
 	}
 }
 

@@ -37,6 +37,7 @@ type Model struct {
 
 	// Renderer-bridged event log. nil for standalone test usage.
 	queue  *events.EventQueue
+	sub    *events.Subscription // per-model wake-up handle
 	offset int
 
 	// outputCellByVisit routes events.OutputChunk to the right
@@ -75,9 +76,14 @@ func New(cells []Cell) Model {
 	}
 }
 
-// WithQueue attaches an event queue.
+// WithQueue attaches an event queue. Subscribes immediately so
+// the model has its own wake-up channel, independent of any
+// other consumer on the same queue (Kafka-style multi-reader).
 func (m Model) WithQueue(q *events.EventQueue) Model {
 	m.queue = q
+	if q != nil {
+		m.sub = q.Subscribe()
+	}
 	return m
 }
 
@@ -104,17 +110,19 @@ func (m Model) Mode() Mode { return m.mode }
 
 // Init implements tea.Model.
 func (m Model) Init() tea.Cmd {
-	if m.queue == nil {
+	if m.sub == nil {
 		return repaintTick()
 	}
-	return tea.Batch(listenForEvents(m.queue), repaintTick())
+	return tea.Batch(listenForEvents(m.sub), repaintTick())
 }
 
-// listenForEvents returns a tea.Cmd that blocks on the queue's
-// notify channel and emits eventsAvailableMsg.
-func listenForEvents(q *events.EventQueue) tea.Cmd {
+// listenForEvents returns a tea.Cmd that blocks on the
+// subscription's notify channel and emits eventsAvailableMsg.
+// Per-subscription channel means this consumer doesn't compete
+// with any other consumer for wake-up tokens.
+func listenForEvents(sub *events.Subscription) tea.Cmd {
 	return func() tea.Msg {
-		<-q.Notify()
+		<-sub.Notify()
 		return eventsAvailableMsg{}
 	}
 }
@@ -128,12 +136,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.invalidateCaches()
 		return m, nil
 	case eventsAvailableMsg:
-		all, newOffset := m.queue.Read(m.offset)
+		all, newOffset := m.queue.ReadFrom(m.offset)
 		for i, e := range all {
 			m.applyEvent(m.offset+i, e)
 		}
 		m.offset = newOffset
-		return m, listenForEvents(m.queue)
+		return m, listenForEvents(m.sub)
 	case repaintTickMsg:
 		return m, repaintTick()
 	case clearCopyMsg:

@@ -34,7 +34,7 @@ func TestExecuteEmitsCanonicalEventSequence(t *testing.T) {
 	if q == nil {
 		t.Fatal("Demo.Events() returned nil after Execute")
 	}
-	all, _ := q.Read(0)
+	all, _ := q.ReadFrom(0)
 
 	// Expected sequence: Header, Section, StepStart,
 	// StepReadyToRun, OutputChunk*, StepEnd, Done. No
@@ -96,24 +96,29 @@ func TestExecutePromptResolvesViaQueueForLegacy(t *testing.T) {
 	d.flagsRegistered = true
 	d.Execute()
 
-	all, _ := d.Events().Read(0)
-	var prompt *events.PromptOpen
+	all, _ := d.Events().ReadFrom(0)
+	promptOffset := -1
 	for i := range all {
-		if p, ok := all[i].(events.PromptOpen); ok {
-			prompt = &p
+		if _, ok := all[i].(events.PromptOpen); ok {
+			promptOffset = i
 			break
 		}
 	}
-	if prompt == nil {
+	if promptOffset < 0 {
 		t.Fatal("no PromptOpen event emitted")
 	}
-	if prompt.Resolution == nil {
-		t.Fatal("PromptOpen.Resolution should be filled in after Execute returns")
+	r, ok := d.Events().Resolution(promptOffset)
+	if !ok {
+		t.Fatal("PromptOpen not resolved after Execute returns")
 	}
-	if prompt.Resolution.Answers["color"] != "red" {
-		t.Errorf("answers[color] = %v, want %q", prompt.Resolution.Answers["color"], "red")
+	pr, ok := r.(*events.PromptResolution)
+	if !ok {
+		t.Fatalf("resolution = %T, want *PromptResolution", r)
 	}
-	if prompt.Resolution.Source != "default" {
-		t.Errorf("Source = %q, want %q", prompt.Resolution.Source, "default")
+	if pr.Answers["color"] != "red" {
+		t.Errorf("answers[color] = %v, want %q", pr.Answers["color"], "red")
+	}
+	if pr.Source != "default" {
+		t.Errorf("Source = %q, want %q", pr.Source, "default")
 	}
 }
