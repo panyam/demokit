@@ -81,6 +81,72 @@ func TestApplyStepReadyToRunInstallsOutputCell(t *testing.T) {
 	}
 }
 
+func TestApplyStepReadyToRunMovesCursorToOutputCell(t *testing.T) {
+	m := New(nil)
+	m = apply(m,
+		events.StepStart{Visit: 1, StepID: "s1", Title: "S1"},
+		events.StepReadyToRun{Visit: 1},
+	)
+	tail := len(m.cells) - 1
+	if _, ok := m.cells[tail].(*OutputCell); !ok {
+		t.Fatalf("tail cell = %T, want *OutputCell", m.cells[tail])
+	}
+	if m.cursor != tail {
+		t.Errorf("cursor = %d, want %d (output cell idx)", m.cursor, tail)
+	}
+}
+
+func TestStepReadyToRunMakesOutputCellVisible(t *testing.T) {
+	// Reproduces the dungeon-style scenario: many prior cells push
+	// the new step's output cell below the viewport. After
+	// StepReadyToRun, the viewport must have scrolled so the output
+	// cell is in the window.
+	m := New(nil)
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 20})
+	m = next.(Model)
+	for i := 0; i < 15; i++ {
+		m = apply(m, events.Section{Title: "S", Body: "line"})
+	}
+	m = apply(m,
+		events.StepStart{Visit: 1, StepID: "s", Title: "T"},
+		events.StepReadyToRun{Visit: 1},
+	)
+	outputIdx := len(m.cells) - 1
+	start, end := m.cellRowSpan(outputIdx)
+	body := m.bodyHeight()
+	if end <= m.viewportOffset || start >= m.viewportOffset+body {
+		t.Errorf("output cell span [%d,%d) not in viewport [%d,%d)",
+			start, end, m.viewportOffset, m.viewportOffset+body)
+	}
+}
+
+func TestOutputChunkKeepsGrowingCellInViewport(t *testing.T) {
+	// Bounded by maxBody=12, so the cell's rendered height never
+	// exceeds ~16 rows. With bodyHeight ≥ 20 the cell fits entirely;
+	// ensureCursorVisible should keep its end row in the window as
+	// chunks land.
+	m := New(nil)
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m = next.(Model)
+	for i := 0; i < 10; i++ {
+		m = apply(m, events.Section{Title: "S", Body: "line"})
+	}
+	m = apply(m,
+		events.StepStart{Visit: 1, StepID: "s", Title: "T"},
+		events.StepReadyToRun{Visit: 1},
+	)
+	for i := 0; i < 20; i++ {
+		m = apply(m, events.OutputChunk{Visit: 1, Chunk: []byte("line\n")})
+	}
+	outputIdx := len(m.cells) - 1
+	_, end := m.cellRowSpan(outputIdx)
+	body := m.bodyHeight()
+	if end > m.viewportOffset+body {
+		t.Errorf("after growth: cell end %d > viewport end %d (viewport did not follow)",
+			end, m.viewportOffset+body)
+	}
+}
+
 func TestApplyOutputChunkRoutesByVisit(t *testing.T) {
 	m := New(nil)
 	m = apply(m,

@@ -101,22 +101,14 @@ func (c *VerbatimCell) Update(msg tea.Msg, mode Mode) (Cell, tea.Cmd) {
 		c.copyMsg = ""
 		return c, nil
 	}
-	if mode != ViewMode {
-		return c, nil
-	}
 	keyMsg, ok := msg.(tea.KeyMsg)
 	if !ok {
 		return c, nil
 	}
-	switch keyMsg.String() {
-	case "enter":
-		// Cell doesn't use Enter — signal release + advance.
-		return c, cellAdvance
-	case "tab":
-		c.cycle(+1)
-	case "shift+tab":
-		c.cycle(-1)
-	case "c":
+	// 'c' is processed regardless of mode — copying is a
+	// frictionless action available while just navigating
+	// between cells.
+	if keyMsg.String() == "c" {
 		v := c.variants[c.active]
 		strategy, ok := demokit.Copy(v.Content)
 		if ok {
@@ -130,6 +122,18 @@ func (c *VerbatimCell) Update(msg tea.Msg, mode Mode) (Cell, tea.Cmd) {
 			c.copyMsg = "(copy failed — no clipboard provider)"
 		}
 		return c, clearCopyMsgAfter(c.id)
+	}
+	if mode != ViewMode {
+		return c, nil
+	}
+	switch keyMsg.String() {
+	case "enter":
+		// Cell doesn't use Enter — signal release + advance.
+		return c, cellAdvance
+	case "tab":
+		c.cycle(+1)
+	case "shift+tab":
+		c.cycle(-1)
 	default:
 		s := keyMsg.String()
 		if len(s) == 1 && s[0] >= '1' && s[0] <= '9' {
