@@ -27,6 +27,11 @@ type OutputCell struct {
 	scrollOffset int
 	copyMsg      string
 	done         bool
+	// follow is the "tail -f" sticky-bottom mode. New chunks bump
+	// scrollOffset so the last maxBody lines are visible. Manual
+	// scrolling (j/k/g/pgup/pgdown) turns it off; G turns it back
+	// on. Defaults to true on construction.
+	follow bool
 }
 
 // NewOutputCell builds a cell over the given buffer. maxBody == 0
@@ -35,7 +40,22 @@ func NewOutputCell(id string, buf *OutputBuffer, maxBody int) *OutputCell {
 	if maxBody <= 0 {
 		maxBody = 12
 	}
-	return &OutputCell{id: id, buf: buf, maxBody: maxBody, palette: DefaultPalette()}
+	return &OutputCell{
+		id: id, buf: buf, maxBody: maxBody,
+		palette: DefaultPalette(),
+		follow:  true,
+	}
+}
+
+// OnAppend is called by the model after a chunk lands in the cell's
+// buffer. While follow is true, advances scrollOffset so the last
+// maxBody lines are visible.
+func (c *OutputCell) OnAppend() {
+	if !c.follow {
+		return
+	}
+	c.scrollOffset = c.buf.LineCount() - c.maxBody
+	c.clampScroll()
 }
 
 // SetPalette overrides the cell's palette.
@@ -140,35 +160,14 @@ func (c *OutputCell) Update(msg tea.Msg, mode Mode) (Cell, tea.Cmd) {
 		c.copyMsg = ""
 		return c, nil
 	}
-	if mode != ViewMode {
-		return c, nil
-	}
 	keyMsg, ok := msg.(tea.KeyMsg)
 	if !ok {
 		return c, nil
 	}
-	switch keyMsg.String() {
-	case "enter":
-		// Cell doesn't use Enter — signal release + advance.
-		return c, cellAdvance
-	case "j", "down":
-		c.scrollOffset++
-		c.clampScroll()
-	case "k", "up":
-		c.scrollOffset--
-		c.clampScroll()
-	case "pgdown":
-		c.scrollOffset += c.maxBody
-		c.clampScroll()
-	case "pgup":
-		c.scrollOffset -= c.maxBody
-		c.clampScroll()
-	case "g":
-		c.scrollOffset = 0
-	case "G":
-		c.scrollOffset = c.buf.LineCount()
-		c.clampScroll()
-	case "c":
+	// 'c' is processed regardless of mode — copying is a
+	// frictionless action available while just navigating
+	// between cells.
+	if keyMsg.String() == "c" {
 		all := strings.Join(c.buf.AllLines(), "\n")
 		strategy, ok := demokit.Copy(all)
 		if ok {
@@ -177,6 +176,37 @@ func (c *OutputCell) Update(msg tea.Msg, mode Mode) (Cell, tea.Cmd) {
 			c.copyMsg = "(copy failed — no clipboard provider)"
 		}
 		return c, clearCopyMsgAfter(c.id)
+	}
+	if mode != ViewMode {
+		return c, nil
+	}
+	switch keyMsg.String() {
+	case "enter":
+		// Cell doesn't use Enter — signal release + advance.
+		return c, cellAdvance
+	case "j", "down":
+		c.follow = false
+		c.scrollOffset++
+		c.clampScroll()
+	case "k", "up":
+		c.follow = false
+		c.scrollOffset--
+		c.clampScroll()
+	case "pgdown":
+		c.follow = false
+		c.scrollOffset += c.maxBody
+		c.clampScroll()
+	case "pgup":
+		c.follow = false
+		c.scrollOffset -= c.maxBody
+		c.clampScroll()
+	case "g":
+		c.follow = false
+		c.scrollOffset = 0
+	case "G":
+		c.follow = true
+		c.scrollOffset = c.buf.LineCount()
+		c.clampScroll()
 	}
 	return c, nil
 }

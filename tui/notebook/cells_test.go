@@ -3,6 +3,7 @@ package notebook
 import (
 	"bytes"
 	"encoding/base64"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -224,6 +225,112 @@ func TestOutputCellHeightCappedByMaxBody(t *testing.T) {
 	// 3 header + 5 body + 1 status = 9
 	if got, want := c.HeightHint(80), 9; got != want {
 		t.Errorf("HeightHint = %d, want %d (capped by maxBody=5)", got, want)
+	}
+}
+
+func TestOutputCellAutoFollowsOnAppend(t *testing.T) {
+	buf := NewOutputBuffer()
+	c := NewOutputCell("o", buf, 3)
+	// Fewer than maxBody lines: scrollOffset stays at 0 (whole buf fits).
+	buf.Append([]byte("a\n"))
+	c.OnAppend()
+	if c.scrollOffset != 0 {
+		t.Errorf("with 1 line < maxBody, scrollOffset = %d, want 0", c.scrollOffset)
+	}
+	// Grow past maxBody: follow advances scrollOffset so the last
+	// maxBody lines remain visible.
+	for i := 0; i < 10; i++ {
+		buf.Append([]byte("x\n"))
+	}
+	c.OnAppend()
+	if want := 11 - 3; c.scrollOffset != want {
+		t.Errorf("auto-follow scrollOffset = %d, want %d", c.scrollOffset, want)
+	}
+}
+
+func TestOutputCellManualScrollDisablesFollow(t *testing.T) {
+	buf := NewOutputBuffer()
+	for i := 0; i < 10; i++ {
+		buf.Append([]byte("x\n"))
+	}
+	c := NewOutputCell("o", buf, 3)
+	c.OnAppend()
+	// User scrolls up; subsequent chunks should NOT yank them.
+	c.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("k")}, ViewMode)
+	if c.follow {
+		t.Error("follow should be disabled after k")
+	}
+	frozen := c.scrollOffset
+	for i := 0; i < 5; i++ {
+		buf.Append([]byte("y\n"))
+	}
+	c.OnAppend()
+	if c.scrollOffset != frozen {
+		t.Errorf("with follow off, OnAppend moved scrollOffset from %d to %d", frozen, c.scrollOffset)
+	}
+	// G re-engages follow and jumps to bottom.
+	c.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("G")}, ViewMode)
+	if !c.follow {
+		t.Error("follow should be re-enabled after G")
+	}
+	buf.Append([]byte("z\n"))
+	c.OnAppend()
+	if want := buf.LineCount() - 3; c.scrollOffset != want {
+		t.Errorf("after G + chunk: scrollOffset = %d, want %d", c.scrollOffset, want)
+	}
+}
+
+func TestOutputCellRenderShowsLatestLinesWhenFollowing(t *testing.T) {
+	buf := NewOutputBuffer()
+	c := NewOutputCell("o", buf, 3)
+	for i := 1; i <= 5; i++ {
+		buf.Append([]byte(fmt.Sprintf("line%d\n", i)))
+		c.OnAppend()
+	}
+	rows := allRows(c, 80, false, ViewMode)
+	joined := strings.Join(rows, "\n")
+	for _, want := range []string{"line3", "line4", "line5"} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("expected latest line %q in render, got:\n%s", want, joined)
+		}
+	}
+	for _, off := range []string{"line1", "line2"} {
+		if strings.Contains(joined, off) {
+			t.Errorf("expected earliest line %q to be scrolled off, got:\n%s", off, joined)
+		}
+	}
+}
+
+func TestOutputCellCopiesInSelectMode(t *testing.T) {
+	var buf bytes.Buffer
+	demokit.SetClipboardWriter(&buf)
+	defer demokit.SetClipboardWriter(nil)
+	demokit.EnableShellClipboardFallback(false)
+	defer demokit.EnableShellClipboardFallback(true)
+
+	ob := NewOutputBuffer()
+	ob.Append([]byte("hello\nworld\n"))
+	c := NewOutputCell("o", ob, 10)
+	c.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("c")}, SelectMode)
+	if got := clipboardPayload(t, &buf); got != "hello\nworld" {
+		t.Errorf("clipboard payload = %q, want %q", got, "hello\nworld")
+	}
+	if c.copyMsg == "" {
+		t.Error("expected copyMsg to be set after copy in SelectMode")
+	}
+}
+
+func TestVerbatimCellCopiesInSelectMode(t *testing.T) {
+	var buf bytes.Buffer
+	demokit.SetClipboardWriter(&buf)
+	defer demokit.SetClipboardWriter(nil)
+	demokit.EnableShellClipboardFallback(false)
+	defer demokit.EnableShellClipboardFallback(true)
+
+	c := NewVerbatimCell("v", "L", []demokit.Variant{{Label: "x", Content: "payload"}})
+	c.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("c")}, SelectMode)
+	if got := clipboardPayload(t, &buf); got != "payload" {
+		t.Errorf("clipboard payload = %q, want %q", got, "payload")
 	}
 }
 

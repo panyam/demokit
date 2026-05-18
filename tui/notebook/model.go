@@ -202,11 +202,23 @@ func (m *Model) applyEvent(offset int, e events.Event) {
 		}
 		m.outputCellByVisit[e.Visit] = oc
 		m.cells = append(m.cells, oc)
+		m.cursor = len(m.cells) - 1
 		m.invalidateCaches()
 		m.ensureCursorVisible()
 	case events.OutputChunk:
 		if oc, ok := m.outputCellByVisit[e.Visit]; ok && oc != nil {
 			oc.buf.Append(e.Chunk)
+			oc.OnAppend()
+			// Keep the growing output cell in view when the user is
+			// focused on it. cellRowSpan reflects the new (larger)
+			// HeightHint, so ensureCursorVisible scrolls the bottom
+			// of the cell into the window.
+			for i, c := range m.cells {
+				if c == oc && m.cursor == i {
+					m.ensureCursorVisible()
+					break
+				}
+			}
 		}
 	case events.StepEnd:
 		if oc, ok := m.outputCellByVisit[e.Visit]; ok && oc != nil {
