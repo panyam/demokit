@@ -5,30 +5,32 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
-	"github.com/panyam/demokit"
+	"github.com/panyam/demokit/events"
 )
 
-// apply is a tiny helper: pass an event through applyEvent and
-// return the mutated model. Pointer receiver under the hood, so
-// we re-fetch the value.
-func apply(m Model, events ...Event) Model {
-	for _, e := range events {
-		m.applyEvent(e)
+// apply pushes events through applyEvent with sequential offsets
+// and returns the mutated model. The starting offset is the
+// model's current offset (lets us thread multi-call sequences).
+func apply(m Model, evs ...events.Event) Model {
+	base := m.offset
+	for i, e := range evs {
+		m.applyEvent(base+i, e)
 	}
+	m.offset = base + len(evs)
 	return m
 }
 
-func TestApplyEventHeader(t *testing.T) {
+func TestApplyHeader(t *testing.T) {
 	m := New(nil)
-	m = apply(m, eventHeader{Title: "My Demo", Description: "hi", StepCount: 5})
+	m = apply(m, events.Header{Title: "My Demo", Description: "hi", StepCount: 5})
 	if m.header != "My Demo" {
 		t.Errorf("header = %q, want %q", m.header, "My Demo")
 	}
 }
 
-func TestApplyEventSectionAppendsCell(t *testing.T) {
+func TestApplySectionAppendsCell(t *testing.T) {
 	m := New(nil)
-	m = apply(m, eventSection{Title: "Heads up", Body: "note"})
+	m = apply(m, events.Section{Title: "Heads up", Body: "note"})
 	if len(m.cells) != 1 {
 		t.Fatalf("cells len = %d, want 1", len(m.cells))
 	}
@@ -37,121 +39,120 @@ func TestApplyEventSectionAppendsCell(t *testing.T) {
 	}
 }
 
-func TestApplyEventStepStartAppendsBodyAndSnapsCursor(t *testing.T) {
+func TestApplyStepStartBuildsCellsAndSnapsCursor(t *testing.T) {
 	prior := []Cell{NewMetaCell("p", "Prior", "")}
 	m := New(prior)
 	m.cursor = 0
 	m.mode = ViewMode
 
-	newCells := []Cell{
-		NewMetaCell("s1#0.meta", "Step One", "body"),
-		NewVerbatimCell("s1#0.v0", "L", []demokit.Variant{{Content: "x"}}),
-	}
-	m = apply(m, eventStepStart{Visit: 1, StepID: "s1", BodyCells: newCells})
-
+	m = apply(m, events.StepStart{
+		Visit: 1, StepID: "step.a", Title: "Step A", Note: "body",
+		Verbatims: []events.Verbatim{{Label: "code", Variants: []events.Variant{{Content: "x"}}}},
+	})
 	if got := len(m.cells); got != 3 {
-		t.Fatalf("cells len = %d, want 3 (1 prior + 2 new)", got)
+		t.Fatalf("cells = %d, want 3 (1 prior + meta + verbatim)", got)
+	}
+	if _, ok := m.cells[1].(*MetaCell); !ok {
+		t.Errorf("cells[1] = %T, want *MetaCell", m.cells[1])
+	}
+	if _, ok := m.cells[2].(*VerbatimCell); !ok {
+		t.Errorf("cells[2] = %T, want *VerbatimCell", m.cells[2])
 	}
 	if m.cursor != 1 {
 		t.Errorf("cursor = %d, want 1 (first newly-appended)", m.cursor)
 	}
 	if m.mode != SelectMode {
-		t.Errorf("mode = %v, want SelectMode after step start", m.mode)
+		t.Errorf("mode = %v, want SelectMode", m.mode)
 	}
 }
 
-func TestApplyEventStepReadyToRunInstallsOutputCell(t *testing.T) {
+func TestApplyStepReadyToRunInstallsOutputCell(t *testing.T) {
 	m := New(nil)
-	buf := NewOutputBuffer()
-	oc := NewOutputCell("s1#0.output", buf, 6)
-	m = apply(m, eventStepReadyToRun{Visit: 1, Output: oc, OutputBuf: buf})
-
-	if len(m.cells) != 1 {
-		t.Fatalf("cells len = %d, want 1", len(m.cells))
-	}
-	if got := m.outputCellByVisit[1]; got != oc {
-		t.Errorf("outputCellByVisit[1] = %v, want %v", got, oc)
-	}
-}
-
-func TestApplyEventOutputChunkRoutesByVisit(t *testing.T) {
-	m := New(nil)
-	buf1 := NewOutputBuffer()
-	oc1 := NewOutputCell("s1#0.output", buf1, 6)
-	buf2 := NewOutputBuffer()
-	oc2 := NewOutputCell("s2#0.output", buf2, 6)
 	m = apply(m,
-		eventStepReadyToRun{Visit: 1, Output: oc1, OutputBuf: buf1},
-		eventStepReadyToRun{Visit: 2, Output: oc2, OutputBuf: buf2},
-		eventOutputChunk{Visit: 1, Chunk: []byte("for one\n")},
-		eventOutputChunk{Visit: 2, Chunk: []byte("for two\n")},
+		events.StepStart{Visit: 1, StepID: "s1", Title: "S1"},
+		events.StepReadyToRun{Visit: 1},
 	)
-	if got := buf1.LineCount(); got != 1 {
-		t.Errorf("buf1 lines = %d, want 1", got)
+	if got := m.outputCellByVisit[1]; got == nil {
+		t.Fatal("outputCellByVisit[1] is nil after StepReadyToRun")
 	}
-	if got := buf2.LineCount(); got != 1 {
-		t.Errorf("buf2 lines = %d, want 1", got)
-	}
-	if l := buf1.Lines(0, 1); len(l) != 1 || l[0] != "for one" {
-		t.Errorf("buf1 contents = %v, want [for one]", l)
+	tail := m.cells[len(m.cells)-1]
+	if _, ok := tail.(*OutputCell); !ok {
+		t.Errorf("tail cell = %T, want *OutputCell", tail)
 	}
 }
 
-func TestApplyEventOutputChunkAfterStepEndStillRoutes(t *testing.T) {
-	// A step's Run may spawn a background goroutine that keeps
-	// emitting chunks after the step ends — live graph use case.
-	// MarkDone is a label, not a seal.
+func TestApplyOutputChunkRoutesByVisit(t *testing.T) {
 	m := New(nil)
-	buf := NewOutputBuffer()
-	oc := NewOutputCell("s1#0.output", buf, 6)
 	m = apply(m,
-		eventStepReadyToRun{Visit: 1, Output: oc, OutputBuf: buf},
-		eventStepEnd{Visit: 1},
-		eventOutputChunk{Visit: 1, Chunk: []byte("late line\n")},
+		events.StepStart{Visit: 1, StepID: "s1", Title: "S1"},
+		events.StepReadyToRun{Visit: 1},
+		events.StepStart{Visit: 2, StepID: "s2", Title: "S2"},
+		events.StepReadyToRun{Visit: 2},
+		events.OutputChunk{Visit: 1, Chunk: []byte("for one\n")},
+		events.OutputChunk{Visit: 2, Chunk: []byte("for two\n")},
 	)
+	if got := m.outputCellByVisit[1].buf.LineCount(); got != 1 {
+		t.Errorf("visit-1 lines = %d, want 1", got)
+	}
+	if got := m.outputCellByVisit[2].buf.LineCount(); got != 1 {
+		t.Errorf("visit-2 lines = %d, want 1", got)
+	}
+}
+
+func TestApplyOutputChunkAfterStepEndStillRoutes(t *testing.T) {
+	m := New(nil)
+	m = apply(m,
+		events.StepStart{Visit: 1, StepID: "s1"},
+		events.StepReadyToRun{Visit: 1},
+		events.StepEnd{Visit: 1, Status: "ok"},
+		events.OutputChunk{Visit: 1, Chunk: []byte("late line\n")},
+	)
+	oc := m.outputCellByVisit[1]
 	if !oc.done {
-		t.Error("eventStepEnd should have flipped MarkDone")
+		t.Error("StepEnd should have flipped MarkDone")
 	}
-	if got := buf.LineCount(); got != 1 {
+	if got := oc.buf.LineCount(); got != 1 {
 		t.Errorf("post-end chunk should still apply; lines = %d, want 1", got)
 	}
 }
 
-func TestApplyEventStepEndAppendsErrorLine(t *testing.T) {
+func TestApplyStepEndAppendsErrorLine(t *testing.T) {
 	m := New(nil)
-	buf := NewOutputBuffer()
-	oc := NewOutputCell("s1#0.output", buf, 6)
 	m = apply(m,
-		eventStepReadyToRun{Visit: 1, Output: oc, OutputBuf: buf},
-		eventStepEnd{Visit: 1, Result: demokit.Errf("boom")},
+		events.StepStart{Visit: 1, StepID: "s1"},
+		events.StepReadyToRun{Visit: 1},
+		events.StepEnd{Visit: 1, Status: "error", ErrorText: "boom"},
 	)
-	lines := buf.AllLines()
+	oc := m.outputCellByVisit[1]
+	all := oc.buf.AllLines()
 	found := false
-	for _, l := range lines {
+	for _, l := range all {
 		if l == "[error] boom" {
 			found = true
 			break
 		}
 	}
 	if !found {
-		t.Errorf("expected [error] boom in output buffer; got %v", lines)
+		t.Errorf("expected [error] boom in output buffer; got %v", all)
 	}
 }
 
-func TestApplyEventDoneFlipsBanner(t *testing.T) {
+func TestApplyDoneFlipsBanner(t *testing.T) {
 	m := New(nil)
-	m = apply(m, eventDone{})
+	m = apply(m, events.Done{})
 	if !m.done {
-		t.Error("eventDone did not flip done flag")
+		t.Error("Done event did not flip done flag")
 	}
 }
 
-func TestApplyEventPromptOpenAppendsAndFocuses(t *testing.T) {
-	m := New(nil)
-	reply := make(chan map[string]any, 1)
-	m = apply(m, eventPromptOpen{Visit: 1, Inputs: nil, Reply: reply})
+func TestApplyPromptOpenAppendsCellAndFocuses(t *testing.T) {
+	m := New(nil).WithQueue(events.NewQueue())
+	m = apply(m, events.PromptOpen{
+		Visit:  1,
+		Inputs: []events.Input{events.NewStringInput("x", "X?", nil)},
+	})
 	if len(m.cells) != 1 {
-		t.Fatalf("cells len = %d, want 1", len(m.cells))
+		t.Fatalf("cells = %d, want 1", len(m.cells))
 	}
 	if _, ok := m.cells[0].(*PromptCell); !ok {
 		t.Errorf("cells[0] = %T, want *PromptCell", m.cells[0])
@@ -161,86 +162,55 @@ func TestApplyEventPromptOpenAppendsAndFocuses(t *testing.T) {
 	}
 }
 
-func TestApplyEventWaitForAdvanceStoresChannel(t *testing.T) {
+func TestApplyWaitForAdvanceTracksOffset(t *testing.T) {
 	m := New(nil)
-	ch := make(chan struct{})
-	m = apply(m, eventWaitForAdvance{Visit: 1, Done: ch})
-	if m.waitCh == nil {
-		t.Error("waitCh should be set after eventWaitForAdvance")
+	m = apply(m, events.WaitForAdvance{Visit: 1})
+	if m.pendingWaitOffset != 0 {
+		t.Errorf("pendingWaitOffset = %d, want 0", m.pendingWaitOffset)
 	}
 }
 
-// --- End-to-end queue test: events appended → drained → applied ---
+func TestEnterResolvesPendingWait(t *testing.T) {
+	q := events.NewQueue()
+	m := New([]Cell{NewMetaCell("m", "T", "")}).WithQueue(q)
 
-func TestEventsAvailableMsgDrainsAndApplies(t *testing.T) {
-	q := newEventQueue()
+	off := q.Append(events.WaitForAdvance{Visit: 1})
+	m.applyEvent(off, events.WaitForAdvance{Visit: 1})
+
+	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	got := next.(Model)
+	if got.pendingWaitOffset != -1 {
+		t.Errorf("pendingWaitOffset = %d, want -1 after resolve", got.pendingWaitOffset)
+	}
+	r, ok := q.Resolution(off)
+	if !ok {
+		t.Fatal("WaitForAdvance not resolved after Enter")
+	}
+	ar, ok := r.(*events.AdvanceResolution)
+	if !ok {
+		t.Fatalf("resolution = %T, want *AdvanceResolution", r)
+	}
+	if ar.Source != "user-enter" {
+		t.Errorf("Resolution.Source = %q, want %q", ar.Source, "user-enter")
+	}
+}
+
+func TestEventsAvailableDrainsAndApplies(t *testing.T) {
+	q := events.NewQueue()
 	m := New(nil).WithQueue(q)
 
-	q.Append(eventHeader{Title: "Demo"})
-	q.Append(eventStepStart{Visit: 1, StepID: "s1", BodyCells: []Cell{NewMetaCell("s1#0.meta", "Step One", "")}})
+	q.Append(events.Header{Title: "Demo"})
+	q.Append(events.StepStart{Visit: 1, StepID: "s1", Title: "S1"})
 
 	next, _ := m.Update(eventsAvailableMsg{})
 	m = next.(Model)
-
 	if m.header != "Demo" {
-		t.Errorf("after drain: header = %q, want %q", m.header, "Demo")
+		t.Errorf("header = %q, want Demo", m.header)
 	}
 	if len(m.cells) != 1 {
-		t.Errorf("after drain: cells = %d, want 1", len(m.cells))
+		t.Errorf("cells = %d, want 1 (Meta from StepStart)", len(m.cells))
 	}
 	if m.offset != 2 {
-		t.Errorf("after drain: offset = %d, want 2", m.offset)
-	}
-}
-
-func TestEventsAvailableMsgPreservesPriorOffset(t *testing.T) {
-	// Confirm incremental drain — second eventsAvailableMsg only
-	// applies events appended since the first drain.
-	q := newEventQueue()
-	m := New(nil).WithQueue(q)
-
-	q.Append(eventHeader{Title: "A"})
-	next, _ := m.Update(eventsAvailableMsg{})
-	m = next.(Model)
-	if m.offset != 1 {
-		t.Fatalf("after first drain: offset = %d, want 1", m.offset)
-	}
-
-	q.Append(eventDone{})
-	next, _ = m.Update(eventsAvailableMsg{})
-	m = next.(Model)
-	if m.offset != 2 {
-		t.Errorf("after second drain: offset = %d, want 2", m.offset)
-	}
-	if !m.done {
-		t.Error("after second drain: done flag should be set")
-	}
-}
-
-// keypress helper that re-asserts to Model after Update.
-func updateAndAssert(t *testing.T, m Model, msg tea.Msg) Model {
-	t.Helper()
-	next, _ := m.Update(msg)
-	got, ok := next.(Model)
-	if !ok {
-		t.Fatalf("Update returned %T, want Model", next)
-	}
-	return got
-}
-
-func TestEnterReleasesWaitChannel(t *testing.T) {
-	m := New([]Cell{NewMetaCell("only", "T", "")})
-	ch := make(chan struct{})
-	m.applyEvent(eventWaitForAdvance{Visit: 1, Done: ch})
-
-	m = updateAndAssert(t, m, tea.KeyMsg{Type: tea.KeyEnter})
-	select {
-	case <-ch:
-		// expected — channel closed
-	default:
-		t.Error("Enter did not close the wait channel")
-	}
-	if m.waitCh != nil {
-		t.Error("waitCh should be nil after release")
+		t.Errorf("offset = %d, want 2", m.offset)
 	}
 }

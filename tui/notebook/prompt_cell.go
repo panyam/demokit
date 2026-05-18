@@ -2,41 +2,108 @@ package notebook
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
+	"time"
 
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
+
+	"github.com/panyam/demokit/events"
 )
 
-// PromptCell collects step inputs via a stack of bubbles/textinput
-// fields — one per declared InputDef. Tab / Shift+Tab cycle the
-// active field; Enter submits when all parse cleanly (focus jumps
-// to the first invalid field otherwise); Esc unfocuses without
-// submitting so the user can read other cells before answering.
-//
-// Each field renders its label, optional Default hint, optional
-// Options hint (Choice inputs), the textinput row, and an error
-// row (when the most recent parse failed). Submission closes the
-// supplied reply channel after sending the typed map.
-type PromptCell struct {
-	id      string
-	inputs  []promptInput
-	fields  []textinput.Model
-	errors  []string
-	active  int
-	reply   chan map[string]any
-	done    bool
-	palette Palette
+// promptInput is PromptCell's internal projection of an
+// events.Input. Keeps a private Parse function (reconstructed
+// from Kind + Options) so the cell can validate user typing
+// without re-importing demokit at the cell layer.
+type promptInput struct {
+	Name    string
+	Prompt  string
+	Default any
+	Kind    string
+	Options []string
+	parse   func(string) (any, error)
 }
 
-// NewPromptCell builds a cell over the input list + reply channel.
-// The first field is focused; defaults are pre-filled into the
-// textinput.
-func NewPromptCell(id string, inputs []promptInput, reply chan map[string]any, palette Palette) *PromptCell {
-	fields := make([]textinput.Model, len(inputs))
-	errs := make([]string, len(inputs))
-	for i, in := range inputs {
+// promptInputsFromEvents converts events.Input slice into the
+// cell-internal form, deriving a Parse closure via type switch.
+func promptInputsFromEvents(in []events.Input) []promptInput {
+	out := make([]promptInput, len(in))
+	for i, e := range in {
+		out[i] = promptInputFromEvent(e)
+	}
+	return out
+}
+
+func promptInputFromEvent(e events.Input) promptInput {
+	p := promptInput{
+		Name:    e.InputName(),
+		Prompt:  e.InputPrompt(),
+		Default: e.InputDefault(),
+	}
+	switch v := e.(type) {
+	case events.IntInput:
+		_ = v
+		p.Kind = "int"
+		p.parse = func(s string) (any, error) {
+			n, err := strconv.Atoi(strings.TrimSpace(s))
+			if err != nil {
+				return nil, fmt.Errorf("not an integer: %q", s)
+			}
+			return n, nil
+		}
+	case events.ChoiceInput:
+		p.Kind = "choice"
+		p.Options = append([]string(nil), v.Options...)
+		opts := p.Options
+		p.parse = func(s string) (any, error) {
+			got := strings.TrimSpace(s)
+			for _, opt := range opts {
+				if strings.EqualFold(got, opt) {
+					return opt, nil
+				}
+			}
+			return nil, fmt.Errorf("must be one of: %s", strings.Join(opts, ", "))
+		}
+	default:
+		p.Kind = "string"
+		p.parse = func(s string) (any, error) { return s, nil }
+	}
+	return p
+}
+
+// PromptCell collects step inputs via a stack of bubbles/textinput
+// fields — one per declared events.Input. Tab / Shift+Tab cycle
+// the active field; Enter submits when all parse cleanly (focus
+// jumps to the first invalid field otherwise); Esc unfocuses
+// without submitting so the user can read other cells before
+// answering.
+//
+// On submit, the cell calls queue.Resolve(promptOffset, …) with
+// a PromptResolution carrying the typed answer map — closing the
+// sync rendezvous with demokit.Execute.
+type PromptCell struct {
+	id           string
+	inputs       []promptInput
+	fields       []textinput.Model
+	errors       []string
+	active       int
+	queue        *events.EventQueue
+	promptOffset int
+	done         bool
+	palette      Palette
+}
+
+// NewPromptCell builds a cell over the public events.Input list.
+// queue + promptOffset identify the PromptOpen event the cell
+// resolves on submit. The first field is focused; defaults are
+// pre-filled into the textinput placeholders.
+func NewPromptCell(id string, inputs []events.Input, queue *events.EventQueue, promptOffset int, palette Palette) *PromptCell {
+	pi := promptInputsFromEvents(inputs)
+	fields := make([]textinput.Model, len(pi))
+	errs := make([]string, len(pi))
+	for i, in := range pi {
 		ti := textinput.New()
 		ti.Prompt = "› "
 		ti.CharLimit = 256
@@ -50,7 +117,8 @@ func NewPromptCell(id string, inputs []promptInput, reply chan map[string]any, p
 		fields[0].Focus()
 	}
 	return &PromptCell{
-		id: id, inputs: inputs, fields: fields, errors: errs, reply: reply, palette: palette,
+		id: id, inputs: pi, fields: fields, errors: errs,
+		queue: queue, promptOffset: promptOffset, palette: palette,
 	}
 }
 
@@ -224,20 +292,16 @@ func (c *PromptCell) trySubmit() (Cell, tea.Cmd) {
 	}
 	c.done = true
 	// Blur every textinput so the bubbles cursor stops blinking
-	// inside the cell after submission. Without this, the inner
-	// textinput keeps rendering its focused style even after the
-	// cell-level cursor has moved on to the next step's cells —
-	// which reads as "focus is still on the prompt."
+	// after submission.
 	for i := range c.fields {
 		c.fields[i].Blur()
 	}
-	if c.reply != nil {
-		c.reply <- answers
-		close(c.reply)
+	if c.queue != nil {
+		_ = c.queue.Resolve(c.promptOffset, &events.PromptResolution{
+			Answers: answers, Source: "user-submitted", Timestamp: time.Now(),
+		})
 	}
-	// Submit succeeded → pop focus and advance. The user
-	// shouldn't need to Esc-then-Enter after entering valid
-	// answers; Enter on a complete form should "just continue."
+	// Submit succeeded → pop focus and advance.
 	return c, cellAdvance
 }
 
