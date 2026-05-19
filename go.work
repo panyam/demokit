@@ -1,0 +1,11 @@
+// Workspace tying the demokit module together with the standalone
+// notebook module (and, later, notebook/examples/* demos). Local
+// dev resolves cross-module imports to the in-repo copies without
+// replace directives. The notebook module is independently
+// buildable and testable — see the Makefile's testall target.
+go 1.26.2
+
+use (
+	.
+	./notebook
+)

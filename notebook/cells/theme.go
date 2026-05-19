@@ -13,6 +13,8 @@ type Theme struct {
 	Header   HeaderStyle
 	Note     NoteStyle
 	Verbatim VerbatimStyle
+	Output   OutputStyle
+	Prompt   PromptStyle
 }
 
 // DarkTheme returns the dark-terminal styles for all built-in
@@ -22,6 +24,8 @@ func DarkTheme() Theme {
 		Header:   DarkHeaderStyle(),
 		Note:     DarkNoteStyle(),
 		Verbatim: DarkVerbatimStyle(),
+		Output:   DarkOutputStyle(),
+		Prompt:   DarkPromptStyle(),
 	}
 }
 
@@ -32,6 +36,8 @@ func LightTheme() Theme {
 		Header:   LightHeaderStyle(),
 		Note:     LightNoteStyle(),
 		Verbatim: LightVerbatimStyle(),
+		Output:   LightOutputStyle(),
+		Prompt:   LightPromptStyle(),
 	}
 }
 
