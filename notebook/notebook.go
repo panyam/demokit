@@ -3,7 +3,9 @@ package notebook
 import (
 	"io"
 	"os"
+	"strconv"
 	"sync"
+	"sync/atomic"
 
 	tea "github.com/charmbracelet/bubbletea"
 )
@@ -22,11 +24,16 @@ import (
 // waits for the program loop to be live (signalled via the ready
 // channel) before issuing its Send.
 type Notebook struct {
-	store   *store
-	program *tea.Program
-	clip    Clipboard
+	store         *store
+	program       *tea.Program
+	clip          Clipboard
+	rdv           *rendezvous
+	promptFactory PromptFactory
 
-	ready chan struct{}
+	ready   chan struct{}
+	stopped chan struct{}
+
+	promptSeq atomic.Uint64
 
 	startOnce sync.Once
 	stopOnce  sync.Once
@@ -37,10 +44,11 @@ type Notebook struct {
 type Option func(*notebookOpts)
 
 type notebookOpts struct {
-	headless bool
-	width    int
-	height   int
-	clip     Clipboard
+	headless      bool
+	width         int
+	height        int
+	clip          Clipboard
+	promptFactory PromptFactory
 }
 
 // WithHeadless runs the Bubble Tea program against a blocking
@@ -64,6 +72,18 @@ func WithClipboard(c Clipboard) Option {
 	return func(o *notebookOpts) { o.clip = c }
 }
 
+// WithPromptFactory configures the function AwaitInput uses to
+// build a prompt cell from a list of Inputs. Without one,
+// AwaitInput panics — callers that don't supply a factory can
+// still use AwaitInputBy with their own cells.
+//
+// The notebook package can't import its own cells subpackage, so
+// real consumers wire this via cells.PromptFactory() (or a
+// custom function).
+func WithPromptFactory(f PromptFactory) Option {
+	return func(o *notebookOpts) { o.promptFactory = f }
+}
+
 // New constructs a Notebook. The Bubble Tea program is wired up
 // but not started; call Run to start it (Run blocks).
 func New(opts ...Option) *Notebook {
@@ -77,13 +97,18 @@ func New(opts ...Option) *Notebook {
 
 	st := newStore()
 	ready := make(chan struct{})
-	m := newModel(st, ready, cfg.width, cfg.height)
+	stopped := make(chan struct{})
+	rdv := newRendezvous()
+	m := newModel(st, rdv, ready, cfg.width, cfg.height)
 
 	progOpts := []tea.ProgramOption{}
 	nb := &Notebook{
-		store: st,
-		clip:  cfg.clip,
-		ready: ready,
+		store:         st,
+		clip:          cfg.clip,
+		rdv:           rdv,
+		promptFactory: cfg.promptFactory,
+		ready:         ready,
+		stopped:       stopped,
 	}
 	if cfg.headless {
 		nb.blockIn = newBlockingReader()
@@ -112,15 +137,24 @@ func (nb *Notebook) Run() error {
 	return err
 }
 
-// Stop signals the program to quit. Run returns shortly after.
-// Idempotent.
+// Stop signals the program to quit and drains any pending
+// AwaitAdvance / AwaitInput callers with Source: "cancelled".
+// Run returns shortly after. Idempotent.
 func (nb *Notebook) Stop() {
 	nb.stopOnce.Do(func() {
+		close(nb.stopped)
+		nb.rdv.cancelAll()
 		nb.program.Quit()
 		if nb.blockIn != nil {
 			nb.blockIn.close()
 		}
 	})
+}
+
+// nextPromptID returns a monotonically-increasing ID for prompt
+// cells created by AwaitInput.
+func (nb *Notebook) nextPromptID() CellID {
+	return "prompt-" + strconv.FormatUint(nb.promptSeq.Add(1), 10)
 }
 
 // Snapshot returns the rendered View as it would appear right now.

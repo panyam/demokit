@@ -32,8 +32,16 @@ func (nb *Notebook) Update(id CellID, fn func(Cell) Cell) bool {
 // up; removing the focused cell leaves the cursor on the next
 // cell down (or the new last cell if the removed cell was the
 // end).
+//
+// If there's a pending AwaitInputBy on the removed cell, it
+// resolves with Source: "cancelled" so the caller goroutine
+// doesn't block forever.
 func (nb *Notebook) Remove(id CellID) bool {
-	return nb.store.remove(id)
+	ok := nb.store.remove(id)
+	if ok {
+		nb.rdv.resolveInput(id, nil, "cancelled")
+	}
+	return ok
 }
 
 // Get returns the cell with the given ID. The bool reports
