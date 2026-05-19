@@ -45,3 +45,12 @@ type CellAdvanceMsg struct{}
 // the second return value from Cell.Update when a cell wants to
 // hand focus back to the notebook.
 func CellAdvance() tea.Msg { return CellAdvanceMsg{} }
+
+// PromptSubmittedMsg is emitted by a PromptCell when the user
+// submits a valid answer set. The notebook routes it to the
+// pending AwaitInput call by CellID. Answers maps each input's
+// Name to its parsed value.
+type PromptSubmittedMsg struct {
+	CellID  string
+	Answers map[string]any
+}
