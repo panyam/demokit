@@ -256,6 +256,89 @@ A few invariants worth knowing:
 Hosts (notably slide tools that retheme) rely on CSS custom-property inheritance. Shadow DOM would block that. The player uses BEM-ish scoped class names plus `--demokit-*` CSS variables; revisit if real style-bleed reports appear.
 
 
+## Notebook — standalone cell-based TUI component
+
+`notebook/` is a **separate Go module** (`github.com/panyam/demokit/notebook`) that has no dependency on demokit. It's a reusable widget toolkit for cell-based terminal UIs — REPLs, wizards, log viewers, anything that wants a navigable list of typed cells. The demokit bridge (planned phase 4) will sit on top of it; today the only consumer is `notebook/examples/mathrepl/` (the math REPL with braille plots).
+
+### Multi-module workspace
+
+```
+demokit/                              module github.com/panyam/demokit
+├── go.work                           ., ./notebook, ./notebook/examples/mathrepl
+├── Makefile                          MODULES := . notebook notebook/examples/mathrepl
+├── notebook/
+│   ├── go.mod                        module github.com/panyam/demokit/notebook
+│   │                                 deps: charm libs only (no demokit, no events)
+│   ├── cells/                        built-in widget library
+│   └── examples/mathrepl/
+│       ├── go.mod                    deps: notebook + expr-lang
+│       └── Makefile                  run/build/test/race/tidy
+```
+
+`make testall` / `make race` / `make tidy` loop the modules; `go test ./...` from any root is module-scoped (won't descend across `go.mod`).
+
+### Notebook package layout
+
+| File | Responsibility |
+|---|---|
+| `notebook.go` | `Notebook` struct, `New`, `Run`, `Stop`, options (`WithKeyMap`, `WithClipboard`, `WithPromptFactory`, `WithHeadless`, `WithSize`), `Snapshot` |
+| `model.go` | `tea.Model` — viewport, mode, key & mouse dispatch, render |
+| `store.go` | `store` — shared RWMutex-guarded cells + cursor + header |
+| `crud.go` | `Append` / `Insert` / `Update` / `Remove` / `Get` / `IndexOf` / `Len` / `SetCursor` / `FocusCell` / `SetHeader` / `SetDone` |
+| `rendezvous.go` | `AwaitInput` / `AwaitInputBy` (blocking primitives) + `InputResponse` |
+| `stream.go` | `Stream(id) io.Writer` over a cell's `OutputBuffer` |
+| `keymap.go` | `KeyMap`, `Action`, built-in actions (`Quit` / `NavUp` / `NavDown` / `EnterFocus` / `ExitFocus` / `SetMode`), `DefaultKeyMap` |
+| `keys.go` | `KeyEnter` / `KeyEsc` / `KeyCtrlC` / ... — canonical key-string constants |
+| `clipboard.go` | `Clipboard` type, `NoClipboard`, `OSC52Clipboard` (terminal-escape-based) |
+| `messages.go` | `ClearCopyMsg`, `CellAdvanceMsg`, `PromptSubmittedMsg`, `ReleaseFocusMsg`, `setModeMsg` + helpers |
+| `cell.go` | `Cell` interface, `Mode` interface, `NewMode`, `SelectMode` / `ViewMode` |
+| `input.go` | `Input` interface + `StringInput` / `IntInput` / `ChoiceInput` |
+| `output_buffer.go` | `OutputBuffer` (line-indexed, RWMutex-guarded, `io.Writer`) |
+| `cells/` | `HeaderCell`, `NoteCell`, `VerbatimCell`, `OutputCell`, `PromptCell` + per-cell `*Style` types + `Theme` aggregator |
+
+### Cell-first key dispatch
+
+Every keystroke routes to the cursor cell first. `Cell.Update` returns `(Cell, tea.Cmd, bool)` — the third value is `handled`. If true, the notebook stops; if false, the notebook checks `KeyMap.Global` then `KeyMap.Modes[currentMode]` and dispatches the matching `Action`. The "rare case" of `handled=false + cmd!=nil` is honored: cell had a side effect AND wants notebook to also try its bindings.
+
+The principle: **cells own how they react to keys when focused, including how they signal release.** The notebook claims no key unconditionally. `Ctrl+C` lives in `DefaultKeyMap.Global` — cells that don't intercept it (every built-in cell, by convention) passthrough and the global binding catches it. A cell that wants to consume `Ctrl+C` (a confirmation cell, an undo-stack cell, …) returns `handled=true` and the global never fires.
+
+`Esc → ReleaseFocus` is a convention, not a notebook rule. Built-in cells handle Esc → `notebook.ReleaseFocus` cmd; the model exits ViewMode. Cells with internal sub-modes can consume multiple Escs before returning ReleaseFocus.
+
+### Modes are app-defined
+
+`Mode` is opaque (`NewMode("CUSTOM")`); `SelectMode` and `ViewMode` are shipped defaults but apps can use any number of modes. `KeyMap.Modes[mode]` holds per-mode bindings; `KeyMap.Global` applies in every mode. A mode with no `Modes` entry means "no notebook bindings here" — every key passes through to the cell (the natural setup for ViewMode).
+
+### Focus presentation belongs to the cell
+
+`RenderRows(width, startRow, endRow, focused bool, mode Mode)` — the `focused` argument is the only signal the notebook gives. Each cell decides what focused looks like (border color, internal cursor, status hint, etc.). PromptCell calls `syncFieldFocus(focused, mode)` at the top of RenderRows to drive its bubbles/textinput Focus state — without this the textinput cursor would blink even on cells that aren't focused.
+
+### Concurrency model
+
+- Mutations from any goroutine go through `store.*` methods (RWMutex-guarded). **Mutations never `Send`** — `tea.Program.Send` is unbuffered and blocks until `Run` drains it (BT v1.3.10 source confirmed). A 16ms repaint tick is the universal trigger that picks up store changes within one frame.
+- Reads (`Get` / `Len` / `IndexOf`) lock-read; cheap.
+- Model state (`mode`, `width`, `height`, `viewportOffset`) is BT-goroutine-only; no lock.
+- Streaming writes go to `OutputBuffer` (its own mutex); the cell's render-time `clampScroll` makes follow-mode "tail -f" behavior surface within one tick without a separate notification hook.
+- Rendezvous (`AwaitInput*`) registers a buffered-cap-1 chan; the model resolves it on `PromptSubmittedMsg`; `Stop` drains pending awaits with `Source: "cancelled"`.
+
+### Mouse
+
+`tea.WithMouseCellMotion` is enabled in non-headless mode. The model handles `tea.MouseMsg`:
+
+- Wheel up/down → cursor up/down (same as `↑`/`↓`)
+- Left click → cursor to the cell at the clicked Y (`cellAtRow` maps absolute Y → header offset → viewportOffset → cell-span lookup)
+- Release events are ignored
+
+Mouse is intentionally **NOT** routed cell-first: clicks are geometric (the Y identifies the target, which may not be the focused cell), so the notebook owns dispatch. Future per-cell mouse handling (textinput cursor positioning, clicking verbatim-cell variant tabs) can hook in at `cellAtRow` before the navigation fallback.
+
+### Snapshot for headless tests
+
+`Snapshot()` does a synchronous `Send(snapshotMsg{reply})`; the model recomputes `ensureCursorVisible` then writes `View()` to reply. Waits on a `ready` channel (closed by Init's first cmd) before issuing the Send to avoid racing program startup. The headless input is a custom `blockingReader` so BT's input goroutine parks instead of spinning.
+
+### What's not (yet) wired
+
+- **No demokit bridge.** The standalone notebook + the existing `tui/notebook/` (the legacy event-queue-based renderer used by demokit today) coexist. Phase 4 will replace `tui/notebook/` with a `notebookbridge/` package that drains `events.EventQueue` and calls notebook methods.
+- **Single live consumer**: `notebook/examples/mathrepl/`. Test surface in `notebook/notebook_test.go`, `notebook/concurrent_test.go`, `notebook/keymap_test.go`, `notebook/cells/*_test.go`.
+
 ## Gotchas
 
 ### API shape

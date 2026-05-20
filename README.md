@@ -116,6 +116,8 @@ For programmatic embedding, the same package exposes `web.TraceFragment(d, entri
 
 **Two renderers.** `PlainRenderer` (zero deps) for plain stdout. `tui.Renderer` (via the `tui/` subpackage, Lipgloss-backed) for styled boxes. Both implement the same `Renderer` interface; you can swap your own in if you want HTML, JSON, or a TUI Bubble app.
 
+**Standalone notebook component.** `notebook/` is a separate Go module (`github.com/panyam/demokit/notebook`) with no demokit dependency — a reusable cell-based TUI toolkit for any Go program that wants a navigable list of typed cells (REPLs, wizards, log viewers). Built-in widgets live in `notebook/cells/` (header / note / verbatim / output / prompt); apps wire bindings via `KeyMap`, define their own modes, implement their own `Cell` types. A live example is `notebook/examples/mathrepl/` — a math REPL with braille plots that uses none of demokit. The demokit→notebook bridge is on the roadmap; see [ARCHITECTURE.md § Notebook](ARCHITECTURE.md#notebook--standalone-cell-based-tui-component).
+
 **Pluggable form prompts.** `tui.Renderer.WithPrompter(myPrompter)` swaps the input collection step. The default is a sequential readline; richer impls (e.g. one backed by `huh.Select` for arrow-key choices) are a small interface away.
 
 ## Two safety guardrails
