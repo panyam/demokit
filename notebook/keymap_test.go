@@ -178,6 +178,62 @@ func TestPromptSubmittedExitsViewModeWithoutMovingCursor(t *testing.T) {
 	}
 }
 
+func TestMouseWheelMovesCursor(t *testing.T) {
+	m, st := newSizedModel(t, 40, 24)
+	st.insert(-1, &fallthroughCell{id: "a"})
+	st.insert(-1, &fallthroughCell{id: "b"})
+	st.insert(-1, &fallthroughCell{id: "c"})
+
+	m.Update(tea.MouseMsg{Action: tea.MouseActionPress, Button: tea.MouseButtonWheelDown})
+	m.Update(tea.MouseMsg{Action: tea.MouseActionPress, Button: tea.MouseButtonWheelDown})
+	if got := st.cursorPos(); got != 2 {
+		t.Errorf("cursor after 2 wheel-down = %d, want 2", got)
+	}
+	m.Update(tea.MouseMsg{Action: tea.MouseActionPress, Button: tea.MouseButtonWheelUp})
+	if got := st.cursorPos(); got != 1 {
+		t.Errorf("cursor after wheel-up = %d, want 1", got)
+	}
+}
+
+func TestMouseLeftClickSelectsCellAtRow(t *testing.T) {
+	m, st := newSizedModel(t, 40, 30)
+	// Three 1-row cells: a@row 0, b@row 1, c@row 2. No header.
+	st.insert(-1, &fallthroughCell{id: "a"})
+	st.insert(-1, &fallthroughCell{id: "b"})
+	st.insert(-1, &fallthroughCell{id: "c"})
+
+	m.Update(tea.MouseMsg{Action: tea.MouseActionPress, Button: tea.MouseButtonLeft, Y: 2})
+	if got := st.cursorPos(); got != 2 {
+		t.Errorf("click at Y=2 → cursor = %d, want 2 (cell c at row 2)", got)
+	}
+	m.Update(tea.MouseMsg{Action: tea.MouseActionPress, Button: tea.MouseButtonLeft, Y: 0})
+	if got := st.cursorPos(); got != 0 {
+		t.Errorf("click at Y=0 → cursor = %d, want 0", got)
+	}
+}
+
+func TestMouseClickOutsideBodyIsNoop(t *testing.T) {
+	m, st := newSizedModel(t, 40, 8)
+	st.insert(-1, &fallthroughCell{id: "a"})
+	st.insert(-1, &fallthroughCell{id: "b"})
+	st.moveCursor(+1) // cursor on b
+	// Click on the status row (Y = height - 1 = 7).
+	m.Update(tea.MouseMsg{Action: tea.MouseActionPress, Button: tea.MouseButtonLeft, Y: 7})
+	if got := st.cursorPos(); got != 1 {
+		t.Errorf("status-row click moved cursor (= %d, want 1 unchanged)", got)
+	}
+}
+
+func TestMouseReleaseIsIgnored(t *testing.T) {
+	m, st := newSizedModel(t, 40, 24)
+	st.insert(-1, &fallthroughCell{id: "a"})
+	st.insert(-1, &fallthroughCell{id: "b"})
+	m.Update(tea.MouseMsg{Action: tea.MouseActionRelease, Button: tea.MouseButtonLeft, Y: 0})
+	if got := st.cursorPos(); got != 0 {
+		t.Errorf("release event affected cursor (= %d, want 0 unchanged)", got)
+	}
+}
+
 func TestCustomModeBindings(t *testing.T) {
 	custom := NewMode("CUSTOM")
 	fired := false
