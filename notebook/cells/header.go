@@ -101,9 +101,15 @@ func (c *HeaderCell) RenderRows(width, startRow, endRow int, focused bool, _ not
 	return out
 }
 
-// Update implements notebook.Cell. HeaderCell is read-only.
-func (c *HeaderCell) Update(_ tea.Msg, _ notebook.Mode) (notebook.Cell, tea.Cmd) {
-	return c, nil
+// Update implements notebook.Cell. HeaderCell is read-only — it
+// never handles a key. Esc in ViewMode is the standard "release
+// focus" gesture; HeaderCell handles it so users can back out
+// after navigating into a header.
+func (c *HeaderCell) Update(msg tea.Msg, mode notebook.Mode) (notebook.Cell, tea.Cmd, bool) {
+	if k, ok := msg.(tea.KeyMsg); ok && k.String() == "esc" && mode == notebook.ViewMode {
+		return c, notebook.ReleaseFocus, true
+	}
+	return c, nil, false
 }
 
 // StatusHint implements notebook.Cell.

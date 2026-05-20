@@ -194,15 +194,17 @@ func (c *OutputCell) RenderRows(width, startRow, endRow int, focused bool, _ not
 }
 
 // Update implements notebook.Cell. 'c' copies regardless of mode;
-// scroll keys require ViewMode.
-func (c *OutputCell) Update(msg tea.Msg, mode notebook.Mode) (notebook.Cell, tea.Cmd) {
+// in ViewMode scroll keys (j/k/g/G/pgup/pgdown) move within the
+// buffer, Enter advances, Esc releases focus. Other keys
+// passthrough.
+func (c *OutputCell) Update(msg tea.Msg, mode notebook.Mode) (notebook.Cell, tea.Cmd, bool) {
 	if cm, ok := msg.(notebook.ClearCopyMsg); ok && cm.CellID == c.id {
 		c.copyMsg = ""
-		return c, nil
+		return c, nil, true
 	}
 	keyMsg, ok := msg.(tea.KeyMsg)
 	if !ok {
-		return c, nil
+		return c, nil, false
 	}
 	if keyMsg.String() == "c" {
 		all := strings.Join(c.buf.AllLines(), "\n")
@@ -212,39 +214,47 @@ func (c *OutputCell) Update(msg tea.Msg, mode notebook.Mode) (notebook.Cell, tea
 		} else {
 			c.copyMsg = "(copy failed — no clipboard provider)"
 		}
-		return c, notebook.ClearCopyAfter(c.id)
+		return c, notebook.ClearCopyAfter(c.id), true
 	}
 	if mode != notebook.ViewMode {
-		return c, nil
+		return c, nil, false
 	}
 	switch keyMsg.String() {
 	case "enter":
-		return c, notebook.CellAdvance
+		return c, notebook.CellAdvance, true
+	case "esc":
+		return c, notebook.ReleaseFocus, true
 	case "j", "down":
 		c.follow = false
 		c.scrollOffset++
 		c.clampScroll()
+		return c, nil, true
 	case "k", "up":
 		c.follow = false
 		c.scrollOffset--
 		c.clampScroll()
+		return c, nil, true
 	case "pgdown":
 		c.follow = false
 		c.scrollOffset += c.maxBody
 		c.clampScroll()
+		return c, nil, true
 	case "pgup":
 		c.follow = false
 		c.scrollOffset -= c.maxBody
 		c.clampScroll()
+		return c, nil, true
 	case "g":
 		c.follow = false
 		c.scrollOffset = 0
+		return c, nil, true
 	case "G":
 		c.follow = true
 		c.scrollOffset = c.buf.LineCount()
 		c.clampScroll()
+		return c, nil, true
 	}
-	return c, nil
+	return c, nil, false
 }
 
 // StatusHint implements notebook.Cell.

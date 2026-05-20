@@ -1,78 +1,92 @@
 // Package notebook is a standalone cell-based TUI component built
 // on Bubble Tea. It has no dependency on demokit, events, or any
 // other consumer — callers drive it via Append/Update/Stream and
-// AwaitAdvance/AwaitInput. Bridges (e.g. demokit/notebookbridge)
-// translate domain events into these calls.
+// AwaitInput. Bridges (e.g. demokit/notebookbridge) translate
+// domain events into these calls.
 //
 // Rendering is range-based: the viewport asks each cell for just
 // the row window it intends to display, never the full cell body.
-// That contract is what unlocks lazy materialization without
-// touching the viewport code.
+//
+// Key dispatch is cell-first: every keystroke goes to the cursor
+// cell's Update before the notebook tries its own KeyMap. The
+// cell returns a `handled bool`; if false, the notebook tries
+// Global then current-mode bindings. See KeyMap for the
+// notebook-level binding surface.
 package notebook
 
 import (
 	tea "github.com/charmbracelet/bubbletea"
 )
 
-// Mode is the notebook's mode state. Hierarchical and vim-ish:
-// SelectMode (cursor navigates cells) wraps FocusedMode (focused
-// cell owns keystrokes), which in turn has ViewMode (today's
-// interactive defaults) and EditMode (reserved). Esc pops up one
-// level.
+// Mode is an opaque value identifying the notebook's current
+// interaction mode. The framework ships SelectMode and ViewMode as
+// convenient defaults but apps can define their own via NewMode
+// and register per-mode bindings in KeyMap.
 //
-// Encoded as a small interface rather than an enum so future modes
-// (Edit, Visual, Search) don't churn switch statements.
+// Cells receive the current Mode as a parameter to Update so they
+// can react contextually; cells do not store mode themselves.
 type Mode interface {
 	Name() string
 }
 
-type selectMode struct{}
-type viewMode struct{}
-type editMode struct{}
+// NewMode returns an opaque Mode value with the given short name
+// (shown in the status line / used for KeyMap keys). Two NewMode
+// calls with the same name produce different Mode values — modes
+// are compared by identity, not by name.
+func NewMode(name string) Mode {
+	return &mode{name: name}
+}
 
-func (selectMode) Name() string { return "SELECT" }
-func (viewMode) Name() string   { return "VIEW" }
-func (editMode) Name() string   { return "EDIT" }
+type mode struct{ name string }
 
-// SelectMode is the default outermost mode — the cell cursor moves
-// between cells; the focused cell, if any, does not receive keys.
-var SelectMode Mode = selectMode{}
+func (m *mode) Name() string { return m.name }
 
-// ViewMode is the inner interactive mode that owns keys when a cell
-// is focused.
-var ViewMode Mode = viewMode{}
+// SelectMode is the canonical "navigate between cells" mode used
+// by the DefaultKeyMap. Apps that don't use the defaults can
+// ignore it.
+var SelectMode = NewMode("SELECT")
 
-// EditMode is reserved for in-TUI authoring. Not wired into key
-// handling yet; declared so the Cell interface can already receive
-// it without a future signature change.
-var EditMode Mode = editMode{}
+// ViewMode is the canonical "focused-cell-owns-keys" mode used by
+// the DefaultKeyMap. Apps that don't use the defaults can ignore
+// it.
+var ViewMode = NewMode("VIEW")
 
 // Cell is the unit the notebook viewport navigates and renders.
-// Implementations own their content.
+// Implementations own their content; render is range-based.
 //
-// Rendering is range-based — viewport calls RenderRows(width, lo, hi)
-// for just the visible row window, never RenderAll.
+// The Update signature returns three values:
+//   - the (possibly mutated) Cell
+//   - an optional tea.Cmd for side effects
+//   - handled — true if the cell consumed this msg; false to let
+//     the notebook try its own KeyMap bindings on the same key
+//
+// The handled=false / cmd=nil combo is "I don't claim this" — the
+// notebook will look up the key in Global + current mode and
+// dispatch the matching Action. The rare handled=false / cmd!=nil
+// case means "I did something with side effects but still want the
+// notebook to also try its bindings" — useful for instrumentation
+// or chained handlers.
 type Cell interface {
 	// ID returns a stable identifier unique within the notebook.
-	// Insert rejects duplicate IDs; Remove/Get/IndexOf lookup by ID.
 	ID() string
 
-	// HeightHint reports the row count the cell would occupy at the
-	// given width. Must be cheap & deterministic — the viewport
-	// invokes it once per visible-window calculation. Implementations
-	// should cache (width → height) and invalidate on width change.
+	// HeightHint reports the row count the cell would occupy at
+	// the given width. Must be cheap & deterministic.
 	HeightHint(width int) int
 
 	// RenderRows returns the row slice for the half-open range
-	// [startRow, endRow) at the given width. Cells with large bodies
-	// compute only the requested window.
+	// [startRow, endRow) at the given width.
 	RenderRows(width, startRow, endRow int, focused bool, mode Mode) []string
 
-	// Update receives Bubble Tea messages only when the cell is the
-	// focused cell. Returns the updated cell and an optional command.
-	Update(msg tea.Msg, mode Mode) (Cell, tea.Cmd)
+	// Update receives Bubble Tea messages. For tea.KeyMsg, the
+	// notebook always routes to the cursor cell first; the cell's
+	// returned `handled` bool determines whether the notebook
+	// continues with its own KeyMap. For other msg types the
+	// notebook handles routing differently (e.g. ClearCopyMsg is
+	// routed by cell ID).
+	Update(msg tea.Msg, mode Mode) (Cell, tea.Cmd, bool)
 
-	// StatusHint returns the right-side status text shown when this
-	// cell is focused.
+	// StatusHint returns the right-side status text shown when
+	// this cell is focused.
 	StatusHint(mode Mode) string
 }

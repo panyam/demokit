@@ -29,6 +29,7 @@ type Notebook struct {
 	clip          Clipboard
 	rdv           *rendezvous
 	promptFactory PromptFactory
+	keymap        KeyMap
 
 	ready   chan struct{}
 	stopped chan struct{}
@@ -49,6 +50,7 @@ type notebookOpts struct {
 	height        int
 	clip          Clipboard
 	promptFactory PromptFactory
+	keymap        *KeyMap // nil = DefaultKeyMap
 }
 
 // WithHeadless runs the Bubble Tea program against a blocking
@@ -84,6 +86,13 @@ func WithPromptFactory(f PromptFactory) Option {
 	return func(o *notebookOpts) { o.promptFactory = f }
 }
 
+// WithKeyMap overrides the notebook-level key bindings. Without
+// it, DefaultKeyMap is used. Apps can start from the default and
+// extend, or define a completely custom map.
+func WithKeyMap(km KeyMap) Option {
+	return func(o *notebookOpts) { o.keymap = &km }
+}
+
 // New constructs a Notebook. The Bubble Tea program is wired up
 // but not started; call Run to start it (Run blocks).
 func New(opts ...Option) *Notebook {
@@ -95,11 +104,15 @@ func New(opts ...Option) *Notebook {
 		cfg.clip = NoClipboard
 	}
 
+	km := DefaultKeyMap()
+	if cfg.keymap != nil {
+		km = *cfg.keymap
+	}
+
 	st := newStore()
 	ready := make(chan struct{})
 	stopped := make(chan struct{})
 	rdv := newRendezvous()
-	m := newModel(st, rdv, ready, cfg.width, cfg.height)
 
 	progOpts := []tea.ProgramOption{}
 	nb := &Notebook{
@@ -107,9 +120,11 @@ func New(opts ...Option) *Notebook {
 		clip:          cfg.clip,
 		rdv:           rdv,
 		promptFactory: cfg.promptFactory,
+		keymap:        km,
 		ready:         ready,
 		stopped:       stopped,
 	}
+	m := newModel(nb, cfg.width, cfg.height)
 	if cfg.headless {
 		nb.blockIn = newBlockingReader()
 		progOpts = append(progOpts,
@@ -137,9 +152,15 @@ func (nb *Notebook) Run() error {
 	return err
 }
 
+// SetMode requests a mode change. Safe to call from any
+// goroutine — internally Sends a tea.Msg that the model applies.
+func (nb *Notebook) SetMode(m Mode) {
+	nb.program.Send(setModeMsg{mode: m})
+}
+
 // Stop signals the program to quit and drains any pending
-// AwaitAdvance / AwaitInput callers with Source: "cancelled".
-// Run returns shortly after. Idempotent.
+// AwaitInput callers with Source: "cancelled". Run returns
+// shortly after. Idempotent.
 func (nb *Notebook) Stop() {
 	nb.stopOnce.Do(func() {
 		close(nb.stopped)

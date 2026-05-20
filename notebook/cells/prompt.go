@@ -180,35 +180,40 @@ func (c *PromptCell) RenderRows(width, startRow, endRow int, focused bool, _ not
 }
 
 // Update implements notebook.Cell. Routes keys to the active
-// textinput; Enter / Tab / Shift+Tab control navigation and
-// submission.
-func (c *PromptCell) Update(msg tea.Msg, mode notebook.Mode) (notebook.Cell, tea.Cmd) {
+// textinput; Enter / Tab / Shift+Tab control submission /
+// navigation; Esc releases focus without submitting. In ViewMode
+// the cell claims every key (typing into the textinput counts);
+// in other modes or once submitted, keys passthrough.
+func (c *PromptCell) Update(msg tea.Msg, mode notebook.Mode) (notebook.Cell, tea.Cmd, bool) {
 	if c.done {
-		return c, nil
+		return c, nil, false
 	}
 	if mode != notebook.ViewMode {
-		return c, nil
+		return c, nil, false
 	}
 	keyMsg, isKey := msg.(tea.KeyMsg)
 	if !isKey {
-		return c, nil
+		return c, nil, false
 	}
 	switch keyMsg.String() {
 	case "tab":
 		c.advance(+1)
-		return c, nil
+		return c, nil, true
 	case "shift+tab":
 		c.advance(-1)
-		return c, nil
+		return c, nil, true
+	case "esc":
+		return c, notebook.ReleaseFocus, true
 	case "enter":
-		return c.trySubmit()
+		cell, cmd := c.trySubmit()
+		return cell, cmd, true
 	}
 	if len(c.fields) == 0 {
-		return c, nil
+		return c, nil, true
 	}
 	var cmd tea.Cmd
 	c.fields[c.active], cmd = c.fields[c.active].Update(msg)
-	return c, cmd
+	return c, cmd, true
 }
 
 // StatusHint implements notebook.Cell.

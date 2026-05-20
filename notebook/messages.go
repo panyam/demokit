@@ -50,7 +50,31 @@ func CellAdvance() tea.Msg { return CellAdvanceMsg{} }
 // submits a valid answer set. The notebook routes it to the
 // pending AwaitInput call by CellID. Answers maps each input's
 // Name to its parsed value.
+//
+// Unlike CellAdvanceMsg, the notebook does NOT auto-move the
+// cursor on receipt — the caller (typically the AwaitInput
+// awaiter goroutine) decides what cursor / focus state should
+// follow a successful submit.
 type PromptSubmittedMsg struct {
 	CellID  string
 	Answers map[string]any
+}
+
+// ReleaseFocusMsg signals that a focused cell wants to give focus
+// back to the notebook (drop to SelectMode) without advancing the
+// cursor. Built-in cells emit it on Esc by convention; custom
+// cells decide their own release semantics.
+type ReleaseFocusMsg struct{}
+
+// ReleaseFocus is the tea.Cmd that emits ReleaseFocusMsg. Return
+// it from Cell.Update when the cell wants to exit ViewMode but
+// keep the cursor where it is.
+func ReleaseFocus() tea.Msg { return ReleaseFocusMsg{} }
+
+// setModeMsg is the internal msg used by NotebookActions and
+// AwaitInput to change the current Mode from outside the model.
+// Apps don't construct it directly — they call nb.SetMode(m) or
+// use a built-in Action like notebook.SetMode(m).
+type setModeMsg struct {
+	mode Mode
 }
