@@ -62,10 +62,17 @@ func (e *Env) Eval(src string) (any, error) {
 }
 
 // evalExpr is the pure expression-eval path (no assignment).
+// Catches the "undefined identifier" case: expr-lang's map-env
+// returns nil for missing keys without an error, so a bare `x`
+// with no `x = ...` binding would otherwise print as `<nil>`.
+// Surfacing it as an error is the better REPL UX.
 func (e *Env) evalExpr(src string) (any, error) {
 	out, err := expr.Eval(src, e.vars)
 	if err != nil {
 		return nil, fmt.Errorf("%s", trimExprError(err.Error()))
+	}
+	if out == nil {
+		return nil, fmt.Errorf("undefined name or expression returned nil: %q", src)
 	}
 	return out, nil
 }

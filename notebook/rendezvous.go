@@ -110,8 +110,12 @@ func (nb *Notebook) AwaitInputBy(cellID CellID) InputResponse {
 type PromptFactory func(id CellID, inputs []Input) Cell
 
 // AwaitInput is the convenience that builds a prompt cell from
-// the configured PromptFactory, Appends it, and waits for the
-// user to submit. Panics if no factory was configured.
+// the configured PromptFactory, Appends it, AND moves cursor +
+// ViewMode to the new prompt (via FocusCell) so the user can
+// type immediately. Panics if no factory was configured.
+//
+// AwaitInputBy (the primitive) does NOT auto-focus — callers
+// that supply their own cell may want different cursor behavior.
 func (nb *Notebook) AwaitInput(inputs []Input) InputResponse {
 	if nb.promptFactory == nil {
 		panic("notebook: AwaitInput requires WithPromptFactory(...) at New() — use AwaitInputBy for caller-supplied cells")
@@ -124,5 +128,6 @@ func (nb *Notebook) AwaitInput(inputs []Input) InputResponse {
 		// rather than blocking forever.
 		return InputResponse{Source: "cancelled", At: time.Now()}
 	}
+	nb.FocusCell(id)
 	return nb.AwaitInputBy(id)
 }

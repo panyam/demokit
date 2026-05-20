@@ -88,9 +88,13 @@ func (c *PlotCell) RenderRows(width, startRow, endRow int, _ bool, _ notebook.Mo
 	return out
 }
 
-// Update implements notebook.Cell. Read-only.
-func (c *PlotCell) Update(tea.Msg, notebook.Mode) (notebook.Cell, tea.Cmd) {
-	return c, nil
+// Update implements notebook.Cell. Read-only; Esc in ViewMode
+// releases focus by convention. Other keys passthrough.
+func (c *PlotCell) Update(msg tea.Msg, mode notebook.Mode) (notebook.Cell, tea.Cmd, bool) {
+	if k, ok := msg.(tea.KeyMsg); ok && k.String() == "esc" && mode == notebook.ViewMode {
+		return c, notebook.ReleaseFocus, true
+	}
+	return c, nil, false
 }
 
 // StatusHint implements notebook.Cell.

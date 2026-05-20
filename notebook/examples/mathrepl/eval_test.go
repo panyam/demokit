@@ -48,6 +48,16 @@ func TestEvalUnknownFunctionErrors(t *testing.T) {
 	}
 }
 
+func TestEvalUndefinedNameSurfacesAsError(t *testing.T) {
+	// Regression: expr-lang's map env returns nil for missing
+	// keys without an error. mathrepl turns that nil into an
+	// explicit error so the REPL doesn't print "x = <nil>".
+	env := NewEnv()
+	if _, err := env.Eval("x"); err == nil {
+		t.Error("undefined name x should error, not return nil silently")
+	}
+}
+
 func TestEvalErrorMessageIsSingleLine(t *testing.T) {
 	env := NewEnv()
 	_, err := env.Eval("bad syntax !!!")
