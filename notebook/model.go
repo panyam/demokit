@@ -31,31 +31,27 @@ type snapshotMsg struct {
 // header live in the shared store; the model owns only the
 // BT-goroutine-local viewport, size, and mode.
 type model struct {
-	store          *store
-	rdv            *rendezvous
+	nb             *Notebook
 	viewportOffset int
 	width          int
 	height         int
 	mode           Mode
-	ready          chan struct{}
 }
 
-func newModel(s *store, rdv *rendezvous, ready chan struct{}, width, height int) model {
+func newModel(nb *Notebook, width, height int) model {
 	return model{
-		store:  s,
-		rdv:    rdv,
+		nb:     nb,
 		mode:   SelectMode,
 		width:  width,
 		height: height,
-		ready:  ready,
 	}
 }
 
-// Init implements tea.Model. The first batched cmd closes ready
-// once the program loop is live — Snapshot waits on it before
-// issuing a Send.
+// Init implements tea.Model. The first batched cmd closes the
+// ready channel once the program loop is live — Snapshot waits on
+// it before issuing a Send.
 func (m model) Init() tea.Cmd {
-	ready := m.ready
+	ready := m.nb.ready
 	return tea.Batch(
 		func() tea.Msg { close(ready); return nil },
 		repaintTick(),
@@ -77,94 +73,81 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.ensureCursorVisible()
 		msg.reply <- m.View()
 		return m, nil
+	case setModeMsg:
+		m.mode = msg.mode
+		return m, nil
+	case ReleaseFocusMsg:
+		m.mode = SelectMode
+		return m, nil
 	case CellAdvanceMsg:
 		m.mode = SelectMode
-		m.store.moveCursor(+1)
+		m.nb.store.moveCursor(+1)
 		m.ensureCursorVisible()
 		return m, nil
 	case PromptSubmittedMsg:
-		// The PromptCell already updated itself; the model just
-		// resolves the pending AwaitInputBy and moves on like any
-		// other "this cell is done" event.
-		if m.rdv != nil {
-			m.rdv.resolveInput(msg.CellID, msg.Answers, "user-submitted")
+		// Resolve the pending AwaitInputBy (if any) and exit
+		// ViewMode. Cursor is NOT moved — the caller (typically
+		// the awaiter goroutine) decides what cursor position
+		// follows a successful submit.
+		if m.nb.rdv != nil {
+			m.nb.rdv.resolveInput(msg.CellID, msg.Answers, "user-submitted")
 		}
 		m.mode = SelectMode
-		m.store.moveCursor(+1)
-		m.ensureCursorVisible()
 		return m, nil
 	case ClearCopyMsg:
-		return m, m.routeToCell(msg.CellID, msg)
+		cmd, _ := m.routeToCell(msg.CellID, msg)
+		return m, cmd
 	case tea.KeyMsg:
 		return m.handleKey(msg)
 	}
 	return m, nil
 }
 
-// handleKey routes a keystroke. Global quit keys first, then
-// mode-specific navigation, then the focused cell. A cell sees
-// the key in both modes (so 'c'-copy works while navigating); the
-// cell itself gates behavior on mode.
+// handleKey routes a keystroke cell-first. The cursor cell sees
+// every key via cell.Update before the notebook tries its KeyMap.
+// If the cell returns handled=true the notebook stops; otherwise
+// the notebook looks the key up in Global then current-mode
+// bindings.
+//
+// The rare cell-cmd-with-handled=false case is honored: if the
+// cell returned a side-effect cmd AND a KeyMap action also fires,
+// the action's cmd takes precedence (cell's cmd is dropped). If
+// only one fires, that one's cmd is used.
 func (m model) handleKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
-	switch key.String() {
-	case "ctrl+c", "q":
-		return m, tea.Quit
+	cellCmd, handled := m.routeKeyToCursor(key)
+	if handled {
+		return m, cellCmd
 	}
-	if m.mode == SelectMode {
-		switch key.String() {
-		case "up", "k":
-			m.store.moveCursor(-1)
-			m.ensureCursorVisible()
-			return m, nil
-		case "down", "j":
-			m.store.moveCursor(+1)
-			m.ensureCursorVisible()
-			return m, nil
-		case "s", "f":
-			if m.store.count() > 0 {
-				m.mode = ViewMode
-			}
-			return m, nil
-		case "enter", " ":
-			// Resolve a pending AwaitAdvance, if any. If no
-			// advance is pending, Enter is a no-op in SelectMode.
-			if m.rdv != nil {
-				m.rdv.resolveAdvance("user-enter")
-			}
-			return m, nil
-		}
-		// Fall through: route other keys (notably 'c') to the
-		// focused cell even in SelectMode.
-		return m, m.routeKeyToCursor(key)
+	if action := m.nb.keymap.lookup(m.mode, key.String()); action != nil {
+		return m, action(m.nb)
 	}
-	// ViewMode.
-	if key.String() == "esc" {
-		m.mode = SelectMode
-		return m, nil
-	}
-	return m, m.routeKeyToCursor(key)
+	return m, cellCmd
 }
 
-// routeKeyToCursor delivers a key to the focused cell, applying
-// any cell mutation in place via store.update.
-func (m model) routeKeyToCursor(key tea.KeyMsg) tea.Cmd {
-	snap := m.store.snapshot()
+// routeKeyToCursor delivers a key to the focused cell. Returns
+// the cell's cmd and handled flag; (nil, false) when there's no
+// cell to route to.
+func (m model) routeKeyToCursor(key tea.KeyMsg) (tea.Cmd, bool) {
+	snap := m.nb.store.snapshot()
 	if snap.cursor < 0 || snap.cursor >= len(snap.cells) {
-		return nil
+		return nil, false
 	}
 	return m.routeToCell(snap.cells[snap.cursor].ID(), key)
 }
 
-// routeToCell delivers a message to the cell with the given ID
-// and writes the (possibly new) cell back into the store.
-func (m model) routeToCell(id CellID, msg tea.Msg) tea.Cmd {
+// routeToCell delivers a msg to the cell with the given ID,
+// writes the (possibly new) cell back into the store, and returns
+// the cell's cmd and handled flag.
+func (m model) routeToCell(id CellID, msg tea.Msg) (tea.Cmd, bool) {
 	var cmd tea.Cmd
-	m.store.update(id, func(c Cell) Cell {
-		updated, c2 := c.Update(msg, m.mode)
+	var handled bool
+	m.nb.store.update(id, func(c Cell) Cell {
+		updated, c2, h := c.Update(msg, m.mode)
 		cmd = c2
+		handled = h
 		return updated
 	})
-	return cmd
+	return cmd, handled
 }
 
 // View implements tea.Model. Range-based render: each cell is
@@ -173,7 +156,7 @@ func (m model) View() string {
 	if m.width == 0 || m.height == 0 {
 		return ""
 	}
-	snap := m.store.snapshot()
+	snap := m.nb.store.snapshot()
 
 	var lines []string
 	if snap.header != "" {
@@ -238,9 +221,9 @@ func (m model) statusLine(snap snapshot) string {
 // minus the status row and (if present) the header row.
 func (m model) bodyHeight() int {
 	reserved := 1 // status row
-	m.store.mu.RLock()
-	hasHeader := m.store.header != ""
-	m.store.mu.RUnlock()
+	m.nb.store.mu.RLock()
+	hasHeader := m.nb.store.header != ""
+	m.nb.store.mu.RUnlock()
 	if hasHeader {
 		reserved++
 	}
@@ -270,7 +253,7 @@ func (m *model) ensureCursorVisible() {
 	if m.width == 0 || m.height == 0 {
 		return
 	}
-	snap := m.store.snapshot()
+	snap := m.nb.store.snapshot()
 	if len(snap.cells) == 0 {
 		m.viewportOffset = 0
 		return

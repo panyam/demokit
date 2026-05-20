@@ -157,15 +157,16 @@ func (c *VerbatimCell) RenderRows(width, startRow, endRow int, focused bool, _ n
 }
 
 // Update implements notebook.Cell. 'c' copies regardless of mode;
-// other keys require ViewMode.
-func (c *VerbatimCell) Update(msg tea.Msg, mode notebook.Mode) (notebook.Cell, tea.Cmd) {
+// in ViewMode Enter advances, Tab / Shift+Tab cycle variants,
+// '1'..'9' jump, Esc releases focus. Other keys passthrough.
+func (c *VerbatimCell) Update(msg tea.Msg, mode notebook.Mode) (notebook.Cell, tea.Cmd, bool) {
 	if cm, ok := msg.(notebook.ClearCopyMsg); ok && cm.CellID == c.id {
 		c.copyMsg = ""
-		return c, nil
+		return c, nil, true
 	}
 	keyMsg, ok := msg.(tea.KeyMsg)
 	if !ok {
-		return c, nil
+		return c, nil, false
 	}
 	if keyMsg.String() == "c" {
 		v := c.Variants[c.Active]
@@ -180,29 +181,33 @@ func (c *VerbatimCell) Update(msg tea.Msg, mode notebook.Mode) (notebook.Cell, t
 		} else {
 			c.copyMsg = "(copy failed — no clipboard provider)"
 		}
-		return c, notebook.ClearCopyAfter(c.id)
+		return c, notebook.ClearCopyAfter(c.id), true
 	}
 	if mode != notebook.ViewMode {
-		return c, nil
+		return c, nil, false
 	}
 	switch keyMsg.String() {
 	case "enter":
-		return c, notebook.CellAdvance
+		return c, notebook.CellAdvance, true
+	case "esc":
+		return c, notebook.ReleaseFocus, true
 	case "tab":
 		c.cycle(+1)
+		return c, nil, true
 	case "shift+tab":
 		c.cycle(-1)
-	default:
-		s := keyMsg.String()
-		if len(s) == 1 && s[0] >= '1' && s[0] <= '9' {
-			idx := int(s[0] - '1')
-			if idx < len(c.Variants) {
-				c.Active = idx
-				c.cachedLines = nil
-			}
-		}
+		return c, nil, true
 	}
-	return c, nil
+	s := keyMsg.String()
+	if len(s) == 1 && s[0] >= '1' && s[0] <= '9' {
+		idx := int(s[0] - '1')
+		if idx < len(c.Variants) {
+			c.Active = idx
+			c.cachedLines = nil
+		}
+		return c, nil, true
+	}
+	return c, nil, false
 }
 
 // StatusHint implements notebook.Cell.

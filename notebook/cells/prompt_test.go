@@ -12,7 +12,7 @@ import (
 // PromptSubmittedMsg if one was emitted, or nil.
 func submitMsg(t *testing.T, c *PromptCell) *notebook.PromptSubmittedMsg {
 	t.Helper()
-	_, cmd := c.Update(tea.KeyMsg{Type: tea.KeyEnter}, notebook.ViewMode)
+	_, cmd, _ := c.Update(tea.KeyMsg{Type: tea.KeyEnter}, notebook.ViewMode)
 	if cmd == nil {
 		return nil
 	}

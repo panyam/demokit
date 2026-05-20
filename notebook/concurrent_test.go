@@ -28,8 +28,8 @@ func (c *streamCell) ID() string                { return c.id }
 func (c *streamCell) HeightHint(int) int        { return c.buf.LineCount() + 2 }
 func (c *streamCell) StatusHint(Mode) string    { return "" }
 func (c *streamCell) Buffer() *OutputBuffer     { return c.buf }
-func (c *streamCell) Update(tea.Msg, Mode) (Cell, tea.Cmd) {
-	return c, nil
+func (c *streamCell) Update(tea.Msg, Mode) (Cell, tea.Cmd, bool) {
+	return c, nil, false
 }
 
 func (c *streamCell) RenderRows(width, startRow, endRow int, _ bool, _ Mode) []string {
@@ -64,23 +64,6 @@ func waitForInputWaiter(t *testing.T, nb *Notebook, id CellID) {
 		time.Sleep(time.Millisecond)
 	}
 	t.Fatalf("no input waiter for %q after 200ms", id)
-}
-
-// waitForAdvanceWaiter spins until the rendezvous has at least
-// one registered advance waiter.
-func waitForAdvanceWaiter(t *testing.T, nb *Notebook) {
-	t.Helper()
-	deadline := time.Now().Add(200 * time.Millisecond)
-	for time.Now().Before(deadline) {
-		nb.rdv.mu.Lock()
-		n := len(nb.rdv.advances)
-		nb.rdv.mu.Unlock()
-		if n > 0 {
-			return
-		}
-		time.Sleep(time.Millisecond)
-	}
-	t.Fatal("no advance waiter registered after 200ms")
 }
 
 // --- Stream ---
@@ -166,37 +149,6 @@ func TestPromptResolvesWithSubmittedAnswer(t *testing.T) {
 	}
 }
 
-func TestAwaitAdvanceResolvesOnEnter(t *testing.T) {
-	nb := New(WithHeadless(), WithSize(40, 10))
-	go nb.Run()
-	t.Cleanup(nb.Stop)
-
-	done := make(chan AdvanceResponse, 1)
-	go func() { done <- nb.AwaitAdvance(time.Time{}) }()
-	waitForAdvanceWaiter(t, nb)
-
-	nb.program.Send(tea.KeyMsg{Type: tea.KeyEnter})
-	select {
-	case resp := <-done:
-		if resp.Source != "user-enter" {
-			t.Errorf("Source = %q, want user-enter", resp.Source)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("AwaitAdvance did not return within 1s")
-	}
-}
-
-func TestAwaitAdvanceDeadlineFiresAsAutoAdvance(t *testing.T) {
-	nb := New(WithHeadless(), WithSize(40, 10))
-	go nb.Run()
-	t.Cleanup(nb.Stop)
-
-	resp := nb.AwaitAdvance(time.Now().Add(30 * time.Millisecond))
-	if resp.Source != "auto-advance" {
-		t.Errorf("Source = %q, want auto-advance", resp.Source)
-	}
-}
-
 func TestAwaitInputCancelledOnRemove(t *testing.T) {
 	nb := New(WithHeadless(), WithSize(40, 10))
 	go nb.Run()
@@ -219,25 +171,6 @@ func TestAwaitInputCancelledOnRemove(t *testing.T) {
 }
 
 // --- Stop unblocks awaits ---
-
-func TestStopUnblocksAwaitAdvance(t *testing.T) {
-	nb := New(WithHeadless(), WithSize(40, 10))
-	go nb.Run()
-
-	done := make(chan AdvanceResponse, 1)
-	go func() { done <- nb.AwaitAdvance(time.Time{}) }()
-	waitForAdvanceWaiter(t, nb)
-
-	nb.Stop()
-	select {
-	case resp := <-done:
-		if resp.Source != "cancelled" {
-			t.Errorf("Source = %q, want cancelled", resp.Source)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("AwaitAdvance did not unblock after Stop")
-	}
-}
 
 func TestStopUnblocksAwaitInput(t *testing.T) {
 	nb := New(WithHeadless(), WithSize(40, 10))

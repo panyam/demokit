@@ -55,6 +55,31 @@ func (nb *Notebook) IndexOf(id CellID) (int, bool) { return nb.store.indexOf(id)
 // Len returns the current cell count.
 func (nb *Notebook) Len() int { return nb.store.count() }
 
+// SetCursor moves the cursor to the cell with the given ID and
+// returns true. Returns false (no-op) if no such cell.
+func (nb *Notebook) SetCursor(id CellID) bool {
+	idx, ok := nb.store.indexOf(id)
+	if !ok {
+		return false
+	}
+	nb.store.setCursorByIdx(idx)
+	return true
+}
+
+// FocusCell sets the cursor to the named cell AND switches to
+// ViewMode so the cell has focus immediately. Useful right after
+// Appending a prompt cell when you want the user to type into it
+// without manually navigating + entering focus first.
+//
+// Returns false if no such cell.
+func (nb *Notebook) FocusCell(id CellID) bool {
+	if !nb.SetCursor(id) {
+		return false
+	}
+	nb.SetMode(ViewMode)
+	return true
+}
+
 // SetHeader sets the notebook's top-of-screen title + subtitle.
 func (nb *Notebook) SetHeader(title, desc string) {
 	nb.store.setHeader(title, desc)

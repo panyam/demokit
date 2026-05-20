@@ -49,10 +49,14 @@ func (c *testCell) RenderRows(width, startRow, endRow int, focused bool, _ Mode)
 	return rows[startRow:endRow]
 }
 
-func (c *testCell) Update(msg tea.Msg, mode Mode) (Cell, tea.Cmd) {
+func (c *testCell) Update(msg tea.Msg, mode Mode) (Cell, tea.Cmd, bool) {
 	c.lastMode = mode
 	c.updates++
-	return c, nil
+	// Default: passthrough so KeyMap navigation still fires for
+	// nav keys. Tests that need the cell to claim a key can use
+	// a custom cell or assert on `updates` (which counts every
+	// dispatch regardless of handled).
+	return c, nil, false
 }
 
 // --- CRUD ---
@@ -245,13 +249,19 @@ func TestStopUnblocksRun(t *testing.T) {
 // --- Viewport (model-level, no program needed) ---
 
 // newSizedModel constructs a model with a sized store for
-// viewport tests. Returns the model and a function that swaps in
-// fresh cells.
+// viewport tests. Wires up the minimum scaffolding (a Notebook
+// with store + rendezvous + DefaultKeyMap, no tea.Program).
 func newSizedModel(t *testing.T, width, height int) (*model, *store) {
 	t.Helper()
-	st := newStore()
-	m := newModel(st, newRendezvous(), make(chan struct{}), width, height)
-	return &m, st
+	nb := &Notebook{
+		store:   newStore(),
+		rdv:     newRendezvous(),
+		keymap:  DefaultKeyMap(),
+		ready:   make(chan struct{}),
+		stopped: make(chan struct{}),
+	}
+	m := newModel(nb, width, height)
+	return &m, nb.store
 }
 
 func TestEnsureCursorVisibleScrollsDownToFocused(t *testing.T) {

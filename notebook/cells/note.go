@@ -125,15 +125,17 @@ func (c *NoteCell) RenderRows(width, startRow, endRow int, focused bool, _ noteb
 }
 
 // Update implements notebook.Cell. 'c' copies regardless of mode;
-// Enter in ViewMode signals cell-advance.
-func (c *NoteCell) Update(msg tea.Msg, mode notebook.Mode) (notebook.Cell, tea.Cmd) {
+// Enter in ViewMode signals cell-advance; Esc in ViewMode releases
+// focus. Other keys passthrough (handled=false) so notebook KeyMap
+// gets a turn.
+func (c *NoteCell) Update(msg tea.Msg, mode notebook.Mode) (notebook.Cell, tea.Cmd, bool) {
 	if cm, ok := msg.(notebook.ClearCopyMsg); ok && cm.CellID == c.id {
 		c.copyMsg = ""
-		return c, nil
+		return c, nil, true
 	}
 	keyMsg, ok := msg.(tea.KeyMsg)
 	if !ok {
-		return c, nil
+		return c, nil, false
 	}
 	if keyMsg.String() == "c" {
 		strategy, ok := c.clip(c.Body)
@@ -142,15 +144,18 @@ func (c *NoteCell) Update(msg tea.Msg, mode notebook.Mode) (notebook.Cell, tea.C
 		} else {
 			c.copyMsg = "(copy failed — no clipboard provider)"
 		}
-		return c, notebook.ClearCopyAfter(c.id)
+		return c, notebook.ClearCopyAfter(c.id), true
 	}
 	if mode != notebook.ViewMode {
-		return c, nil
+		return c, nil, false
 	}
-	if keyMsg.String() == "enter" {
-		return c, notebook.CellAdvance
+	switch keyMsg.String() {
+	case "enter":
+		return c, notebook.CellAdvance, true
+	case "esc":
+		return c, notebook.ReleaseFocus, true
 	}
-	return c, nil
+	return c, nil, false
 }
 
 // StatusHint implements notebook.Cell.
