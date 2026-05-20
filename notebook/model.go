@@ -32,6 +32,7 @@ type snapshotMsg struct {
 // BT-goroutine-local viewport, size, and mode.
 type model struct {
 	store          *store
+	rdv            *rendezvous
 	viewportOffset int
 	width          int
 	height         int
@@ -39,9 +40,10 @@ type model struct {
 	ready          chan struct{}
 }
 
-func newModel(s *store, ready chan struct{}, width, height int) model {
+func newModel(s *store, rdv *rendezvous, ready chan struct{}, width, height int) model {
 	return model{
 		store:  s,
+		rdv:    rdv,
 		mode:   SelectMode,
 		width:  width,
 		height: height,
@@ -80,6 +82,17 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.store.moveCursor(+1)
 		m.ensureCursorVisible()
 		return m, nil
+	case PromptSubmittedMsg:
+		// The PromptCell already updated itself; the model just
+		// resolves the pending AwaitInputBy and moves on like any
+		// other "this cell is done" event.
+		if m.rdv != nil {
+			m.rdv.resolveInput(msg.CellID, msg.Answers, "user-submitted")
+		}
+		m.mode = SelectMode
+		m.store.moveCursor(+1)
+		m.ensureCursorVisible()
+		return m, nil
 	case ClearCopyMsg:
 		return m, m.routeToCell(msg.CellID, msg)
 	case tea.KeyMsg:
@@ -110,6 +123,13 @@ func (m model) handleKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case "s", "f":
 			if m.store.count() > 0 {
 				m.mode = ViewMode
+			}
+			return m, nil
+		case "enter", " ":
+			// Resolve a pending AwaitAdvance, if any. If no
+			// advance is pending, Enter is a no-op in SelectMode.
+			if m.rdv != nil {
+				m.rdv.resolveAdvance("user-enter")
 			}
 			return m, nil
 		}

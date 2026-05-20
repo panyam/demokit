@@ -106,17 +106,6 @@ func (c *OutputCell) SetClipboard(clip notebook.Clipboard) {
 // MarkDone flips the box state accent from "·live" to "·end".
 func (c *OutputCell) MarkDone() { c.done = true }
 
-// OnAppend is called after a chunk lands in the cell's buffer.
-// While follow is true, advances scrollOffset so the last maxBody
-// lines stay visible.
-func (c *OutputCell) OnAppend() {
-	if !c.follow {
-		return
-	}
-	c.scrollOffset = c.buf.LineCount() - c.maxBody
-	c.clampScroll()
-}
-
 // ID implements notebook.Cell.
 func (c *OutputCell) ID() string { return c.id }
 
@@ -266,9 +255,19 @@ func (c *OutputCell) StatusHint(_ notebook.Mode) string {
 	return "c copy"
 }
 
-// clampScroll pins scrollOffset to [0, max(0, total-maxBody)].
+// clampScroll updates scrollOffset for the current LineCount. When
+// follow is true, it sticks scrollOffset to the end of the buffer
+// so the latest maxBody lines stay visible (the "tail -f" behavior).
+// When follow is false, it just clamps the manually-set offset.
+//
+// Called at the top of RenderRows so every frame reflects the
+// current buffer state without an external "append happened"
+// hook — Stream writes to the buffer, the next render picks it up.
 func (c *OutputCell) clampScroll() {
 	total := c.buf.LineCount()
+	if c.follow {
+		c.scrollOffset = total - c.maxBody
+	}
 	hi := max(total-c.maxBody, 0)
 	if c.scrollOffset > hi {
 		c.scrollOffset = hi

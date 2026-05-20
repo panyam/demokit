@@ -250,7 +250,7 @@ func TestStopUnblocksRun(t *testing.T) {
 func newSizedModel(t *testing.T, width, height int) (*model, *store) {
 	t.Helper()
 	st := newStore()
-	m := newModel(st, make(chan struct{}), width, height)
+	m := newModel(st, newRendezvous(), make(chan struct{}), width, height)
 	return &m, st
 }
 

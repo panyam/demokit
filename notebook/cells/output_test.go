@@ -9,11 +9,20 @@ import (
 	"github.com/panyam/demokit/notebook"
 )
 
+// feed writes lines to the cell's buffer. The cell's render-time
+// clampScroll handles follow-mode scrolling — no explicit "append
+// happened" hook is needed.
 func feed(c *OutputCell, lines ...string) {
 	for _, l := range lines {
 		c.Buffer().Append([]byte(l + "\n"))
-		c.OnAppend()
 	}
+}
+
+// render triggers a render so clampScroll runs and (when
+// follow is on) scrollOffset settles to the buffer end. Tests
+// that inspect scrollOffset directly call this before asserting.
+func render(c *OutputCell) {
+	_ = c.RenderRows(80, 0, c.HeightHint(80), false, notebook.ViewMode)
 }
 
 func TestOutputCellRendersBufferContent(t *testing.T) {
@@ -46,19 +55,19 @@ func TestOutputCellHeightCappedByMaxBody(t *testing.T) {
 	}
 }
 
-func TestOutputCellAutoFollowsOnAppend(t *testing.T) {
+func TestOutputCellFollowsBufferEndOnRender(t *testing.T) {
 	c := NewOutput("o", 3)
 	c.Buffer().Append([]byte("a\n"))
-	c.OnAppend()
+	render(c)
 	if c.scrollOffset != 0 {
 		t.Errorf("1 line < maxBody: scrollOffset = %d, want 0", c.scrollOffset)
 	}
 	for i := 0; i < 10; i++ {
 		c.Buffer().Append([]byte("x\n"))
 	}
-	c.OnAppend()
+	render(c)
 	if want := 11 - 3; c.scrollOffset != want {
-		t.Errorf("auto-follow scrollOffset = %d, want %d", c.scrollOffset, want)
+		t.Errorf("follow scrollOffset = %d, want %d", c.scrollOffset, want)
 	}
 }
 
@@ -67,7 +76,7 @@ func TestOutputCellManualScrollDisablesFollow(t *testing.T) {
 	for i := 0; i < 10; i++ {
 		c.Buffer().Append([]byte("x\n"))
 	}
-	c.OnAppend()
+	render(c) // initial follow-driven scroll
 	c.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("k")}, notebook.ViewMode)
 	if c.follow {
 		t.Error("follow should be off after k")
@@ -76,13 +85,17 @@ func TestOutputCellManualScrollDisablesFollow(t *testing.T) {
 	for i := 0; i < 5; i++ {
 		c.Buffer().Append([]byte("y\n"))
 	}
-	c.OnAppend()
+	render(c)
 	if c.scrollOffset != frozen {
-		t.Errorf("follow off: OnAppend moved scrollOffset %d→%d", frozen, c.scrollOffset)
+		t.Errorf("follow off: render advanced scrollOffset %d→%d", frozen, c.scrollOffset)
 	}
 	c.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("G")}, notebook.ViewMode)
 	if !c.follow {
 		t.Error("follow should be on after G")
+	}
+	render(c)
+	if want := c.buf.LineCount() - 3; c.scrollOffset != want {
+		t.Errorf("after G + render: scrollOffset = %d, want %d", c.scrollOffset, want)
 	}
 }
 
