@@ -6,7 +6,7 @@
 # every module explicitly.
 
 # Every go.mod in the repo, one module per line.
-MODULES := . notebook
+MODULES := . notebook notebook/examples/mathrepl
 
 .PHONY: test testall build buildall race tidy fmt vet
 

@@ -69,6 +69,18 @@ type PromptCell struct {
 	done   bool
 }
 
+// PromptFactory returns a notebook.PromptFactory that builds the
+// built-in PromptCell. Pass it to notebook.WithPromptFactory so
+// nb.AwaitInput([]Input) constructs prompt cells automatically.
+//
+// The notebook package can't import its own cells subpackage
+// (would cycle), so wiring like this is a consumer concern.
+func PromptFactory() notebook.PromptFactory {
+	return func(id notebook.CellID, inputs []notebook.Input) notebook.Cell {
+		return NewPrompt(id, inputs)
+	}
+}
+
 // NewPrompt builds a PromptCell over the given inputs. The first
 // field is focused; defaults are pre-filled as textinput
 // placeholders.
