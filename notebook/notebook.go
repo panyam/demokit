@@ -134,6 +134,7 @@ func New(opts ...Option) *Notebook {
 	} else {
 		progOpts = append(progOpts,
 			tea.WithAltScreen(),
+			tea.WithMouseCellMotion(),
 			tea.WithInput(os.Stdin),
 			tea.WithOutput(os.Stdout),
 		)

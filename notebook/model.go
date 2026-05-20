@@ -99,8 +99,64 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, cmd
 	case tea.KeyMsg:
 		return m.handleKey(msg)
+	case tea.MouseMsg:
+		return m.handleMouse(msg)
 	}
 	return m, nil
+}
+
+// handleMouse turns mouse events into navigation. Wheel up/down
+// nudges the cursor like ↑/↓; left-click on a cell selects it
+// (cursor moves to the clicked cell). Cells don't see mouse
+// events for now — mouse is geometry-driven (clicks land at
+// specific cells based on Y, not on the focused cell).
+func (m model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
+	if msg.Action != tea.MouseActionPress {
+		return m, nil
+	}
+	switch msg.Button {
+	case tea.MouseButtonWheelUp:
+		m.nb.store.moveCursor(-1)
+		m.ensureCursorVisible()
+	case tea.MouseButtonWheelDown:
+		m.nb.store.moveCursor(+1)
+		m.ensureCursorVisible()
+	case tea.MouseButtonLeft:
+		if idx, ok := m.cellAtRow(msg.Y); ok {
+			m.nb.store.setCursorByIdx(idx)
+			m.ensureCursorVisible()
+		}
+	}
+	return m, nil
+}
+
+// cellAtRow translates an absolute terminal Y row into a cell
+// index, accounting for the header row + the current viewport
+// offset. Returns (-1, false) when the click landed outside the
+// body (header / status row / past last cell).
+func (m model) cellAtRow(y int) (int, bool) {
+	snap := m.nb.store.snapshot()
+	bodyStart := 0
+	if snap.header != "" {
+		bodyStart = 1
+	}
+	if y < bodyStart {
+		return -1, false
+	}
+	bodyEnd := bodyStart + m.bodyHeight()
+	if y >= bodyEnd {
+		return -1, false
+	}
+	logicalRow := (y - bodyStart) + m.viewportOffset
+	row := 0
+	for i, c := range snap.cells {
+		h := c.HeightHint(m.width)
+		if logicalRow < row+h {
+			return i, true
+		}
+		row += h
+	}
+	return -1, false
 }
 
 // handleKey routes a keystroke cell-first. The cursor cell sees
