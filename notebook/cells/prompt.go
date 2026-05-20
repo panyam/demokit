@@ -85,15 +85,32 @@ func NewPrompt(id string, inputs []notebook.Input) *PromptCell {
 		}
 		fields[i] = ti
 	}
-	if len(fields) > 0 {
-		fields[0].Focus()
-	}
+	// Intentionally NOT calling fields[0].Focus() — textinput's
+	// blinking cursor is the cell's "I'm focused" manifestation,
+	// and the cell isn't focused at construction. syncFieldFocus
+	// in RenderRows turns it on when (focused && ViewMode).
 	return &PromptCell{
 		id:     id,
 		inputs: inputs,
 		fields: fields,
 		errors: errs,
 		Style:  DefaultPromptStyle(),
+	}
+}
+
+// syncFieldFocus drives the textinput Focus state from the
+// cell's render-time (focused, mode) so the cursor only blinks
+// when the cell itself is focused AND the notebook is in
+// ViewMode. Idempotent — safe to call every render.
+func (c *PromptCell) syncFieldFocus(focused bool, mode notebook.Mode) {
+	wantFocused := focused && mode == notebook.ViewMode && !c.done
+	for i := range c.fields {
+		on := wantFocused && i == c.active
+		if on && !c.fields[i].Focused() {
+			c.fields[i].Focus()
+		} else if !on && c.fields[i].Focused() {
+			c.fields[i].Blur()
+		}
 	}
 }
 
@@ -120,7 +137,9 @@ func (c *PromptCell) HeightHint(_ int) int {
 }
 
 // RenderRows implements notebook.Cell.
-func (c *PromptCell) RenderRows(width, startRow, endRow int, focused bool, _ notebook.Mode) []string {
+func (c *PromptCell) RenderRows(width, startRow, endRow int, focused bool, mode notebook.Mode) []string {
+	c.syncFieldFocus(focused, mode)
+
 	border := c.Style.BorderColor
 	if focused {
 		border = c.Style.FocusBorderColor

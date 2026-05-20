@@ -153,6 +153,14 @@ func (s *store) moveCursor(delta int) {
 	s.clampCursorLocked()
 }
 
+// setCursorByIdx sets the cursor to an absolute index, clamped.
+func (s *store) setCursorByIdx(idx int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.cursor = idx
+	s.clampCursorLocked()
+}
+
 func (s *store) cursorPos() int {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
