@@ -23,8 +23,8 @@ import (
 	"time"
 
 	"github.com/panyam/demokit"
+	"github.com/panyam/demokit/notebookbridge"
 	"github.com/panyam/demokit/tui"
-	"github.com/panyam/demokit/tui/notebook"
 	"github.com/panyam/demokit/web"
 )
 
@@ -216,7 +216,7 @@ defer resp.Body.Close()`),
 	case "tui":
 		demo.WithRenderer(tui.New())
 	case "notebook":
-		demo.WithRenderer(notebook.NewRenderer())
+		demo.WithRenderer(notebookbridge.New())
 	}
 
 	demo.Execute()

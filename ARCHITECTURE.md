@@ -334,10 +334,36 @@ Mouse is intentionally **NOT** routed cell-first: clicks are geometric (the Y id
 
 `Snapshot()` does a synchronous `Send(snapshotMsg{reply})`; the model recomputes `ensureCursorVisible` then writes `View()` to reply. Waits on a `ready` channel (closed by Init's first cmd) before issuing the Send to avoid racing program startup. The headless input is a custom `blockingReader` so BT's input goroutine parks instead of spinning.
 
-### What's not (yet) wired
+### `notebookbridge/` — demokit → notebook adapter
 
-- **No demokit bridge.** The standalone notebook + the existing `tui/notebook/` (the legacy event-queue-based renderer used by demokit today) coexist. Phase 4 will replace `tui/notebook/` with a `notebookbridge/` package that drains `events.EventQueue` and calls notebook methods.
-- **Single live consumer**: `notebook/examples/mathrepl/`. Test surface in `notebook/notebook_test.go`, `notebook/concurrent_test.go`, `notebook/keymap_test.go`, `notebook/cells/*_test.go`.
+`notebookbridge/` is demokit's adapter onto the standalone notebook package. It implements `demokit.EventAwareRenderer`; demokit's `Execute` attaches the event queue to it, and a background goroutine drains the queue and translates each event into the equivalent `notebook.*` call:
+
+| Event | Notebook call |
+|---|---|
+| `Header` | `nb.SetHeader(title, desc)` |
+| `Section` | `nb.Append(cells.NewNote(...))` |
+| `StepStart` | `nb.Append(cells.NewHeader(...))` + `nb.Append(cells.NewVerbatim(...))` for each verbatim block |
+| `StepReadyToRun` | `nb.Append(cells.NewOutput(...))`; bridge tracks `visit → CellID` |
+| `OutputChunk` | `io.WriteString(nb.Stream(visitID), chunk)` |
+| `StepEnd` | `nb.Update(visitID, MarkDone)` + error line on `status == "error"` |
+| `WaitForAdvance` | `nb.AwaitInput(nil)` → empty-input prompt; resolved on Enter |
+| `PromptOpen` | `nb.AwaitInput(convertInputs(...))`; result mirrored back via `queue.Resolve` |
+| `Done` | `nb.SetDone()` |
+
+The bridge owns no rendering state — all UI state lives in the notebook. When the notebook program exits (user quits), the bridge `os.Exit(0)`s to avoid demokit's `RunLoop` continuing against a dead renderer.
+
+`convertInputs` is the only place the bridge type-switches on the closed-set `events.Input` shapes (`StringInput` / `IntInput` / `ChoiceInput`) — the notebook only sees its own `notebook.Input` interface.
+
+Examples wire it explicitly when `--mode=notebook` is selected:
+
+```go
+case "notebook":
+    demo.WithRenderer(notebookbridge.New())
+```
+
+### Status
+
+`notebook/` + `notebookbridge/` are the production path; the legacy `tui/notebook/` was deleted in phase 4. Two live consumers: `notebook/examples/mathrepl/` (standalone, no demokit) and `examples/{basic,dungeon,graph}` via the bridge.
 
 ## Gotchas
 
