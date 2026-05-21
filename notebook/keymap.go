@@ -41,6 +41,10 @@ type KeyMap struct {
 // DefaultKeyMap returns the canonical bindings:
 //
 //   - Ctrl+C → Quit (Global)
+//   - Ctrl+W → ToggleBottomDockFocus (Global) — vim/tmux-style
+//     window-switch shortcut: cycles focus between the main list
+//     and the Bottom dock when a Bottom dock is present.
+//     Apps that don't want it remove or rebind via WithKeyMap.
 //   - NavigationMode: ↑/k NavUp, ↓/j NavDown, enter/s/f EnterFocus
 //   - CellActiveMode: none (cells own everything)
 //
@@ -51,6 +55,7 @@ func DefaultKeyMap() KeyMap {
 	return KeyMap{
 		Global: map[string]Action{
 			"ctrl+c": Quit,
+			"ctrl+w": ToggleBottomDockFocus,
 		},
 		Modes: map[Mode]map[string]Action{
 			NavigationMode: {
@@ -122,4 +127,35 @@ func SetMode(m Mode) Action {
 	return func(*Notebook) tea.Cmd {
 		return func() tea.Msg { return setModeMsg{mode: m} }
 	}
+}
+
+// FocusDock returns an Action that focuses the dock at pos AND
+// switches the notebook to CellActiveMode so the dock's cell sees
+// keys without notebook bindings interfering. No-op if no dock
+// is installed at pos when the action fires.
+//
+//	km.Modes[notebook.NavigationMode]["ctrl+b"] = notebook.FocusDock(notebook.Bottom)
+func FocusDock(pos Position) Action {
+	return func(nb *Notebook) tea.Cmd {
+		if !nb.FocusDock(pos) {
+			return nil
+		}
+		return ModeCmd(CellActiveMode)
+	}
+}
+
+// ToggleBottomDockFocus is the default Ctrl+W binding: if the
+// Bottom dock isn't focused, focus it (and switch to
+// CellActiveMode); if it is, release (and drop to NavigationMode).
+// No-op when Bottom is empty. Exposed as a standalone Action so
+// apps can rebind it onto a different key.
+func ToggleBottomDockFocus(nb *Notebook) tea.Cmd {
+	if cur := nb.dockFocusKey.Load(); cur != nil && *cur == Bottom.positionKey() {
+		nb.ReleaseDockFocus()
+		return ModeCmd(NavigationMode)
+	}
+	if !nb.FocusDock(Bottom) {
+		return nil
+	}
+	return ModeCmd(CellActiveMode)
 }

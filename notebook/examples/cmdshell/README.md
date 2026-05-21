@@ -33,6 +33,35 @@ arbitrary output at it — `ls`, `ps aux`, `find /`, `tail -f`,
 - `clear` removes every cmd cell (start fresh).
 - `q` or `quit` exits.
 
+## Vim-style `:` command bar
+
+Press `:` from navigation mode (Esc out of the prompt first if
+the cursor is sitting in it) to open a `CommandCell` docked at
+the viewport bottom. Type a shell command and Enter — same
+plumbing as the prompt path, but the input lives outside the
+main list. Esc cancels.
+
+The command bar **grows as you type**: short commands stay one
+row, long pipelines wrap and push the bar up. When the bar
+would oversubscribe the screen it's clamped and its tail (where
+the cursor is) keeps rendering.
+
+`":"` is wired in `main.go` via:
+
+```go
+km := notebook.DefaultKeyMap()
+km.Modes[notebook.NavigationMode][":"] = func(nb *notebook.Notebook) tea.Cmd {
+    cells.OpenCommandBar(nb, ":", repl.runFromCommandBar)
+    return nil
+}
+```
+
+`cells.OpenCommandBar` installs the command cell at
+`notebook.Bottom`, focuses it, restores the prior dock (the
+default `StatusCell`) on Enter / Esc. Apps with their own status
+bar get that bar back automatically — `OpenCommandBar` snapshots
+whatever was there at open time, not "the default."
+
 ## Cells used
 
 | Cell | Role |
@@ -41,7 +70,10 @@ arbitrary output at it — `ls`, `ps aux`, `find /`, `tail -f`,
 | `cells.NewNote` | one intro cell with usage hints |
 | `cells.NewPrompt` (via `AwaitInput`) | the `$` prompt |
 | `cells.NewOutput` (via `Stream`) | per-command output, one per cmd |
+| `cells.CommandCell` (via `OpenCommandBar`) | `:` vim-style command bar at the Bottom dock |
 
-Plus the `OSC52Clipboard` for `c`-to-copy when a cell is focused.
+Plus the `OSC52Clipboard` for `c`-to-copy when a cell is focused
+and the built-in `StatusCell` (auto-installed at `notebook.Bottom`
+on `New`).
 
-All wiring lives in a single ~100-line `main.go`.
+All wiring lives in a single ~140-line `main.go`.

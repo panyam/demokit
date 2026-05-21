@@ -281,21 +281,23 @@ demokit/                              module github.com/panyam/demokit
 
 | File | Responsibility |
 |---|---|
-| `notebook.go` | `Notebook` struct, `New`, `Run`, `Stop`, options (`WithKeyMap`, `WithMouseConfig`, `WithClipboard`, `WithPromptFactory`, `WithHeadless`, `WithSize`), `Snapshot` |
+| `notebook.go` | `Notebook` struct, `New`, `Run`, `Stop`, options (`WithKeyMap`, `WithMouseConfig`, `WithClipboard`, `WithPromptFactory`, `WithHeadless`, `WithSize`), `Snapshot`, dock CRUD (`SetDockedCell` / `ClearDocked` / `DockedCell` / `UpdateDocked`), `FocusDock` / `ReleaseDockFocus` |
 | `mouse.go` | `MouseConfig`, `MouseContext`, `MouseHandler`, `ClickActivate` / `ClickCursorOnly` / `WheelNavCursor` / `DefaultOnClick`, `DefaultMouseConfig` |
-| `model.go` | `tea.Model` — viewport, mode, key & mouse dispatch, render |
-| `store.go` | `store` — shared RWMutex-guarded cells + cursor + header |
+| `model.go` | `tea.Model` — viewport, mode, key & mouse dispatch, render, dock-aware layout (`edgeAllotments`, `bodyHeight`, `anchoredRowSpan`) |
+| `store.go` | `store` — shared RWMutex-guarded cells + cursor + header + docked-cell registry |
 | `crud.go` | `Append` / `Insert` / `Update` / `Remove` / `Get` / `IndexOf` / `Len` / `SetCursor` / `FocusCell` / `SetHeader` / `SetDone` |
+| `dock.go` | `Position` interface, `Top` / `Bottom` edges, `After(id)` / `Before(id)` cell-anchored positions, internal `positionKey` |
+| `status_cell.go` | Built-in `StatusCell` — the default Bottom dock, reproduces the legacy "MODE  cell N/M" line |
 | `rendezvous.go` | `AwaitInput` / `AwaitInputBy` (blocking primitives) + `InputResponse` |
 | `stream.go` | `Stream(id) io.Writer` over a cell's `OutputBuffer` |
-| `keymap.go` | `KeyMap`, `Action`, built-in actions (`Quit` / `NavUp` / `NavDown` / `EnterFocus` / `ExitFocus` / `SetMode`), `DefaultKeyMap` |
+| `keymap.go` | `KeyMap`, `Action`, built-in actions (`Quit` / `NavUp` / `NavDown` / `EnterFocus` / `ExitFocus` / `SetMode` / `FocusDock` / `ToggleBottomDockFocus`), `DefaultKeyMap` |
 | `keys.go` | `KeyEnter` / `KeyEsc` / `KeyCtrlC` / ... — canonical key-string constants |
 | `clipboard.go` | `Clipboard` type, `NoClipboard`, `OSC52Clipboard` (terminal-escape-based), `FileClipboard(dir)` (tmp-file fallback) |
 | `messages.go` | `ClearCopyMsg`, `CellAdvanceMsg`, `PromptSubmittedMsg`, `ReleaseFocusMsg`, `setModeMsg` + helpers |
 | `cell.go` | `Cell` interface, `Mode` interface, `NewMode`, `NavigationMode` / `CellActiveMode` |
 | `input.go` | `Input` interface + `StringInput` / `IntInput` / `ChoiceInput` |
 | `output_buffer.go` | `OutputBuffer` (line-indexed, RWMutex-guarded, `io.Writer`) |
-| `cells/` | `HeaderCell`, `NoteCell`, `VerbatimCell`, `OutputCell`, `PromptCell` + per-cell `*Style` types + `Theme` aggregator |
+| `cells/` | `HeaderCell`, `NoteCell`, `VerbatimCell`, `OutputCell`, `PromptCell`, `CommandCell` (+ `OpenCommandBar` helper) + per-cell `*Style` types + `Theme` aggregator |
 
 ### Cell-first key dispatch
 
@@ -339,6 +341,35 @@ Mouse routing follows the same shape as keys: cells see wheel events first (cell
 - Release events are ignored
 
 Mouse is intentionally **NOT** routed cell-first: clicks are geometric (the Y identifies the target, which may not be the focused cell), so the notebook owns dispatch. Future per-cell mouse handling (textinput cursor positioning, clicking verbatim-cell variant tabs) can hook in at `cellAtRow` before the navigation fallback.
+
+### Docked cells
+
+The notebook ships positioned cell slots for chrome that lives outside the cursor-navigable main list: vim-style command bars, status rows, breadcrumbs, per-cell annotations. Same `Cell` interface, separate registry.
+
+**Positions (v1):**
+
+| Family | Examples | Layout |
+|---|---|---|
+| Edges | `Top`, `Bottom` | Viewport-pinned chrome above / below the body. Claim layout space; body shrinks by that many rows. |
+| Cell-anchored | `After(id)`, `Before(id)` | Annotations that travel with a main cell. Render adjacent to the anchor in the body flow; scroll with it. Auto-unregister when `Remove(id)` fires on the anchor. |
+
+`Left` / `Right` and a floating overlay layer are deferred to a v2 PR — column-split rendering and a Z-order engine are out of scope for the issue 36 ship.
+
+**One Cell per Position.** `SetDockedCell` replaces any prior occupant at the same position. Apps composing richer chrome put multiple lines into a single Cell that knows how to render multiple regions.
+
+**Architectural commitment:** docks live in their own registry, NOT in `cells[]`. The invariant `cells[N] is the N-th cursor-navigable cell` holds; main-list iteration is dock-free. The model walks dock keys explicitly in `View`, `cellRowSpan`, `cellAtRow`, and `edgeAllotments`.
+
+**Default Bottom dock = `StatusCell`.** `New()` auto-installs a built-in `StatusCell` at `Bottom` that renders the legacy "MODE  cell N/M" line. Apps replace it with `SetDockedCell(Bottom, custom)` and can restore it via `SetDockedCell(Bottom, NewStatusCell(nb))`. `ClearDocked(Bottom)` truly empties — no auto-restore.
+
+**Focus model.** Docked cells receive keystrokes when they're the focus target. Tracking is one `atomic.Pointer[positionKey]` on the notebook: nil = main list focused, set = that dock is focused. `FocusDock(pos)` / `ReleaseDockFocus()` are the goroutine-safe entry points; `ToggleBottomDockFocus` is the default `Ctrl+W` binding (vim/tmux-style window-switch shortcut). When a docked cell emits `ReleaseFocusMsg` (the standard Esc convention), the model clears the dock-focus pointer AND drops to `NavigationMode` — symmetric to how main cells release.
+
+The `safeSend` helper guards mode-change Sends on dock APIs: when the BT program isn't running yet (tests, setup-before-Run paths), Sends are dropped instead of deadlocking on the unbuffered `tea.Program.Send`. Store mutations (the dock registry itself) remain Send-free and pick up via the repaint tick.
+
+**Auto-grow + clamp + tail rendering.** Edge docks report a desired height via `HeightHint(width)` that can grow with content (a `CommandCell` wraps as you type). `edgeAllotments` enforces "body always has at least 1 row" by yielding rows from Bottom first, then Top. When a dock is clamped below its desired height, `View` renders the **tail** for `Bottom` (where the command cursor lives) and the **head** for `Top` (logo / breadcrumb reads left-to-right, top-first).
+
+**Cell-anchored interleaving.** `Before(id)` and `After(id)` participate in body row math: `cellRowSpan` includes the `Before` height in the cursor's row span (so scrolling brings both into view) and skips `After` rows from the cursor span (they trail). Clicks on anchored-dock rows resolve to the anchor cell — they're not cursor-targetable, matching the "one cursor" principle.
+
+**`OpenCommandBar` convenience (`cells` package).** Apps that want a vim-style `:command` bar wire it in one line: bind their trigger key to `cells.OpenCommandBar(nb, ":", onSubmit)`. The helper snapshots the current Bottom occupant, installs a `CommandCell`, focuses the dock, and on Enter / Esc restores the **same instance** that was there before — so a stateful status bar keeps its state across the show/hide cycle. The trigger key is entirely app policy; the framework ships no opinion about which key opens which dock.
 
 ### Snapshot for headless tests
 
