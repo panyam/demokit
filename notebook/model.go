@@ -1,7 +1,6 @@
 package notebook
 
 import (
-	"strconv"
 	"strings"
 	"time"
 
@@ -77,6 +76,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.mode = msg.mode
 		return m, nil
 	case ReleaseFocusMsg:
+		// A docked cell emitting ReleaseFocus also drops dock focus
+		// so subsequent keys land on the main cursor cell.
+		m.nb.dockFocusKey.Store(nil)
 		m.mode = NavigationMode
 		return m, nil
 	case CellAdvanceMsg:
@@ -99,7 +101,13 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.mode = NavigationMode
 		return m, nil
 	case ClearCopyMsg:
-		cmd, _ := m.routeToCell(msg.CellID, msg)
+		// Try main cells first; if no main cell claims the ID, try
+		// docked cells too so dock-resident copy toasts also clear.
+		if _, ok := m.nb.store.get(msg.CellID); ok {
+			cmd, _ := m.routeToCell(msg.CellID, msg)
+			return m, cmd
+		}
+		cmd, _ := m.routeMsgToDockByID(msg.CellID, msg)
 		return m, cmd
 	case tea.KeyMsg:
 		return m.handleKey(msg)
@@ -183,46 +191,59 @@ func (m model) routeMouseToCursor(msg tea.MouseMsg) (tea.Cmd, bool) {
 }
 
 // cellAtRow translates an absolute terminal Y row into a cell
-// index, accounting for the header row + the current viewport
-// offset. Returns (-1, false) when the click landed outside the
-// body (header / status row / past last cell).
+// index, accounting for the header row, the Top dock, and the
+// current viewport offset. Returns (-1, false) when the click
+// landed outside the body (header / Top dock / Bottom dock / past
+// last cell). Clicks landing on Before/After anchored docks
+// resolve to their anchor cell — they're not cursor-targetable.
 func (m model) cellAtRow(y int) (int, bool) {
 	snap := m.nb.store.snapshot()
 	bodyStart := 0
 	if snap.header != "" {
-		bodyStart = 1
+		bodyStart++
+	}
+	if top, ok := snap.docks[edgePosition{edgeTop}.positionKey()]; ok {
+		bodyStart += top.HeightHint(m.width)
 	}
 	if y < bodyStart {
 		return -1, false
 	}
-	bodyEnd := bodyStart + m.bodyHeight()
+	bodyEnd := bodyStart + m.bodyHeight(snap)
 	if y >= bodyEnd {
 		return -1, false
 	}
 	logicalRow := (y - bodyStart) + m.viewportOffset
 	row := 0
 	for i, c := range snap.cells {
+		before, after := m.anchoredRowSpan(snap, c)
+		row += before
 		h := c.HeightHint(m.width)
-		if logicalRow < row+h {
+		if logicalRow < row+h+after {
 			return i, true
 		}
-		row += h
+		row += h + after
 	}
 	return -1, false
 }
 
-// handleKey routes a keystroke cell-first. The cursor cell sees
-// every key via cell.Update before the notebook tries its KeyMap.
-// If the cell returns handled=true the notebook stops; otherwise
-// the notebook looks the key up in Global then current-mode
-// bindings.
+// handleKey routes a keystroke focus-first. The focused target
+// (a docked cell if one is focused, otherwise the cursor cell)
+// sees every key via Update before the notebook tries its KeyMap.
+// If it returns handled=true the notebook stops; otherwise the
+// notebook looks the key up in Global then current-mode bindings.
 //
 // The rare cell-cmd-with-handled=false case is honored: if the
-// cell returned a side-effect cmd AND a KeyMap action also fires,
-// the action's cmd takes precedence (cell's cmd is dropped). If
+// target returned a side-effect cmd AND a KeyMap action also fires,
+// the action's cmd takes precedence (target's cmd is dropped). If
 // only one fires, that one's cmd is used.
 func (m model) handleKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
-	cellCmd, handled := m.routeKeyToCursor(key)
+	var cellCmd tea.Cmd
+	var handled bool
+	if dockKey, ok := m.nb.focusedDockKey(); ok {
+		cellCmd, handled = m.routeKeyToDock(dockKey, key)
+	} else {
+		cellCmd, handled = m.routeKeyToCursor(key)
+	}
 	if handled {
 		return m, cellCmd
 	}
@@ -258,13 +279,49 @@ func (m model) routeToCell(id CellID, msg tea.Msg) (tea.Cmd, bool) {
 	return cmd, handled
 }
 
+// routeKeyToDock delivers a msg to the docked cell at k, writes
+// the (possibly new) cell back into the registry, and returns the
+// cell's cmd and handled flag. Mirrors routeToCell but for docks.
+func (m model) routeKeyToDock(k positionKey, msg tea.Msg) (tea.Cmd, bool) {
+	var cmd tea.Cmd
+	var handled bool
+	m.nb.store.updateDock(k, func(c Cell) Cell {
+		updated, c2, h := c.Update(msg, m.mode)
+		cmd = c2
+		handled = h
+		return updated
+	})
+	return cmd, handled
+}
+
+// routeMsgToDockByID finds the dock whose Cell.ID matches the given
+// ID and delivers msg to it. Used for ID-keyed routings like
+// ClearCopyMsg where the sender knows its own ID but not its
+// dock position.
+func (m model) routeMsgToDockByID(id CellID, msg tea.Msg) (tea.Cmd, bool) {
+	snap := m.nb.store.snapshot()
+	for k, c := range snap.docks {
+		if c.ID() == id {
+			return m.routeKeyToDock(k, msg)
+		}
+	}
+	return nil, false
+}
+
 // View implements tea.Model. Range-based render: each cell is
 // asked only for the row window the viewport will display.
+//
+// Layout (top to bottom): optional header banner, Top dock if any,
+// the body window (main cells interleaved with their After/Before
+// anchored docks), Bottom dock if any. Top and Bottom claim layout
+// space; the body's height is what's left.
 func (m model) View() string {
 	if m.width == 0 || m.height == 0 {
 		return ""
 	}
 	snap := m.nb.store.snapshot()
+	focusedDockKey, dockFocused := m.nb.focusedDockKey()
+	_, topH, bottomH, bodyRows := m.edgeAllotments(snap)
 
 	var lines []string
 	if snap.header != "" {
@@ -274,22 +331,35 @@ func (m model) View() string {
 		}
 		lines = append(lines, banner)
 	}
-	bodyStart := len(lines)
-	bodyRows := m.bodyHeight()
 
-	rowCursor := 0
+	// Top dock — claims topH rows. If the dock wanted more
+	// (HeightHint > topH), we show the HEAD; tabs/breadcrumbs read
+	// left-to-right, top-first, so head-truncation is the right
+	// default. Apps that want different semantics swap the dock.
+	if topH > 0 {
+		topKey := edgePosition{edgeTop}.positionKey()
+		focused := dockFocused && focusedDockKey == topKey
+		lines = append(lines, snap.docks[topKey].RenderRows(m.width, 0, topH, focused, m.mode)...)
+	}
+
+	bodyStart := len(lines)
 	windowStart := m.viewportOffset
 	windowEnd := m.viewportOffset + bodyRows
-	for i, c := range snap.cells {
-		focused := i == snap.cursor
+
+	// renderSegment appends the visible slice of segment c (with
+	// the given focused flag) given a rolling rowCursor, returning
+	// the new rowCursor.
+	rowCursor := 0
+	renderSegment := func(c Cell, focused bool) {
 		h := c.HeightHint(m.width)
 		cellEnd := rowCursor + h
 		if cellEnd <= windowStart {
 			rowCursor = cellEnd
-			continue
+			return
 		}
 		if rowCursor >= windowEnd {
-			break
+			rowCursor = cellEnd
+			return
 		}
 		lo, hi := 0, h
 		if rowCursor < windowStart {
@@ -300,10 +370,27 @@ func (m model) View() string {
 		}
 		lines = append(lines, c.RenderRows(m.width, lo, hi, focused, m.mode)...)
 		rowCursor = cellEnd
-		if len(lines)-bodyStart >= bodyRows {
+	}
+
+	// Body: for each main cell, interleave Before / cell / After
+	// anchored docks. Cursor focus only fires when a docked cell
+	// isn't taking focus.
+	for i, c := range snap.cells {
+		if rowCursor >= windowEnd {
 			break
 		}
+		if before, ok := snap.docks[(cellAnchor{rel: relBefore, cellID: c.ID()}).positionKey()]; ok {
+			focused := dockFocused && focusedDockKey == (cellAnchor{rel: relBefore, cellID: c.ID()}).positionKey()
+			renderSegment(before, focused)
+		}
+		renderSegment(c, !dockFocused && i == snap.cursor)
+		if after, ok := snap.docks[(cellAnchor{rel: relAfter, cellID: c.ID()}).positionKey()]; ok {
+			focused := dockFocused && focusedDockKey == (cellAnchor{rel: relAfter, cellID: c.ID()}).positionKey()
+			renderSegment(after, focused)
+		}
 	}
+
+	// Pad/truncate body to exactly bodyRows.
 	target := bodyStart + bodyRows
 	if len(lines) > target {
 		lines = lines[:target]
@@ -311,48 +398,126 @@ func (m model) View() string {
 	for len(lines) < target {
 		lines = append(lines, "")
 	}
-	lines = append(lines, m.statusLine(snap))
+
+	// Bottom dock — claims bottomH rows. If desired > bottomH the
+	// dock yielded — render its TAIL so the cursor and most-recent
+	// content stay visible. Command bars and tail-style status
+	// readouts get the right behavior for free; cells that want
+	// head-truncation pass an explicit anchored top-style cell.
+	if bottomH > 0 {
+		botKey := edgePosition{edgeBottom}.positionKey()
+		desired := m.dockDesiredHeight(snap, botKey)
+		startRow := 0
+		endRow := desired
+		if desired > bottomH {
+			startRow = desired - bottomH
+		} else {
+			endRow = bottomH
+		}
+		focused := dockFocused && focusedDockKey == botKey
+		lines = append(lines, snap.docks[botKey].RenderRows(m.width, startRow, endRow, focused, m.mode)...)
+	}
+
 	return strings.Join(lines, "\n")
 }
 
-// statusLine builds the bottom row: mode + cursor position.
-func (m model) statusLine(snap snapshot) string {
-	mode := m.mode.Name()
-	pos := "—"
-	if len(snap.cells) > 0 {
-		pos = strconv.Itoa(snap.cursor+1) + "/" + strconv.Itoa(len(snap.cells))
+// edgeAllotments returns the row counts actually allotted to the
+// header, Top dock, and Bottom dock, plus the body height. Edge
+// docks report a "desired" via HeightHint but auto-grow content
+// (vim-style command bars, multi-line status) can ask for more
+// than the terminal has room for — so the layout enforces:
+//
+//  1. Body always gets at least 1 row (chrome can't starve the body).
+//  2. When desired Top + Bottom + header would oversubscribe, Bottom
+//     yields first (command bars scroll their own tail), then Top.
+//
+// Returned allotments are what View should actually render; cells
+// that wanted more handle the truncation in RenderRows by drawing
+// only their visible window.
+func (m model) edgeAllotments(snap snapshot) (headerH, topH, bottomH, bodyH int) {
+	if snap.header != "" {
+		headerH = 1
 	}
-	return mode + "  cell " + pos
+	desiredTop := 0
+	if top, ok := snap.docks[edgePosition{edgeTop}.positionKey()]; ok {
+		desiredTop = top.HeightHint(m.width)
+	}
+	desiredBot := 0
+	if bot, ok := snap.docks[edgePosition{edgeBottom}.positionKey()]; ok {
+		desiredBot = bot.HeightHint(m.width)
+	}
+	available := m.height - headerH
+	if available < 1 {
+		return headerH, 0, 0, 1
+	}
+	const minBody = 1
+	topH = desiredTop
+	bottomH = desiredBot
+	for topH+bottomH > available-minBody {
+		if bottomH > 0 {
+			bottomH--
+			continue
+		}
+		if topH > 0 {
+			topH--
+			continue
+		}
+		break
+	}
+	bodyH = available - topH - bottomH
+	if bodyH < minBody {
+		bodyH = minBody
+	}
+	return
 }
 
-// bodyHeight is the row count available for cells: total height
-// minus the status row and (if present) the header row.
-func (m model) bodyHeight() int {
-	reserved := 1 // status row
-	m.nb.store.mu.RLock()
-	hasHeader := m.nb.store.header != ""
-	m.nb.store.mu.RUnlock()
-	if hasHeader {
-		reserved++
-	}
-	body := m.height - reserved
-	if body < 1 {
-		body = 1
-	}
+// bodyHeight is the row count available for the body. Wraps
+// edgeAllotments for callers that only need the body figure.
+func (m model) bodyHeight(snap snapshot) int {
+	_, _, _, body := m.edgeAllotments(snap)
 	return body
 }
 
-// cellRowSpan returns the [start, end) absolute row range of cell
-// idx, given the current width.
-func (m model) cellRowSpan(cells []Cell, idx int) (int, int) {
-	start := 0
-	for i := 0; i < idx && i < len(cells); i++ {
-		start += cells[i].HeightHint(m.width)
+// dockDesiredHeight returns the dock's reported HeightHint (not
+// the clamped allotment) — used by View to decide whether to
+// render the head or the tail of an oversubscribed dock.
+func (m model) dockDesiredHeight(snap snapshot, k positionKey) int {
+	if c, ok := snap.docks[k]; ok {
+		return c.HeightHint(m.width)
 	}
-	if idx < 0 || idx >= len(cells) {
+	return 0
+}
+
+// anchoredRowSpan returns the row span of any anchored docks for
+// cells[i] in {Before, After} order — used by cellRowSpan and
+// cellAtRow to walk the body in render order.
+func (m model) anchoredRowSpan(snap snapshot, c Cell) (beforeH, afterH int) {
+	if d, ok := snap.docks[(cellAnchor{rel: relBefore, cellID: c.ID()}).positionKey()]; ok {
+		beforeH = d.HeightHint(m.width)
+	}
+	if d, ok := snap.docks[(cellAnchor{rel: relAfter, cellID: c.ID()}).positionKey()]; ok {
+		afterH = d.HeightHint(m.width)
+	}
+	return
+}
+
+// cellRowSpan returns the [start, end) absolute body-row range of
+// cells[idx] including the Before-anchored dock space that
+// precedes it. End is just past the cell itself (After-anchored
+// rows are NOT in the span — they trail and aren't part of the
+// cell's own scroll target).
+func (m model) cellRowSpan(snap snapshot, idx int) (int, int) {
+	start := 0
+	for i := 0; i < idx && i < len(snap.cells); i++ {
+		before, after := m.anchoredRowSpan(snap, snap.cells[i])
+		start += before + snap.cells[i].HeightHint(m.width) + after
+	}
+	if idx < 0 || idx >= len(snap.cells) {
 		return start, start
 	}
-	return start, start + cells[idx].HeightHint(m.width)
+	before, _ := m.anchoredRowSpan(snap, snap.cells[idx])
+	start += before
+	return start, start + snap.cells[idx].HeightHint(m.width)
 }
 
 // ensureCursorVisible nudges viewportOffset so the focused cell is
@@ -366,8 +531,8 @@ func (m *model) ensureCursorVisible() {
 		m.viewportOffset = 0
 		return
 	}
-	body := m.bodyHeight()
-	start, end := m.cellRowSpan(snap.cells, snap.cursor)
+	body := m.bodyHeight(snap)
+	start, end := m.cellRowSpan(snap, snap.cursor)
 	if start < m.viewportOffset {
 		m.viewportOffset = start
 		return

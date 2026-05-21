@@ -251,7 +251,8 @@ func TestStopUnblocksRun(t *testing.T) {
 // newSizedModel constructs a model with a sized store for
 // viewport tests. Wires up the minimum scaffolding (a Notebook
 // with store + rendezvous + DefaultKeyMap + DefaultMouseConfig,
-// no tea.Program).
+// no tea.Program). Installs the default Bottom StatusCell so
+// body math reflects what New() produces in real consumers.
 func newSizedModel(t *testing.T, width, height int) (*model, *store) {
 	t.Helper()
 	nb := &Notebook{
@@ -262,6 +263,7 @@ func newSizedModel(t *testing.T, width, height int) (*model, *store) {
 		ready:       make(chan struct{}),
 		stopped:     make(chan struct{}),
 	}
+	nb.store.setDock(Bottom.positionKey(), NewStatusCell(nb))
 	m := newModel(nb, width, height)
 	return &m, nb.store
 }
@@ -274,9 +276,10 @@ func TestEnsureCursorVisibleScrollsDownToFocused(t *testing.T) {
 	st.moveCursor(+4) // cursor on c4
 	m.ensureCursorVisible()
 	// c4 ends at row 15; viewport end must be >= 15.
-	if m.viewportOffset+m.bodyHeight() < 15 {
+	snap := st.snapshot()
+	if m.viewportOffset+m.bodyHeight(snap) < 15 {
 		t.Errorf("viewport [%d, %d) does not reach c4's end (15)",
-			m.viewportOffset, m.viewportOffset+m.bodyHeight())
+			m.viewportOffset, m.viewportOffset+m.bodyHeight(snap))
 	}
 }
 
@@ -291,10 +294,11 @@ func TestRemoveAtTopAdjustsViewport(t *testing.T) {
 	st.remove("c0")
 	m.ensureCursorVisible()
 	// c4 (now idx 3) span [9,12); viewport must contain it.
-	start, end := m.cellRowSpan(st.snapshot().cells, st.cursorPos())
-	if start < m.viewportOffset || end > m.viewportOffset+m.bodyHeight() {
+	snap := st.snapshot()
+	start, end := m.cellRowSpan(snap, st.cursorPos())
+	if start < m.viewportOffset || end > m.viewportOffset+m.bodyHeight(snap) {
 		t.Errorf("cell span [%d,%d) not in viewport [%d,%d) after top removal",
-			start, end, m.viewportOffset, m.viewportOffset+m.bodyHeight())
+			start, end, m.viewportOffset, m.viewportOffset+m.bodyHeight(snap))
 	}
 }
 

@@ -11,10 +11,10 @@ import (
 type CellID = string
 
 // store is the shared, RWMutex-guarded notebook state: the cell
-// list, the focused-cell cursor, and the header. The Notebook's
-// CRUD methods mutate it from caller goroutines; the model reads
-// it from the Bubble Tea goroutine. One mutex covers everything
-// mutated from more than one goroutine.
+// list, the focused-cell cursor, the header, and the docked-cell
+// registry. The Notebook's CRUD methods mutate it from caller
+// goroutines; the model reads it from the Bubble Tea goroutine.
+// One mutex covers everything mutated from more than one goroutine.
 //
 // viewport/width/height/mode are NOT here — only the BT goroutine
 // touches those, so they live on the model without a lock.
@@ -25,20 +25,22 @@ type store struct {
 	header     string
 	headerDesc string
 	done       bool
+	docks      map[positionKey]Cell
 }
 
-func newStore() *store { return &store{} }
+func newStore() *store { return &store{docks: map[positionKey]Cell{}} }
 
 // snapshot is an immutable point-in-time copy the model renders
 // from, so View doesn't hold the lock across a full render. The
-// cells slice is copied (cheap — pointers); the cells themselves
-// are shared.
+// cells slice and docks map are copied (cheap — pointers); the
+// cells themselves are shared.
 type snapshot struct {
 	cells  []Cell
 	cursor int
 	header string
 	desc   string
 	done   bool
+	docks  map[positionKey]Cell
 }
 
 func (s *store) snapshot() snapshot {
@@ -46,7 +48,11 @@ func (s *store) snapshot() snapshot {
 	defer s.mu.RUnlock()
 	cp := make([]Cell, len(s.cells))
 	copy(cp, s.cells)
-	return snapshot{cp, s.cursor, s.header, s.headerDesc, s.done}
+	dk := make(map[positionKey]Cell, len(s.docks))
+	for k, v := range s.docks {
+		dk[k] = v
+	}
+	return snapshot{cp, s.cursor, s.header, s.headerDesc, s.done, dk}
 }
 
 // insert places c at index (index < 0 or past the end appends).
@@ -99,6 +105,15 @@ func (s *store) remove(id CellID) bool {
 		s.cursor--
 	}
 	s.clampCursorLocked()
+	// Cell-anchored docks travel with their anchor; once the
+	// anchor is gone the dock can't render anywhere meaningful.
+	// Apps that want to re-anchor the same instance kept their
+	// own ref and call SetDockedCell with a fresh anchor.
+	for k := range s.docks {
+		if k.rel != relNone && k.cellID == id {
+			delete(s.docks, k)
+		}
+	}
 	return true
 }
 
@@ -189,4 +204,46 @@ func (s *store) clampCursorLocked() {
 	if s.cursor < 0 {
 		s.cursor = 0
 	}
+}
+
+// setDock installs c at the given key, replacing any prior occupant.
+func (s *store) setDock(k positionKey, c Cell) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.docks[k] = c
+}
+
+// clearDock removes the dock at the given key. Returns true if a
+// dock was present.
+func (s *store) clearDock(k positionKey) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.docks[k]; !ok {
+		return false
+	}
+	delete(s.docks, k)
+	return true
+}
+
+// getDock returns the dock at the given key. The bool reports
+// presence.
+func (s *store) getDock(k positionKey) (Cell, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	c, ok := s.docks[k]
+	return c, ok
+}
+
+// updateDock replaces the dock at k by fn(old). Returns false if
+// no dock is present at k. fn runs under the store lock — must be
+// quick and must not call back into the Notebook.
+func (s *store) updateDock(k positionKey, fn func(Cell) Cell) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	c, ok := s.docks[k]
+	if !ok {
+		return false
+	}
+	s.docks[k] = fn(c)
+	return true
 }

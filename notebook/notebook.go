@@ -37,6 +37,13 @@ type Notebook struct {
 
 	promptSeq atomic.Uint64
 
+	// dockFocusKey points at the positionKey of the currently
+	// focused dock, or nil when focus is on the main list. Reads
+	// from the BT goroutine (key dispatch) and writes from any
+	// goroutine (FocusDock / ReleaseDockFocus) — atomic.Pointer
+	// keeps it lock-free and easy to swap.
+	dockFocusKey atomic.Pointer[positionKey]
+
 	startOnce sync.Once
 	stopOnce  sync.Once
 	blockIn   *blockingReader
@@ -156,6 +163,12 @@ func New(opts ...Option) *Notebook {
 		)
 	}
 	nb.program = tea.NewProgram(m, progOpts...)
+	// The Bottom dock has a built-in default — the StatusCell that
+	// reproduces the legacy status row ("NAV  cell N/M"). Apps that
+	// want vim-style command bars or richer chrome replace it via
+	// SetDockedCell(Bottom, ...). Apps that want NO bottom row at
+	// all call ClearDocked(Bottom).
+	nb.store.setDock(Bottom.positionKey(), NewStatusCell(nb))
 	return nb
 }
 
@@ -173,6 +186,134 @@ func (nb *Notebook) Run() error {
 // goroutine — internally Sends a tea.Msg that the model applies.
 func (nb *Notebook) SetMode(m Mode) {
 	nb.program.Send(setModeMsg{mode: m})
+}
+
+// SetDockedCell installs c at pos, replacing any prior occupant.
+// Docked cells live in a separate registry from the main cell
+// list — they don't appear in nb.Get / IndexOf / Len and the main
+// cursor never steps onto them. Use FocusDock(pos) to route keys
+// to a docked cell.
+//
+// SetDockedCell auto-wires the configured clipboard into cells
+// that implement SetClipboard, matching Append's behavior.
+//
+// Cell-anchored Positions (After / Before) automatically
+// unregister when the anchor cell is removed via nb.Remove.
+func (nb *Notebook) SetDockedCell(pos Position, c Cell) {
+	nb.injectClipboard(c)
+	nb.store.setDock(pos.positionKey(), c)
+}
+
+// ClearDocked removes the dock at pos. Returns true if a dock was
+// present. Note: ClearDocked(Bottom) truly empties the slot — the
+// default StatusCell is NOT auto-restored. Re-install it with
+// SetDockedCell(Bottom, NewStatusCell(nb)) if you want it back.
+//
+// If the focused dock is being cleared, the dock-focus pointer
+// drops back to nil (main list). The notebook's Mode is NOT
+// changed — callers that need to drop from CellActiveMode emit
+// notebook.ReleaseFocus from a cell or return notebook.ModeCmd
+// from an action. (Sending here would deadlock when called from
+// inside a keymap action; see safeSend's doc.)
+func (nb *Notebook) ClearDocked(pos Position) bool {
+	k := pos.positionKey()
+	if cur := nb.dockFocusKey.Load(); cur != nil && *cur == k {
+		nb.dockFocusKey.Store(nil)
+	}
+	return nb.store.clearDock(k)
+}
+
+// DockedCell returns the cell at pos, if any. The bool reports
+// presence.
+func (nb *Notebook) DockedCell(pos Position) (Cell, bool) {
+	return nb.store.getDock(pos.positionKey())
+}
+
+// UpdateDocked replaces the dock at pos by fn(old). Returns false
+// if no dock is present at pos. fn runs under the store lock — it
+// must be quick and must not call back into the Notebook.
+func (nb *Notebook) UpdateDocked(pos Position, fn func(Cell) Cell) bool {
+	return nb.store.updateDock(pos.positionKey(), fn)
+}
+
+// FocusDock routes subsequent keystrokes to the docked cell at
+// pos. Returns false if no dock is installed at pos. The main
+// cursor stays where it is; ReleaseDockFocus / a ReleaseFocusMsg
+// from the docked cell returns focus to the main list.
+//
+// FocusDock also flips the notebook into CellActiveMode so the
+// docked cell behaves like a focused main cell: it sees every
+// keystroke, KeyMap.Modes[NavigationMode] bindings (j/k/enter)
+// don't fire underneath it.
+// FocusDock points the notebook's dock-focus marker at pos so
+// subsequent keystrokes route to that docked cell instead of the
+// main cursor cell. Returns false if no dock is installed at pos.
+//
+// FocusDock does NOT change Mode — callers compose that:
+//
+//   - From a KeyMap Action: return notebook.ModeCmd(CellActiveMode)
+//     alongside the FocusDock call. The action constructor
+//     notebook.FocusDock(pos) bundles both.
+//   - From a non-BT goroutine: call nb.SetMode(CellActiveMode)
+//     after FocusDock.
+//
+// Splitting them this way avoids deadlock — Send-from-inside-an-
+// action blocks because the BT goroutine is the same one that
+// drains the channel.
+func (nb *Notebook) FocusDock(pos Position) bool {
+	k := pos.positionKey()
+	if _, ok := nb.store.getDock(k); !ok {
+		return false
+	}
+	nb.dockFocusKey.Store(&k)
+	return true
+}
+
+// ReleaseDockFocus clears the dock-focus marker so subsequent
+// keystrokes route to the main cursor cell. Does NOT change Mode
+// — for the same deadlock-avoidance reasons as FocusDock. Idempotent.
+func (nb *Notebook) ReleaseDockFocus() {
+	nb.dockFocusKey.Store(nil)
+}
+
+// ModeCmd returns a tea.Cmd that switches the notebook into mode
+// m. Use from KeyMap actions and convenience helpers that run on
+// the BT goroutine — Sending directly would deadlock.
+func ModeCmd(m Mode) tea.Cmd {
+	return func() tea.Msg { return setModeMsg{mode: m} }
+}
+
+// focusedDockKey returns the currently focused dock's key and
+// whether a dock is focused. Used by the model on the BT goroutine.
+func (nb *Notebook) focusedDockKey() (positionKey, bool) {
+	p := nb.dockFocusKey.Load()
+	if p == nil {
+		return positionKey{}, false
+	}
+	return *p, true
+}
+
+// safeSend Sends msg to the BT program loop iff it is up and
+// draining. Mutations from caller goroutines that need to trigger
+// a model-side state change (mode flip, focus shift) go through
+// safeSend; the model's repaint tick picks up store changes
+// without a Send.
+//
+// Without this guard, callers that exercise the public API before
+// (or without) Run — unit tests, fast-fail paths — would deadlock
+// on tea.Program.Send (which is unbuffered; see ARCHITECTURE.md
+// § Concurrency model). With the program nil or its loop not yet
+// live, safeSend silently drops; mode state doesn't matter
+// without a running renderer anyway.
+func (nb *Notebook) safeSend(msg tea.Msg) {
+	if nb.program == nil {
+		return
+	}
+	select {
+	case <-nb.ready:
+		nb.program.Send(msg)
+	default:
+	}
 }
 
 // Stop signals the program to quit and drains any pending
