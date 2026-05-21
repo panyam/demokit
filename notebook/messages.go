@@ -47,9 +47,17 @@ type CellAdvanceMsg struct{}
 func CellAdvance() tea.Msg { return CellAdvanceMsg{} }
 
 // PromptSubmittedMsg is emitted by a PromptCell when the user
-// submits a valid answer set. The notebook routes it to the
-// pending AwaitInput call by CellID. Answers maps each input's
-// Name to its parsed value.
+// submits a valid answer set, or by an AdvancePromptCell when
+// the user presses Enter or its Deadline fires. The notebook
+// routes it to the pending AwaitInputBy/AwaitInput call by
+// CellID.
+//
+// Source classifies how the submission ended:
+//   - "" (empty) — treated as "user-submitted" (default for
+//     back-compat).
+//   - "user-submitted" — user pressed Enter.
+//   - "auto-advance" — AdvancePromptCell's Deadline elapsed.
+//   - other values — caller-defined; flow through verbatim.
 //
 // Unlike CellAdvanceMsg, the notebook does NOT auto-move the
 // cursor on receipt — the caller (typically the AwaitInput
@@ -58,6 +66,7 @@ func CellAdvance() tea.Msg { return CellAdvanceMsg{} }
 type PromptSubmittedMsg struct {
 	CellID  string
 	Answers map[string]any
+	Source  string
 }
 
 // ReleaseFocusMsg signals that a focused cell wants to give focus

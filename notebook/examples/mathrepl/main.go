@@ -12,6 +12,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 
 	"github.com/panyam/demokit/notebook"
@@ -64,6 +65,17 @@ func runREPL(nb *notebook.Notebook, env *Env) {
 				continue
 			}
 			nb.Append(cell)
+		case strings.HasPrefix(src, "lines "):
+			// `lines N` — appends an OutputCell with N generated
+			// lines. Use it to exercise scroll + drag-select
+			// copy from a body that overflows maxBody.
+			countStr := strings.TrimSpace(strings.TrimPrefix(src, "lines"))
+			count, err := strconv.Atoi(countStr)
+			if err != nil || count <= 0 {
+				appendResultCell(nb, n, src, "", fmt.Errorf("usage: lines <positive integer>"))
+				continue
+			}
+			appendStressCell(nb, n, count)
 		default:
 			val, err := env.Eval(src)
 			appendResultCell(nb, n, src, formatValue(val), err)
@@ -77,6 +89,23 @@ func appendResultCell(nb *notebook.Notebook, n int, src, value string, err error
 		msg = err.Error()
 	}
 	nb.Append(NewResult(fmt.Sprintf("res-%d", n), src, value, msg))
+}
+
+// appendStressCell creates an OutputCell with N generated lines.
+// Use it to exercise mouse wheel scrolling + drag-select copy on
+// a body that overflows the cell's maxBody. The cell defaults to
+// HorizontalEdges (no left/right borders) so drag-selection
+// across the body doesn't pick up vertical bar characters.
+func appendStressCell(nb *notebook.Notebook, n, count int) {
+	oc := cells.NewOutput(fmt.Sprintf("lines-%d", n), 12)
+	id, err := nb.Append(oc)
+	if err != nil {
+		return
+	}
+	w := nb.Stream(id)
+	for i := 1; i <= count; i++ {
+		fmt.Fprintf(w, "line %4d  : the quick brown fox jumps over the lazy dog\n", i)
+	}
 }
 
 func formatValue(v any) string {
@@ -97,6 +126,7 @@ func introBody() string {
 		"  x = 5",
 		"  x * x",
 		"  plot sin(x) from 0 to pi*2",
+		"  lines 50          # streaming-cell stress test (mouse wheel scrolls, drag-select copies)",
 		"",
 		"Type q to quit. Available: sin cos tan sqrt log exp abs floor ceil pow · pi e",
 	}, "\n")

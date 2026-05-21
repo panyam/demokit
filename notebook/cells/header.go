@@ -18,6 +18,7 @@ type HeaderStyle struct {
 	FocusBorderColor color.Color
 	TitleColor       color.Color
 	BodyColor        color.Color
+	Edges            BorderEdges
 }
 
 // DarkHeaderStyle returns the dark-terminal defaults — currently
@@ -28,6 +29,7 @@ func DarkHeaderStyle() HeaderStyle {
 		FocusBorderColor: lipgloss.Color("#FF6B6B"),
 		TitleColor:       lipgloss.Color("#FAFAFA"),
 		BodyColor:        lipgloss.Color("#CCCCCC"),
+		Edges:            AllEdges(),
 	}
 }
 
@@ -38,6 +40,7 @@ func LightHeaderStyle() HeaderStyle {
 		FocusBorderColor: lipgloss.Color("#D34545"),
 		TitleColor:       lipgloss.Color("#1A1A1A"),
 		BodyColor:        lipgloss.Color("#444444"),
+		Edges:            AllEdges(),
 	}
 }
 
@@ -144,8 +147,12 @@ func (c *HeaderCell) materialize(width int, focused bool) {
 	boxStyle := lipgloss.NewStyle().
 		Border(focusedBorder(focused)).
 		BorderForeground(border).
+		BorderTop(c.Style.Edges.Top).
+		BorderRight(c.Style.Edges.Right).
+		BorderBottom(c.Style.Edges.Bottom).
+		BorderLeft(c.Style.Edges.Left).
 		Padding(0, 1).
-		Width(maxBoxWidth(width))
+		Width(innerWidth(width, c.Style.Edges))
 
 	rendered := boxStyle.Render(content)
 	c.cachedWidth = width

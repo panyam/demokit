@@ -1,6 +1,7 @@
 package cells
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -126,6 +127,132 @@ func TestOutputCellCopyInSelectMode(t *testing.T) {
 	}
 	if c.copyMsg == "" {
 		t.Error("expected copyMsg after copy")
+	}
+}
+
+func TestOutputCellSetMaxBodyShrinks(t *testing.T) {
+	c := NewOutput("o", 12)
+	for i := 0; i < 20; i++ {
+		c.Buffer().Append([]byte("y\n"))
+	}
+	// HeightHint = 3 chrome + maxBody body + 1 status = maxBody+4.
+	if got, want := c.HeightHint(80), 12+4; got != want {
+		t.Fatalf("initial HeightHint = %d, want %d", got, want)
+	}
+	c.SetMaxBody(5)
+	if got := c.MaxBody(); got != 5 {
+		t.Errorf("MaxBody = %d after Set(5), want 5", got)
+	}
+	if got, want := c.HeightHint(80), 5+4; got != want {
+		t.Errorf("HeightHint after shrink = %d, want %d", got, want)
+	}
+}
+
+func TestOutputCellSetMaxBodyClampsScroll(t *testing.T) {
+	c := NewOutput("o", 12)
+	for i := 0; i < 30; i++ {
+		c.Buffer().Append([]byte("y\n"))
+	}
+	// Follow drives scrollOffset to 30-12 = 18 at this point.
+	_ = allRows(c, 80, false, notebook.ViewMode)
+	c.SetMaxBody(4)
+	// New ceiling: 30 - 4 = 26. scrollOffset was 18, still ≤ 26.
+	// To exercise the clamp, scroll past the new max first:
+	c.scrollOffset = 100
+	c.SetMaxBody(4)
+	if c.scrollOffset > 30-4 {
+		t.Errorf("scrollOffset = %d after Set(4) with 30 lines; want ≤ %d", c.scrollOffset, 30-4)
+	}
+}
+
+func TestOutputCellDefaultEdgesAreHorizontalOnly(t *testing.T) {
+	c := NewOutput("o", 10)
+	if got := c.Style.Edges; got != HorizontalEdges() {
+		t.Errorf("default OutputStyle.Edges = %+v, want HorizontalEdges (top+bottom only)", got)
+	}
+	// Render should NOT contain '│' (left/right border char).
+	feed(c, "hello")
+	out := strings.Join(allRows(c, 80, false, notebook.ViewMode), "\n")
+	if strings.Contains(out, "│") {
+		t.Errorf("default OutputCell render contains '│' (L/R border) — should be HorizontalEdges:\n%s", out)
+	}
+}
+
+func TestOutputCellEdgesAllShowsLeftRightBorders(t *testing.T) {
+	c := NewOutput("o", 10)
+	c.Style.Edges = AllEdges()
+	feed(c, "hello")
+	out := strings.Join(allRows(c, 80, false, notebook.ViewMode), "\n")
+	if !strings.Contains(out, "│") {
+		t.Errorf("AllEdges render missing '│' (L/R border):\n%s", out)
+	}
+}
+
+func TestOutputCellWheelScrollsBodyInViewMode(t *testing.T) {
+	c := NewOutput("o", 3)
+	for i := 0; i < 20; i++ {
+		c.Buffer().Append([]byte(fmt.Sprintf("line%d\n", i)))
+	}
+	render(c) // initial follow scroll to bottom: scrollOffset = 17
+	before := c.scrollOffset
+	_, _, handled := c.Update(tea.MouseMsg{
+		Action: tea.MouseActionPress,
+		Button: tea.MouseButtonWheelUp,
+	}, notebook.ViewMode)
+	if !handled {
+		t.Fatal("wheel-up in ViewMode on overflowing buffer should be handled by the cell")
+	}
+	if c.follow {
+		t.Error("wheel-up should turn follow off")
+	}
+	if c.scrollOffset != before-1 {
+		t.Errorf("wheel-up scrollOffset = %d, want %d (one less)", c.scrollOffset, before-1)
+	}
+	_, _, _ = c.Update(tea.MouseMsg{
+		Action: tea.MouseActionPress,
+		Button: tea.MouseButtonWheelDown,
+	}, notebook.ViewMode)
+	if c.scrollOffset != before {
+		t.Errorf("wheel-down scrollOffset = %d, want %d", c.scrollOffset, before)
+	}
+}
+
+func TestOutputCellWheelPassthroughInSelectMode(t *testing.T) {
+	c := NewOutput("o", 3)
+	for i := 0; i < 20; i++ {
+		c.Buffer().Append([]byte(fmt.Sprintf("line%d\n", i)))
+	}
+	render(c)
+	_, _, handled := c.Update(tea.MouseMsg{
+		Action: tea.MouseActionPress,
+		Button: tea.MouseButtonWheelUp,
+	}, notebook.SelectMode)
+	if handled {
+		t.Error("wheel in SelectMode should passthrough (notebook moves the cell cursor); click to activate first")
+	}
+}
+
+func TestOutputCellWheelPassthroughWhenBufferFits(t *testing.T) {
+	c := NewOutput("o", 12)
+	feed(c, "line1", "line2", "line3") // 3 lines, maxBody 12 → fits
+	_, _, handled := c.Update(tea.MouseMsg{
+		Action: tea.MouseActionPress,
+		Button: tea.MouseButtonWheelUp,
+	}, notebook.ViewMode)
+	if handled {
+		t.Error("wheel on non-overflowing buffer should passthrough even in ViewMode")
+	}
+}
+
+func TestOutputCellSetMaxBodyIgnoresNonPositive(t *testing.T) {
+	c := NewOutput("o", 12)
+	c.SetMaxBody(0)
+	if c.MaxBody() != 12 {
+		t.Errorf("SetMaxBody(0) changed MaxBody to %d; want unchanged 12", c.MaxBody())
+	}
+	c.SetMaxBody(-3)
+	if c.MaxBody() != 12 {
+		t.Errorf("SetMaxBody(-3) changed MaxBody to %d; want unchanged 12", c.MaxBody())
 	}
 }
 

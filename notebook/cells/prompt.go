@@ -20,6 +20,7 @@ type PromptStyle struct {
 	HintColor        color.Color
 	ErrorColor       color.Color
 	SubmitColor      color.Color
+	Edges            BorderEdges
 }
 
 // DarkPromptStyle returns the dark-terminal defaults.
@@ -31,6 +32,7 @@ func DarkPromptStyle() PromptStyle {
 		HintColor:        lipgloss.Color("#888888"),
 		ErrorColor:       lipgloss.Color("#FF4444"),
 		SubmitColor:      lipgloss.Color("#CCCCCC"),
+		Edges:            AllEdges(),
 	}
 }
 
@@ -43,6 +45,7 @@ func LightPromptStyle() PromptStyle {
 		HintColor:        lipgloss.Color("#777777"),
 		ErrorColor:       lipgloss.Color("#CC2222"),
 		SubmitColor:      lipgloss.Color("#444444"),
+		Edges:            AllEdges(),
 	}
 }
 
@@ -143,8 +146,8 @@ func (c *PromptCell) HeightHint(_ int) int {
 		}
 		rows++ // blank gap
 	}
-	rows++    // submit hint
-	rows += 2 // border top + bottom
+	rows++ // submit hint
+	rows += chromeRows(c.Style.Edges)
 	return rows
 }
 
@@ -191,8 +194,12 @@ func (c *PromptCell) RenderRows(width, startRow, endRow int, focused bool, mode 
 	boxStyle := lipgloss.NewStyle().
 		Border(focusedBorder(focused)).
 		BorderForeground(border).
+		BorderTop(c.Style.Edges.Top).
+		BorderRight(c.Style.Edges.Right).
+		BorderBottom(c.Style.Edges.Bottom).
+		BorderLeft(c.Style.Edges.Left).
 		Padding(0, 1).
-		Width(maxBoxWidth(width))
+		Width(innerWidth(width, c.Style.Edges))
 	rendered := boxStyle.Render(strings.Join(lines, "\n"))
 	rows := strings.Split(rendered, "\n")
 

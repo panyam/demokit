@@ -667,7 +667,11 @@ walk:
 			// (or auto-accept countdown). Skipped in --serve mode — no
 			// stdin to wait on; the browser advances events as they arrive.
 			if stdinAttached && len(v.inputs) == 0 {
-				offset := d.events.Append(events.WaitForAdvance{Visit: totalVisits})
+				wait := events.WaitForAdvance{Visit: totalVisits}
+				if waitOpts.AutoAcceptAfter > 0 {
+					wait.Deadline = time.Now().Add(waitOpts.AutoAcceptAfter)
+				}
+				offset := d.events.Append(wait)
 				if isEventAware {
 					// Queue-side rendezvous: event-aware renderer's
 					// user input calls q.Resolve. Blocks here until

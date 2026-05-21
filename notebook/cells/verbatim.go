@@ -31,6 +31,7 @@ type VerbatimStyle struct {
 	ContentColor     color.Color
 	ActiveTabColor   color.Color
 	InactiveTabColor color.Color
+	Edges            BorderEdges
 }
 
 // DarkVerbatimStyle returns the dark-terminal defaults.
@@ -42,6 +43,7 @@ func DarkVerbatimStyle() VerbatimStyle {
 		ContentColor:     lipgloss.Color("#CCCCCC"),
 		ActiveTabColor:   lipgloss.Color("#FF6B6B"),
 		InactiveTabColor: lipgloss.Color("#888888"),
+		Edges:            AllEdges(),
 	}
 }
 
@@ -54,6 +56,7 @@ func LightVerbatimStyle() VerbatimStyle {
 		ContentColor:     lipgloss.Color("#333333"),
 		ActiveTabColor:   lipgloss.Color("#D34545"),
 		InactiveTabColor: lipgloss.Color("#777777"),
+		Edges:            AllEdges(),
 	}
 }
 
@@ -262,8 +265,12 @@ func (c *VerbatimCell) materialize(width int, focused bool) {
 	boxStyle := lipgloss.NewStyle().
 		Border(focusedBorder(focused)).
 		BorderForeground(border).
+		BorderTop(c.Style.Edges.Top).
+		BorderRight(c.Style.Edges.Right).
+		BorderBottom(c.Style.Edges.Bottom).
+		BorderLeft(c.Style.Edges.Left).
 		Padding(0, 1).
-		Width(maxBoxWidth(width))
+		Width(innerWidth(width, c.Style.Edges))
 	rendered := boxStyle.Render(content)
 
 	c.cachedWidth = width

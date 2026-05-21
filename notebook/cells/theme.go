@@ -15,6 +15,7 @@ type Theme struct {
 	Verbatim VerbatimStyle
 	Output   OutputStyle
 	Prompt   PromptStyle
+	Advance  AdvanceStyle
 }
 
 // DarkTheme returns the dark-terminal styles for all built-in
@@ -26,6 +27,7 @@ func DarkTheme() Theme {
 		Verbatim: DarkVerbatimStyle(),
 		Output:   DarkOutputStyle(),
 		Prompt:   DarkPromptStyle(),
+		Advance:  DarkAdvanceStyle(),
 	}
 }
 
@@ -38,6 +40,7 @@ func LightTheme() Theme {
 		Verbatim: LightVerbatimStyle(),
 		Output:   LightOutputStyle(),
 		Prompt:   LightPromptStyle(),
+		Advance:  LightAdvanceStyle(),
 	}
 }
 

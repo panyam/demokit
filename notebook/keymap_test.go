@@ -195,20 +195,55 @@ func TestMouseWheelMovesCursor(t *testing.T) {
 	}
 }
 
-func TestMouseLeftClickSelectsCellAtRow(t *testing.T) {
+func TestMouseLeftClickSelectsCellAndEntersViewMode(t *testing.T) {
 	m, st := newSizedModel(t, 40, 30)
 	// Three 1-row cells: a@row 0, b@row 1, c@row 2. No header.
 	st.insert(-1, &fallthroughCell{id: "a"})
 	st.insert(-1, &fallthroughCell{id: "b"})
 	st.insert(-1, &fallthroughCell{id: "c"})
 
-	m.Update(tea.MouseMsg{Action: tea.MouseActionPress, Button: tea.MouseButtonLeft, Y: 2})
-	if got := st.cursorPos(); got != 2 {
-		t.Errorf("click at Y=2 → cursor = %d, want 2 (cell c at row 2)", got)
+	next, _ := m.Update(tea.MouseMsg{Action: tea.MouseActionPress, Button: tea.MouseButtonLeft, Y: 2})
+	got := next.(model)
+	if pos := st.cursorPos(); pos != 2 {
+		t.Errorf("click at Y=2 → cursor = %d, want 2", pos)
 	}
-	m.Update(tea.MouseMsg{Action: tea.MouseActionPress, Button: tea.MouseButtonLeft, Y: 0})
+	if got.mode != ViewMode {
+		t.Errorf("click → mode = %v, want ViewMode (so wheel-scroll within the cell takes effect)", got.mode)
+	}
+}
+
+// Cell that claims mouse wheel events — used to verify cell-first
+// wheel routing.
+type wheelClaimingCell struct{ fallthroughCell }
+
+func (c *wheelClaimingCell) Update(msg tea.Msg, _ Mode) (Cell, tea.Cmd, bool) {
+	if mouse, ok := msg.(tea.MouseMsg); ok {
+		if mouse.Button == tea.MouseButtonWheelUp || mouse.Button == tea.MouseButtonWheelDown {
+			return c, nil, true
+		}
+	}
+	return c, nil, false
+}
+
+func TestMouseWheelRoutedCellFirstHandledSuppressesNav(t *testing.T) {
+	m, st := newSizedModel(t, 40, 24)
+	st.insert(-1, &wheelClaimingCell{fallthroughCell{id: "a"}})
+	st.insert(-1, &fallthroughCell{id: "b"})
+
+	m.Update(tea.MouseMsg{Action: tea.MouseActionPress, Button: tea.MouseButtonWheelDown})
 	if got := st.cursorPos(); got != 0 {
-		t.Errorf("click at Y=0 → cursor = %d, want 0", got)
+		t.Errorf("cursor moved despite cell claiming wheel; cursor = %d, want 0", got)
+	}
+}
+
+func TestMouseWheelFallsThroughToNavWhenCellPassesThrough(t *testing.T) {
+	m, st := newSizedModel(t, 40, 24)
+	st.insert(-1, &fallthroughCell{id: "a"})
+	st.insert(-1, &fallthroughCell{id: "b"})
+
+	m.Update(tea.MouseMsg{Action: tea.MouseActionPress, Button: tea.MouseButtonWheelDown})
+	if got := st.cursorPos(); got != 1 {
+		t.Errorf("cursor after wheel passthrough = %d, want 1 (nav fallback)", got)
 	}
 }
 

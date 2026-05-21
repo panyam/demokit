@@ -23,6 +23,12 @@ type OutputStyle struct {
 	DimColor         color.Color
 	LiveColor        color.Color // "·live" state accent
 	DoneColor        color.Color // "·end" state accent
+
+	// Edges controls which sides of the box draw a border line.
+	// Default Dark/LightOutputStyle use HorizontalEdges (top +
+	// bottom only) so users can drag-select the output body
+	// without picking up vertical bar characters.
+	Edges BorderEdges
 }
 
 // DarkOutputStyle returns the dark-terminal defaults.
@@ -34,6 +40,7 @@ func DarkOutputStyle() OutputStyle {
 		DimColor:         lipgloss.Color("#888888"),
 		LiveColor:        lipgloss.Color("#FF6B6B"),
 		DoneColor:        lipgloss.Color("#04B575"),
+		Edges:            HorizontalEdges(),
 	}
 }
 
@@ -46,6 +53,7 @@ func LightOutputStyle() OutputStyle {
 		DimColor:         lipgloss.Color("#777777"),
 		LiveColor:        lipgloss.Color("#D34545"),
 		DoneColor:        lipgloss.Color("#03935F"),
+		Edges:            HorizontalEdges(),
 	}
 }
 
@@ -106,12 +114,30 @@ func (c *OutputCell) SetClipboard(clip notebook.Clipboard) {
 // MarkDone flips the box state accent from "·live" to "·end".
 func (c *OutputCell) MarkDone() { c.done = true }
 
+// MaxBody returns the current row cap for the cell's rendered
+// body. Useful for resize key bindings ("+"/"-" actions in the
+// notebook's KeyMap that grow/shrink the focused output cell).
+func (c *OutputCell) MaxBody() int { return c.maxBody }
+
+// SetMaxBody updates the row cap. Non-positive values are
+// rejected (a zero-row body would be a degenerate render).
+// Clamps scrollOffset against the new ceiling so follow-mode +
+// manual scroll positions stay valid.
+func (c *OutputCell) SetMaxBody(n int) {
+	if n <= 0 {
+		return
+	}
+	c.maxBody = n
+	c.clampScroll()
+}
+
 // ID implements notebook.Cell.
 func (c *OutputCell) ID() string { return c.id }
 
-// HeightHint implements notebook.Cell. Box = top border + title +
-// body + status + bottom border. An empty buffer still reserves
-// one body row for the "(no output yet)" placeholder.
+// HeightHint implements notebook.Cell. Box = (top border?) +
+// title + body + status + (bottom border?). An empty buffer
+// still reserves one body row for the "(no output yet)"
+// placeholder. Chrome shrinks when Style.Edges turns sides off.
 func (c *OutputCell) HeightHint(_ int) int {
 	bodyRows := c.buf.LineCount()
 	if bodyRows == 0 {
@@ -120,7 +146,7 @@ func (c *OutputCell) HeightHint(_ int) int {
 	if bodyRows > c.maxBody {
 		bodyRows = c.maxBody
 	}
-	h := bodyRows + 4
+	h := bodyRows + 2 + chromeRows(c.Style.Edges) // 2 = title + status
 	if c.copyMsg != "" {
 		h++
 	}
@@ -142,11 +168,11 @@ func (c *OutputCell) RenderRows(width, startRow, endRow int, focused bool, _ not
 	// Hard-truncate long lines so lipgloss doesn't wrap them: a
 	// wrap would push the box past HeightHint and desync viewport
 	// row math.
-	innerWidth := maxBoxWidth(width)
+	inner := innerWidth(width, c.Style.Edges)
 	for i, line := range body {
 		line = strings.TrimRight(line, "\r")
-		if len(line) > innerWidth {
-			line = line[:innerWidth]
+		if len(line) > inner {
+			line = line[:inner]
 		}
 		body[i] = line
 	}
@@ -171,8 +197,12 @@ func (c *OutputCell) RenderRows(width, startRow, endRow int, focused bool, _ not
 	boxStyle := lipgloss.NewStyle().
 		Border(focusedBorder(focused)).
 		BorderForeground(border).
+		BorderTop(c.Style.Edges.Top).
+		BorderRight(c.Style.Edges.Right).
+		BorderBottom(c.Style.Edges.Bottom).
+		BorderLeft(c.Style.Edges.Left).
 		Padding(0, 1).
-		Width(maxBoxWidth(width))
+		Width(inner)
 	rendered := boxStyle.Render(content)
 	rows := strings.Split(rendered, "\n")
 	if c.copyMsg != "" {
@@ -201,6 +231,35 @@ func (c *OutputCell) Update(msg tea.Msg, mode notebook.Mode) (notebook.Cell, tea
 	if cm, ok := msg.(notebook.ClearCopyMsg); ok && cm.CellID == c.id {
 		c.copyMsg = ""
 		return c, nil, true
+	}
+	// Mouse wheel: scroll the body line-by-line when the cell
+	// is activated (ViewMode) AND the buffer overflows maxBody.
+	// In SelectMode (cell-to-cell nav), the wheel passes through
+	// so the notebook moves the cell cursor instead. Click on
+	// the cell to activate it.
+	if mouse, ok := msg.(tea.MouseMsg); ok {
+		if mouse.Action != tea.MouseActionPress {
+			return c, nil, false
+		}
+		if mode != notebook.ViewMode {
+			return c, nil, false
+		}
+		if c.buf.LineCount() <= c.maxBody {
+			return c, nil, false
+		}
+		switch mouse.Button {
+		case tea.MouseButtonWheelUp:
+			c.follow = false
+			c.scrollOffset--
+			c.clampScroll()
+			return c, nil, true
+		case tea.MouseButtonWheelDown:
+			c.follow = false
+			c.scrollOffset++
+			c.clampScroll()
+			return c, nil, true
+		}
+		return c, nil, false
 	}
 	keyMsg, ok := msg.(tea.KeyMsg)
 	if !ok {

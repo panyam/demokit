@@ -203,6 +203,12 @@ type Done struct{}
 // log invariant.
 type WaitForAdvance struct {
 	Visit int
+
+	// Deadline is the absolute time at which the consumer should
+	// auto-advance the wait if no user action has occurred. Zero
+	// time means "no deadline — block until the user acts."
+	// Computed from Demo.AutoAcceptAfter at emit time.
+	Deadline time.Time
 }
 
 // AdvanceResolution carries the data resolving a WaitForAdvance.

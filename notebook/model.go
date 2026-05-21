@@ -90,7 +90,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// the awaiter goroutine) decides what cursor position
 		// follows a successful submit.
 		if m.nb.rdv != nil {
-			m.nb.rdv.resolveInput(msg.CellID, msg.Answers, "user-submitted")
+			src := msg.Source
+			if src == "" {
+				src = "user-submitted"
+			}
+			m.nb.rdv.resolveInput(msg.CellID, msg.Answers, src)
 		}
 		m.mode = SelectMode
 		return m, nil
@@ -115,19 +119,47 @@ func (m model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	switch msg.Button {
-	case tea.MouseButtonWheelUp:
-		m.nb.store.moveCursor(-1)
+	case tea.MouseButtonWheelUp, tea.MouseButtonWheelDown:
+		// Wheel events route cell-first. Cells with internal
+		// scrollable content (OutputCell when LineCount > maxBody)
+		// claim the wheel and scroll their body line-by-line.
+		// Cells that don't passthrough → notebook moves the cell
+		// cursor (same as ↑/↓).
+		cellCmd, handled := m.routeMouseToCursor(msg)
+		if handled {
+			return m, cellCmd
+		}
+		if msg.Button == tea.MouseButtonWheelUp {
+			m.nb.store.moveCursor(-1)
+		} else {
+			m.nb.store.moveCursor(+1)
+		}
 		m.ensureCursorVisible()
-	case tea.MouseButtonWheelDown:
-		m.nb.store.moveCursor(+1)
-		m.ensureCursorVisible()
+		return m, cellCmd
 	case tea.MouseButtonLeft:
+		// Clicks are geometric — the click's Y identifies a cell
+		// regardless of which is currently focused. Notebook
+		// dispatches; cells don't see clicks. Clicking a cell
+		// activates it (cursor + ViewMode) so subsequent wheel
+		// events scroll within the cell rather than between
+		// cells. Esc returns to SelectMode (cell-to-cell nav).
 		if idx, ok := m.cellAtRow(msg.Y); ok {
 			m.nb.store.setCursorByIdx(idx)
+			m.mode = ViewMode
 			m.ensureCursorVisible()
 		}
 	}
 	return m, nil
+}
+
+// routeMouseToCursor delivers a mouse msg to the cursor cell via
+// cell.Update (same plumbing as keys). Used for wheel events.
+func (m model) routeMouseToCursor(msg tea.MouseMsg) (tea.Cmd, bool) {
+	snap := m.nb.store.snapshot()
+	if snap.cursor < 0 || snap.cursor >= len(snap.cells) {
+		return nil, false
+	}
+	return m.routeToCell(snap.cells[snap.cursor].ID(), msg)
 }
 
 // cellAtRow translates an absolute terminal Y row into a cell
