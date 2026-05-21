@@ -50,7 +50,12 @@ func main() {
 	// only ships the OpenCommandBar convenience.
 	km.Modes[notebook.NavigationMode][":"] = func(nb *notebook.Notebook) tea.Cmd {
 		return cells.OpenCommandBar(nb, ":", func(src string) {
-			repl.runFromCommandBar(nb, src)
+			// onSubmit runs in the deferred tea.Cmd goroutine, so
+			// the BT loop is already free — but we still don't
+			// want to block the cmd goroutine on a long-running
+			// shell command, so kick off the work in its own
+			// goroutine and return.
+			go repl.runFromCommandBar(nb, src)
 		})
 	}
 

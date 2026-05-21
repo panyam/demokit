@@ -67,14 +67,18 @@ func TestCommandCell_EnterFiresOnSubmitAndReleases(t *testing.T) {
 	if !handled {
 		t.Error("Enter not handled")
 	}
+	if cmd == nil {
+		t.Fatal("Enter returned nil cmd")
+	}
+	sawRelease, sawSubmit := drainBatch(cmd)
+	if !sawSubmit {
+		t.Error("onSubmit not invoked from the Enter batch")
+	}
 	if got != "hi" {
 		t.Errorf("onSubmit received %q, want %q", got, "hi")
 	}
-	if cmd == nil {
-		t.Fatal("Enter returned nil cmd; expected ReleaseFocus")
-	}
-	if _, ok := cmd().(notebook.ReleaseFocusMsg); !ok {
-		t.Errorf("Enter cmd = %T, want ReleaseFocusMsg", cmd())
+	if !sawRelease {
+		t.Error("Enter batch missing ReleaseFocusMsg child")
 	}
 }
 
@@ -86,15 +90,45 @@ func TestCommandCell_EscFiresOnCancelAndReleases(t *testing.T) {
 	if !handled {
 		t.Error("Esc not handled")
 	}
+	if cmd == nil {
+		t.Fatal("Esc returned nil cmd")
+	}
+	sawRelease, _ := drainBatch(cmd)
 	if !cancelled {
 		t.Error("onCancel not fired on Esc")
 	}
-	if _, ok := cmd().(notebook.ReleaseFocusMsg); !ok {
-		t.Errorf("Esc cmd = %T, want ReleaseFocusMsg", cmd())
+	if !sawRelease {
+		t.Error("Esc batch missing ReleaseFocusMsg child")
 	}
 	if c.Text() != "" {
 		t.Errorf("buffer not cleared on Esc: %q", c.Text())
 	}
+}
+
+// drainBatch invokes the cmd as if tea were dispatching it,
+// recursively drains tea.BatchMsg children, and reports whether
+// any branch yielded a ReleaseFocusMsg (sawRelease) and whether
+// any branch yielded a nil msg from a non-empty Cmd (sawSubmit —
+// the submit/cancel callback path returns nil after firing its
+// side effect).
+func drainBatch(cmd tea.Cmd) (sawRelease bool, sawSubmit bool) {
+	if cmd == nil {
+		return
+	}
+	msg := cmd()
+	switch m := msg.(type) {
+	case tea.BatchMsg:
+		for _, child := range m {
+			r, s := drainBatch(child)
+			sawRelease = sawRelease || r
+			sawSubmit = sawSubmit || s
+		}
+	case notebook.ReleaseFocusMsg:
+		sawRelease = true
+	case nil:
+		sawSubmit = true
+	}
+	return
 }
 
 func TestCommandCell_BackspaceTrimsLastRune(t *testing.T) {
@@ -132,12 +166,11 @@ func TestOpenCommandBar_RestoresPriorDockOnEsc(t *testing.T) {
 	nb := notebook.New()
 	priorBefore, _ := nb.DockedCell(notebook.Bottom)
 	OpenCommandBar(nb, ":", nil)
-	// Get the cell and simulate Esc.
+	// Esc returns a tea.Batch whose first child fires onCancel
+	// (which calls restore) — drain it the same way tea would.
 	cmdCell, _ := nb.DockedCell(notebook.Bottom)
-	cmdCell.Update(tea.KeyMsg{Type: tea.KeyEsc}, notebook.CellActiveMode)
-	// Esc fires onCancel which calls restore — but the restore
-	// happens synchronously inside Update, so by now Bottom should
-	// point at the original cell again.
+	_, cmd, _ := cmdCell.Update(tea.KeyMsg{Type: tea.KeyEsc}, notebook.CellActiveMode)
+	drainBatch(cmd)
 	got, _ := nb.DockedCell(notebook.Bottom)
 	if got != priorBefore {
 		t.Errorf("after Esc, Bottom = %v, want prior instance %v", got, priorBefore)

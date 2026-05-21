@@ -180,6 +180,15 @@ func (c *CommandCell) wrappedRows(width int, focused bool) []string {
 //
 // In NavigationMode (cell not focused) the cell ignores keys so
 // global bindings like Ctrl+W still work to focus it.
+//
+// Enter and Esc DON'T invoke the onSubmit / onCancel callbacks
+// directly: those run as a tea.Cmd in a separate goroutine. The
+// indirection is required because Update is invoked under the
+// store's write lock (see store.update / store.updateDock), and a
+// callback that calls back into nb.SetDockedCell — exactly what
+// OpenCommandBar's restore() does — would deadlock the same lock.
+// Returning a Cmd defers the callback until tea processes it,
+// which happens after Update has returned and the lock is free.
 func (c *CommandCell) Update(msg tea.Msg, mode notebook.Mode) (notebook.Cell, tea.Cmd, bool) {
 	keyMsg, ok := msg.(tea.KeyMsg)
 	if !ok {
@@ -192,16 +201,28 @@ func (c *CommandCell) Update(msg tea.Msg, mode notebook.Mode) (notebook.Cell, te
 	case "enter":
 		text := c.buf
 		c.buf = ""
-		if c.onSubmit != nil {
-			c.onSubmit(text)
-		}
-		return c, notebook.ReleaseFocus, true
+		submit := c.onSubmit
+		return c, tea.Batch(
+			func() tea.Msg {
+				if submit != nil {
+					submit(text)
+				}
+				return nil
+			},
+			notebook.ReleaseFocus,
+		), true
 	case "esc":
 		c.buf = ""
-		if c.onCancel != nil {
-			c.onCancel()
-		}
-		return c, notebook.ReleaseFocus, true
+		cancel := c.onCancel
+		return c, tea.Batch(
+			func() tea.Msg {
+				if cancel != nil {
+					cancel()
+				}
+				return nil
+			},
+			notebook.ReleaseFocus,
+		), true
 	case "backspace":
 		if len(c.buf) > 0 {
 			// Strip a UTF-8 rune off the end, not a byte.
