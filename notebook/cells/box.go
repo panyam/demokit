@@ -22,14 +22,55 @@ func focusedBorder(focused bool) lipgloss.Border {
 	return lipgloss.RoundedBorder()
 }
 
-// maxBoxWidth returns the inner content width for a lipgloss
-// bordered box at the given outer width: 2 chars for vertical
-// borders + 2 chars horizontal padding = 4 reserved. Clamped to a
-// minimum so narrow terminals don't blow up wrap logic.
-func maxBoxWidth(outer int) int {
-	w := outer - 4
+// BorderEdges configures which sides of a cell's box draw a
+// border line. Default zero value is all-off, which is rarely
+// desired; cells expose typed style defaults instead. The
+// AllEdges / HorizontalEdges presets cover the common cases.
+type BorderEdges struct {
+	Top, Right, Bottom, Left bool
+}
+
+// AllEdges returns a BorderEdges with all four sides on — the
+// classic boxed cell look.
+func AllEdges() BorderEdges {
+	return BorderEdges{Top: true, Right: true, Bottom: true, Left: true}
+}
+
+// HorizontalEdges returns a BorderEdges with only top and bottom
+// on — the "rule above / rule below" look. Useful for cells
+// whose content users will copy-paste: no vertical bars get
+// caught in the selection.
+func HorizontalEdges() BorderEdges {
+	return BorderEdges{Top: true, Bottom: true}
+}
+
+// innerWidth returns the content width for a lipgloss box of the
+// given outer width with the given edges and a fixed Padding(0,1).
+// Each on-edge consumes 1 char; padding consumes 2.
+func innerWidth(outer int, edges BorderEdges) int {
+	w := outer - 2 // Padding(0,1)
+	if edges.Left {
+		w--
+	}
+	if edges.Right {
+		w--
+	}
 	if w < 10 {
 		w = 10
 	}
 	return w
+}
+
+// chromeRows returns the count of non-body rows the box consumes
+// at the given edges (top border + bottom border). Cells add their
+// own title / status / etc. on top.
+func chromeRows(edges BorderEdges) int {
+	n := 0
+	if edges.Top {
+		n++
+	}
+	if edges.Bottom {
+		n++
+	}
+	return n
 }

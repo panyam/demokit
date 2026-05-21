@@ -9,4 +9,5 @@ use (
 	.
 	./notebook
 	./notebook/examples/mathrepl
+	./notebook/examples/cmdshell
 )

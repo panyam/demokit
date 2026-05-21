@@ -31,7 +31,7 @@ type Action func(nb *Notebook) tea.Cmd
 //
 // A mode with no entry in Modes means "no notebook-level
 // bindings for this mode" — every key falls through to the cell.
-// That's the natural setup for ViewMode: cells own everything
+// That's the natural setup for CellActiveMode: cells own everything
 // while focused.
 type KeyMap struct {
 	Global map[string]Action
@@ -41,8 +41,8 @@ type KeyMap struct {
 // DefaultKeyMap returns the canonical bindings:
 //
 //   - Ctrl+C → Quit (Global)
-//   - SelectMode: ↑/k NavUp, ↓/j NavDown, enter/s/f EnterFocus
-//   - ViewMode: none (cells own everything)
+//   - NavigationMode: ↑/k NavUp, ↓/j NavDown, enter/s/f EnterFocus
+//   - CellActiveMode: none (cells own everything)
 //
 // 'q' is intentionally NOT in the defaults — q is a printable
 // character a cell might want. Apps that want q-to-quit add it
@@ -53,7 +53,7 @@ func DefaultKeyMap() KeyMap {
 			"ctrl+c": Quit,
 		},
 		Modes: map[Mode]map[string]Action{
-			SelectMode: {
+			NavigationMode: {
 				"up":    NavUp,
 				"k":     NavUp,
 				"down":  NavDown,
@@ -98,26 +98,26 @@ func NavDown(nb *Notebook) tea.Cmd {
 	return nil
 }
 
-// EnterFocus switches to ViewMode (cell-owns-keys). No-op if
+// EnterFocus switches to CellActiveMode (cell-owns-keys). No-op if
 // there are no cells to focus.
 func EnterFocus(nb *Notebook) tea.Cmd {
 	if nb.store.count() == 0 {
 		return nil
 	}
-	return func() tea.Msg { return setModeMsg{mode: ViewMode} }
+	return func() tea.Msg { return setModeMsg{mode: CellActiveMode} }
 }
 
-// ExitFocus switches to SelectMode. Equivalent to a cell
+// ExitFocus switches to NavigationMode. Equivalent to a cell
 // returning ReleaseFocus, but accessible as an Action.
 func ExitFocus(*Notebook) tea.Cmd {
-	return func() tea.Msg { return setModeMsg{mode: SelectMode} }
+	return func() tea.Msg { return setModeMsg{mode: NavigationMode} }
 }
 
 // SetMode returns an Action that switches to the given mode. Use
 // for app-defined modes:
 //
 //	commandMode := notebook.NewMode("COMMAND")
-//	km.Modes[notebook.SelectMode][":"] = notebook.SetMode(commandMode)
+//	km.Modes[notebook.NavigationMode][":"] = notebook.SetMode(commandMode)
 func SetMode(m Mode) Action {
 	return func(*Notebook) tea.Cmd {
 		return func() tea.Msg { return setModeMsg{mode: m} }

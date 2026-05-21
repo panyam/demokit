@@ -41,7 +41,7 @@ type model struct {
 func newModel(nb *Notebook, width, height int) model {
 	return model{
 		nb:     nb,
-		mode:   SelectMode,
+		mode:   NavigationMode,
 		width:  width,
 		height: height,
 	}
@@ -77,22 +77,26 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.mode = msg.mode
 		return m, nil
 	case ReleaseFocusMsg:
-		m.mode = SelectMode
+		m.mode = NavigationMode
 		return m, nil
 	case CellAdvanceMsg:
-		m.mode = SelectMode
+		m.mode = NavigationMode
 		m.nb.store.moveCursor(+1)
 		m.ensureCursorVisible()
 		return m, nil
 	case PromptSubmittedMsg:
 		// Resolve the pending AwaitInputBy (if any) and exit
-		// ViewMode. Cursor is NOT moved — the caller (typically
+		// CellActiveMode. Cursor is NOT moved — the caller (typically
 		// the awaiter goroutine) decides what cursor position
 		// follows a successful submit.
 		if m.nb.rdv != nil {
-			m.nb.rdv.resolveInput(msg.CellID, msg.Answers, "user-submitted")
+			src := msg.Source
+			if src == "" {
+				src = "user-submitted"
+			}
+			m.nb.rdv.resolveInput(msg.CellID, msg.Answers, src)
 		}
-		m.mode = SelectMode
+		m.mode = NavigationMode
 		return m, nil
 	case ClearCopyMsg:
 		cmd, _ := m.routeToCell(msg.CellID, msg)
@@ -105,29 +109,77 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// handleMouse turns mouse events into navigation. Wheel up/down
-// nudges the cursor like ↑/↓; left-click on a cell selects it
-// (cursor moves to the clicked cell). Cells don't see mouse
-// events for now — mouse is geometry-driven (clicks land at
-// specific cells based on Y, not on the focused cell).
+// handleMouse routes mouse events through the configured MouseConfig.
+//
+// Wheel events are cell-first: the cursor cell sees them via
+// cell.Update (so OutputCell can scroll line-by-line). If the cell
+// doesn't claim, the notebook calls MouseConfig.OnWheelFallback —
+// typically WheelNavCursor, which moves the cell cursor.
+//
+// Non-wheel presses (and touchscreen taps) are geometric: the
+// notebook resolves the click's cell from Y, builds a MouseContext,
+// and calls MouseConfig.OnClick. Cells don't see clicks today —
+// click semantics are app-policy, not cell-policy. Handlers can
+// branch on ctx.Button to differentiate left/right/middle.
 func (m model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 	if msg.Action != tea.MouseActionPress {
 		return m, nil
 	}
 	switch msg.Button {
-	case tea.MouseButtonWheelUp:
-		m.nb.store.moveCursor(-1)
-		m.ensureCursorVisible()
-	case tea.MouseButtonWheelDown:
-		m.nb.store.moveCursor(+1)
-		m.ensureCursorVisible()
-	case tea.MouseButtonLeft:
-		if idx, ok := m.cellAtRow(msg.Y); ok {
-			m.nb.store.setCursorByIdx(idx)
+	case tea.MouseButtonWheelUp, tea.MouseButtonWheelDown:
+		cellCmd, handled := m.routeMouseToCursor(msg)
+		if handled {
+			return m, cellCmd
+		}
+		if h := m.nb.mouseConfig.OnWheelFallback; h != nil {
+			cmd := h(m.nb, m.mouseContext(msg))
 			m.ensureCursorVisible()
+			return m, cmd
+		}
+		return m, cellCmd
+	default:
+		if h := m.nb.mouseConfig.OnClick; h != nil {
+			cmd := h(m.nb, m.mouseContext(msg))
+			m.ensureCursorVisible()
+			return m, cmd
 		}
 	}
 	return m, nil
+}
+
+// mouseContext builds a MouseContext for the current mouse event,
+// resolving the cell at the click position. CellID is "" and
+// CellIndex is -1 when the event landed outside any cell.
+func (m model) mouseContext(msg tea.MouseMsg) MouseContext {
+	ctx := MouseContext{
+		X:         msg.X,
+		Y:         msg.Y,
+		Button:    msg.Button,
+		CellID:    "",
+		CellIndex: -1,
+		Mode:      m.mode,
+		Alt:       msg.Alt,
+		Ctrl:      msg.Ctrl,
+		Shift:     msg.Shift,
+	}
+	if idx, ok := m.cellAtRow(msg.Y); ok {
+		snap := m.nb.store.snapshot()
+		if idx >= 0 && idx < len(snap.cells) {
+			ctx.CellIndex = idx
+			ctx.CellID = CellID(snap.cells[idx].ID())
+		}
+	}
+	return ctx
+}
+
+// routeMouseToCursor delivers a mouse msg to the cursor cell via
+// cell.Update (same plumbing as keys). Used for wheel events.
+func (m model) routeMouseToCursor(msg tea.MouseMsg) (tea.Cmd, bool) {
+	snap := m.nb.store.snapshot()
+	if snap.cursor < 0 || snap.cursor >= len(snap.cells) {
+		return nil, false
+	}
+	return m.routeToCell(snap.cells[snap.cursor].ID(), msg)
 }
 
 // cellAtRow translates an absolute terminal Y row into a cell
@@ -327,4 +379,3 @@ func (m *model) ensureCursorVisible() {
 		}
 	}
 }
-

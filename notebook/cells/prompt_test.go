@@ -12,7 +12,7 @@ import (
 // PromptSubmittedMsg if one was emitted, or nil.
 func submitMsg(t *testing.T, c *PromptCell) *notebook.PromptSubmittedMsg {
 	t.Helper()
-	_, cmd, _ := c.Update(tea.KeyMsg{Type: tea.KeyEnter}, notebook.ViewMode)
+	_, cmd, _ := c.Update(tea.KeyMsg{Type: tea.KeyEnter}, notebook.CellActiveMode)
 	if cmd == nil {
 		return nil
 	}
@@ -119,16 +119,16 @@ func TestPromptCellTabCyclesActiveField(t *testing.T) {
 	if c.active != 0 {
 		t.Fatalf("initial active = %d, want 0", c.active)
 	}
-	c.Update(tea.KeyMsg{Type: tea.KeyTab}, notebook.ViewMode)
+	c.Update(tea.KeyMsg{Type: tea.KeyTab}, notebook.CellActiveMode)
 	if c.active != 1 {
 		t.Errorf("after Tab: active = %d, want 1", c.active)
 	}
-	c.Update(tea.KeyMsg{Type: tea.KeyTab}, notebook.ViewMode)
-	c.Update(tea.KeyMsg{Type: tea.KeyTab}, notebook.ViewMode) // wrap
+	c.Update(tea.KeyMsg{Type: tea.KeyTab}, notebook.CellActiveMode)
+	c.Update(tea.KeyMsg{Type: tea.KeyTab}, notebook.CellActiveMode) // wrap
 	if c.active != 0 {
 		t.Errorf("Tab wrap: active = %d, want 0", c.active)
 	}
-	c.Update(tea.KeyMsg{Type: tea.KeyShiftTab}, notebook.ViewMode)
+	c.Update(tea.KeyMsg{Type: tea.KeyShiftTab}, notebook.CellActiveMode)
 	if c.active != 2 {
 		t.Errorf("Shift+Tab from 0: active = %d, want 2", c.active)
 	}
@@ -148,13 +148,13 @@ func TestPromptCellInvalidFieldBecomesActive(t *testing.T) {
 	}
 }
 
-func TestPromptCellIgnoresKeysInSelectMode(t *testing.T) {
+func TestPromptCellIgnoresKeysInNavigationMode(t *testing.T) {
 	c := NewPrompt("p", []notebook.Input{
 		notebook.NewStringInput("a", "A", nil),
 		notebook.NewStringInput("b", "B", nil),
 	})
-	c.Update(tea.KeyMsg{Type: tea.KeyTab}, notebook.SelectMode)
+	c.Update(tea.KeyMsg{Type: tea.KeyTab}, notebook.NavigationMode)
 	if c.active != 0 {
-		t.Errorf("Tab in SelectMode should be ignored; active = %d", c.active)
+		t.Errorf("Tab in NavigationMode should be ignored; active = %d", c.active)
 	}
 }

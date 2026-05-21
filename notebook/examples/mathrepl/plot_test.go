@@ -42,7 +42,7 @@ func TestPlotCellRendersBrailleContent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewPlotCell error: %v", err)
 	}
-	rows := c.RenderRows(60, 0, c.HeightHint(60), false, notebook.ViewMode)
+	rows := c.RenderRows(60, 0, c.HeightHint(60), false, notebook.CellActiveMode)
 	joined := strings.Join(rows, "\n")
 	if !strings.Contains(joined, "plot sin(x)") {
 		t.Errorf("plot title missing:\n%s", joined)

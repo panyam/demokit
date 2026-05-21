@@ -39,7 +39,7 @@ func main() {
 		Dir("graph").
 		MaxSteps(20).
 		MaxVisits(3).
-		AutoAcceptAfter(8 * time.Second).
+		AutoAcceptAfter(8*time.Second).
 		ShowCountdown(true).
 		BoxedVerbatim().
 		Actors(

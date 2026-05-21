@@ -64,10 +64,10 @@ func (b *Bridge) AttachEventQueue(q *events.EventQueue) { b.queue = q }
 // trigger to start the notebook program lazily.
 func (b *Bridge) RenderHeader(string, string, int) { b.ensureBridge() }
 
-func (b *Bridge) RenderStep(int, int, *demokit.StepDef)      { b.ensureBridge() }
+func (b *Bridge) RenderStep(int, int, *demokit.StepDef)         { b.ensureBridge() }
 func (b *Bridge) RenderResult(int, string, *demokit.StepResult) {}
-func (b *Bridge) RenderSection(*demokit.SectionDef)              {}
-func (b *Bridge) WaitForStep(demokit.WaitOpts)                   {}
+func (b *Bridge) RenderSection(*demokit.SectionDef)             {}
+func (b *Bridge) WaitForStep(demokit.WaitOpts)                  {}
 func (b *Bridge) Prompt(string, []demokit.InputDef) map[string]any {
 	return nil
 }
@@ -178,10 +178,15 @@ func (b *Bridge) handleEvent(off int, ev events.Event) {
 		}
 
 	case events.WaitForAdvance:
-		// "Press Enter to continue" — an empty-input prompt.
-		// Future: a dedicated cells.AdvancePrompt with a cleaner
-		// label than the generic PromptCell.
-		resp := b.nb.AwaitInput(nil)
+		id := fmt.Sprintf("advance-%d", off)
+		ac := cells.NewAdvance(id, "Press Enter to continue")
+		if b.theme != nil {
+			ac.Style = b.theme.Advance
+		}
+		ac.Deadline = e.Deadline // zero = no auto-advance
+		b.nb.Append(ac)
+		b.nb.FocusCell(id)
+		resp := b.nb.AwaitInputBy(id)
 		_ = b.queue.Resolve(off, &events.AdvanceResolution{
 			Source: resp.Source, Timestamp: resp.At,
 		})

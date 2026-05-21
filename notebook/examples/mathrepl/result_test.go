@@ -9,7 +9,7 @@ import (
 
 func TestResultCellSuccessShowsExprAndValue(t *testing.T) {
 	c := NewResult("r", "2 + 2", "4", "")
-	out := strings.Join(c.RenderRows(40, 0, c.HeightHint(40), false, notebook.ViewMode), "\n")
+	out := strings.Join(c.RenderRows(40, 0, c.HeightHint(40), false, notebook.CellActiveMode), "\n")
 	for _, want := range []string{"2 + 2", "4"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("expected %q in render, got:\n%s", want, out)
@@ -19,7 +19,7 @@ func TestResultCellSuccessShowsExprAndValue(t *testing.T) {
 
 func TestResultCellErrorShowsArrowAndMessage(t *testing.T) {
 	c := NewResult("r", "1/0", "", "division by zero")
-	out := strings.Join(c.RenderRows(40, 0, c.HeightHint(40), false, notebook.ViewMode), "\n")
+	out := strings.Join(c.RenderRows(40, 0, c.HeightHint(40), false, notebook.CellActiveMode), "\n")
 	if !strings.Contains(out, "1/0") {
 		t.Errorf("expr missing:\n%s", out)
 	}

@@ -67,7 +67,7 @@ func (nb *Notebook) SetCursor(id CellID) bool {
 }
 
 // FocusCell sets the cursor to the named cell AND switches to
-// ViewMode so the cell has focus immediately. Useful right after
+// CellActiveMode so the cell has focus immediately. Useful right after
 // Appending a prompt cell when you want the user to type into it
 // without manually navigating + entering focus first.
 //
@@ -76,7 +76,7 @@ func (nb *Notebook) FocusCell(id CellID) bool {
 	if !nb.SetCursor(id) {
 		return false
 	}
-	nb.SetMode(ViewMode)
+	nb.SetMode(CellActiveMode)
 	return true
 }
 

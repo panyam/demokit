@@ -33,12 +33,12 @@ func ClearCopyAfter(cellID string) tea.Cmd {
 }
 
 // CellAdvanceMsg signals that a focused cell has finished its
-// interactive work — the notebook should return to SelectMode AND
+// interactive work — the notebook should return to NavigationMode AND
 // advance to the next cell.
 //
 // Cells that don't use Enter for their own purposes (Verbatim,
 // Output, etc.) emit this on Enter so the default UX matches
-// SelectMode Enter. PromptCell emits it on successful submit.
+// NavigationMode Enter. PromptCell emits it on successful submit.
 type CellAdvanceMsg struct{}
 
 // CellAdvance is the tea.Cmd that emits CellAdvanceMsg. Use it as
@@ -47,9 +47,17 @@ type CellAdvanceMsg struct{}
 func CellAdvance() tea.Msg { return CellAdvanceMsg{} }
 
 // PromptSubmittedMsg is emitted by a PromptCell when the user
-// submits a valid answer set. The notebook routes it to the
-// pending AwaitInput call by CellID. Answers maps each input's
-// Name to its parsed value.
+// submits a valid answer set, or by an AdvancePromptCell when
+// the user presses Enter or its Deadline fires. The notebook
+// routes it to the pending AwaitInputBy/AwaitInput call by
+// CellID.
+//
+// Source classifies how the submission ended:
+//   - "" (empty) — treated as "user-submitted" (default for
+//     back-compat).
+//   - "user-submitted" — user pressed Enter.
+//   - "auto-advance" — AdvancePromptCell's Deadline elapsed.
+//   - other values — caller-defined; flow through verbatim.
 //
 // Unlike CellAdvanceMsg, the notebook does NOT auto-move the
 // cursor on receipt — the caller (typically the AwaitInput
@@ -58,16 +66,17 @@ func CellAdvance() tea.Msg { return CellAdvanceMsg{} }
 type PromptSubmittedMsg struct {
 	CellID  string
 	Answers map[string]any
+	Source  string
 }
 
 // ReleaseFocusMsg signals that a focused cell wants to give focus
-// back to the notebook (drop to SelectMode) without advancing the
+// back to the notebook (drop to NavigationMode) without advancing the
 // cursor. Built-in cells emit it on Esc by convention; custom
 // cells decide their own release semantics.
 type ReleaseFocusMsg struct{}
 
 // ReleaseFocus is the tea.Cmd that emits ReleaseFocusMsg. Return
-// it from Cell.Update when the cell wants to exit ViewMode but
+// it from Cell.Update when the cell wants to exit CellActiveMode but
 // keep the cursor where it is.
 func ReleaseFocus() tea.Msg { return ReleaseFocusMsg{} }
 

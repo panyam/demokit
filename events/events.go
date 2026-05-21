@@ -87,10 +87,10 @@ type inputHeader struct {
 	Default any
 }
 
-func (h inputHeader) isInput()             {}
-func (h inputHeader) InputName() string    { return h.Name }
-func (h inputHeader) InputPrompt() string  { return h.Prompt }
-func (h inputHeader) InputDefault() any    { return h.Default }
+func (h inputHeader) isInput()            {}
+func (h inputHeader) InputName() string   { return h.Name }
+func (h inputHeader) InputPrompt() string { return h.Prompt }
+func (h inputHeader) InputDefault() any   { return h.Default }
 
 // StringInput declares a free-form text input.
 type StringInput struct {
@@ -203,13 +203,19 @@ type Done struct{}
 // log invariant.
 type WaitForAdvance struct {
 	Visit int
+
+	// Deadline is the absolute time at which the consumer should
+	// auto-advance the wait if no user action has occurred. Zero
+	// time means "no deadline — block until the user acts."
+	// Computed from Demo.AutoAcceptAfter at emit time.
+	Deadline time.Time
 }
 
 // AdvanceResolution carries the data resolving a WaitForAdvance.
 // Source describes how the wait completed; useful for trace /
 // replay annotations.
 type AdvanceResolution struct {
-	Source    string    // "user-enter", "user-space", "timeout", "auto-advance", "legacy-renderer"
+	Source    string // "user-enter", "user-space", "timeout", "auto-advance", "legacy-renderer"
 	Timestamp time.Time
 }
 

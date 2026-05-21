@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"fmt"
 	"os"
+	"path/filepath"
 )
 
 // Clipboard is the injection point cells call when the user presses
@@ -20,6 +21,48 @@ type Clipboard func(content string) (strategy string, ok bool)
 // is injected — cells render a "(copy failed — no clipboard
 // provider)" toast.
 var NoClipboard Clipboard = func(string) (string, bool) { return "", false }
+
+// FileClipboard returns a Clipboard that writes the payload to a
+// new file under dir and returns the path as the strategy string.
+// Empty dir defaults to os.TempDir().
+//
+// Useful as a manual fallback when the terminal suppresses OSC 52
+// (e.g. iTerm2 with "Applications in terminal may access clipboard"
+// disabled). The OSC 52 write itself has no error channel back
+// from the terminal, so FileClipboard exists for the user to escape
+// to when the OSC52 toast lied.
+//
+// Composes with OutputCell's optional fallback hook (the 't' key
+// in the OutputCell convention — see cells/output.go).
+//
+// The strategy string is the file path so the toast displays where
+// the user can find it.
+func FileClipboard(dir string) Clipboard {
+	if dir == "" {
+		dir = os.TempDir()
+	}
+	return func(content string) (string, bool) {
+		f, err := os.CreateTemp(dir, "notebook-copy-*.txt")
+		if err != nil {
+			return "", false
+		}
+		path := f.Name()
+		if _, err := f.WriteString(content); err != nil {
+			_ = f.Close()
+			_ = os.Remove(path)
+			return "", false
+		}
+		if err := f.Close(); err != nil {
+			return "", false
+		}
+		// Show just the leaf when dir is the platform tmp dir
+		// (full path is long on macOS: /var/folders/...). Caller
+		// can still reach it via /tmp on Unix because tmp is
+		// usually symlinked. Return the absolute path so the
+		// user can copy-paste into a shell.
+		return filepath.Clean(path), true
+	}
+}
 
 // OSC52Clipboard returns a Clipboard that writes via the OSC 52
 // terminal escape sequence. The escape is consumed by the

@@ -23,6 +23,12 @@ type OutputStyle struct {
 	DimColor         color.Color
 	LiveColor        color.Color // "·live" state accent
 	DoneColor        color.Color // "·end" state accent
+
+	// Edges controls which sides of the box draw a border line.
+	// Default Dark/LightOutputStyle use HorizontalEdges (top +
+	// bottom only) so users can drag-select the output body
+	// without picking up vertical bar characters.
+	Edges BorderEdges
 }
 
 // DarkOutputStyle returns the dark-terminal defaults.
@@ -34,6 +40,7 @@ func DarkOutputStyle() OutputStyle {
 		DimColor:         lipgloss.Color("#888888"),
 		LiveColor:        lipgloss.Color("#FF6B6B"),
 		DoneColor:        lipgloss.Color("#04B575"),
+		Edges:            HorizontalEdges(),
 	}
 }
 
@@ -46,6 +53,7 @@ func LightOutputStyle() OutputStyle {
 		DimColor:         lipgloss.Color("#777777"),
 		LiveColor:        lipgloss.Color("#D34545"),
 		DoneColor:        lipgloss.Color("#03935F"),
+		Edges:            HorizontalEdges(),
 	}
 }
 
@@ -56,7 +64,14 @@ func DefaultOutputStyle() OutputStyle { return DarkOutputStyle() }
 // capped at maxBody rows. While following (the default), new lines
 // keep the bottom of the buffer visible — like `tail -f`. Manual
 // scroll (j/k/g/pgup/pgdown) turns follow off; G turns it back on.
-// 'c' copies the whole buffer via the injected Clipboard.
+// 'c' copies the whole buffer via the injected Clipboard; 't'
+// invokes the optional FallbackClipboard with the same payload —
+// useful when the primary clipboard write was silently suppressed
+// (e.g. iTerm blocking OSC 52).
+//
+// 'c' and 't' are OutputCell conventions, not notebook framework
+// rules — custom cells handle their own copy UX. When no fallback
+// is configured the 't' hint is omitted and 't' passes through.
 //
 // Content is read live from the OutputBuffer on every render, so a
 // caller streaming into the buffer needs only to trigger a repaint.
@@ -67,10 +82,12 @@ type OutputCell struct {
 	buf          *notebook.OutputBuffer
 	maxBody      int
 	clip         notebook.Clipboard
+	fallbackClip notebook.Clipboard
 	scrollOffset int
 	follow       bool
 	done         bool
 	copyMsg      string
+	lastCopy     string // payload retained after 'c' so 't' can replay it
 }
 
 // NewOutput builds an OutputCell over a fresh OutputBuffer.
@@ -103,15 +120,42 @@ func (c *OutputCell) SetClipboard(clip notebook.Clipboard) {
 	c.clip = clip
 }
 
+// SetFallbackClipboard wires the clipboard the cell uses on 't' as
+// a backup after 'c'. Pass nil to disable — 't' then passes through.
+// Typically wired to notebook.FileClipboard("") when the primary is
+// OSC 52 so the user can recover from terminals that suppress the
+// escape silently.
+func (c *OutputCell) SetFallbackClipboard(clip notebook.Clipboard) {
+	c.fallbackClip = clip
+}
+
 // MarkDone flips the box state accent from "·live" to "·end".
 func (c *OutputCell) MarkDone() { c.done = true }
+
+// MaxBody returns the current row cap for the cell's rendered
+// body. Useful for resize key bindings ("+"/"-" actions in the
+// notebook's KeyMap that grow/shrink the focused output cell).
+func (c *OutputCell) MaxBody() int { return c.maxBody }
+
+// SetMaxBody updates the row cap. Non-positive values are
+// rejected (a zero-row body would be a degenerate render).
+// Clamps scrollOffset against the new ceiling so follow-mode +
+// manual scroll positions stay valid.
+func (c *OutputCell) SetMaxBody(n int) {
+	if n <= 0 {
+		return
+	}
+	c.maxBody = n
+	c.clampScroll()
+}
 
 // ID implements notebook.Cell.
 func (c *OutputCell) ID() string { return c.id }
 
-// HeightHint implements notebook.Cell. Box = top border + title +
-// body + status + bottom border. An empty buffer still reserves
-// one body row for the "(no output yet)" placeholder.
+// HeightHint implements notebook.Cell. Box = (top border?) +
+// title + body + status + (bottom border?). An empty buffer
+// still reserves one body row for the "(no output yet)"
+// placeholder. Chrome shrinks when Style.Edges turns sides off.
 func (c *OutputCell) HeightHint(_ int) int {
 	bodyRows := c.buf.LineCount()
 	if bodyRows == 0 {
@@ -120,7 +164,7 @@ func (c *OutputCell) HeightHint(_ int) int {
 	if bodyRows > c.maxBody {
 		bodyRows = c.maxBody
 	}
-	h := bodyRows + 4
+	h := bodyRows + 2 + chromeRows(c.Style.Edges) // 2 = title + status
 	if c.copyMsg != "" {
 		h++
 	}
@@ -142,11 +186,11 @@ func (c *OutputCell) RenderRows(width, startRow, endRow int, focused bool, _ not
 	// Hard-truncate long lines so lipgloss doesn't wrap them: a
 	// wrap would push the box past HeightHint and desync viewport
 	// row math.
-	innerWidth := maxBoxWidth(width)
+	inner := innerWidth(width, c.Style.Edges)
 	for i, line := range body {
 		line = strings.TrimRight(line, "\r")
-		if len(line) > innerWidth {
-			line = line[:innerWidth]
+		if len(line) > inner {
+			line = line[:inner]
 		}
 		body[i] = line
 	}
@@ -171,8 +215,12 @@ func (c *OutputCell) RenderRows(width, startRow, endRow int, focused bool, _ not
 	boxStyle := lipgloss.NewStyle().
 		Border(focusedBorder(focused)).
 		BorderForeground(border).
+		BorderTop(c.Style.Edges.Top).
+		BorderRight(c.Style.Edges.Right).
+		BorderBottom(c.Style.Edges.Bottom).
+		BorderLeft(c.Style.Edges.Left).
 		Padding(0, 1).
-		Width(maxBoxWidth(width))
+		Width(inner)
 	rendered := boxStyle.Render(content)
 	rows := strings.Split(rendered, "\n")
 	if c.copyMsg != "" {
@@ -194,7 +242,7 @@ func (c *OutputCell) RenderRows(width, startRow, endRow int, focused bool, _ not
 }
 
 // Update implements notebook.Cell. 'c' copies regardless of mode;
-// in ViewMode scroll keys (j/k/g/G/pgup/pgdown) move within the
+// in CellActiveMode scroll keys (j/k/g/G/pgup/pgdown) move within the
 // buffer, Enter advances, Esc releases focus. Other keys
 // passthrough.
 func (c *OutputCell) Update(msg tea.Msg, mode notebook.Mode) (notebook.Cell, tea.Cmd, bool) {
@@ -202,21 +250,70 @@ func (c *OutputCell) Update(msg tea.Msg, mode notebook.Mode) (notebook.Cell, tea
 		c.copyMsg = ""
 		return c, nil, true
 	}
+	// Mouse wheel: scroll the body line-by-line when the cell
+	// is activated (CellActiveMode) AND the buffer overflows maxBody.
+	// In NavigationMode (cell-to-cell nav), the wheel passes through
+	// so the notebook moves the cell cursor instead. Click on
+	// the cell to activate it.
+	if mouse, ok := msg.(tea.MouseMsg); ok {
+		if mouse.Action != tea.MouseActionPress {
+			return c, nil, false
+		}
+		if mode != notebook.CellActiveMode {
+			return c, nil, false
+		}
+		if c.buf.LineCount() <= c.maxBody {
+			return c, nil, false
+		}
+		switch mouse.Button {
+		case tea.MouseButtonWheelUp:
+			c.follow = false
+			c.scrollOffset--
+			c.clampScroll()
+			return c, nil, true
+		case tea.MouseButtonWheelDown:
+			c.follow = false
+			c.scrollOffset++
+			c.clampScroll()
+			return c, nil, true
+		}
+		return c, nil, false
+	}
 	keyMsg, ok := msg.(tea.KeyMsg)
 	if !ok {
 		return c, nil, false
 	}
 	if keyMsg.String() == "c" {
 		all := strings.Join(c.buf.AllLines(), "\n")
+		c.lastCopy = all
 		strategy, ok := c.clip(all)
 		if ok {
 			c.copyMsg = fmt.Sprintf("(copied %d lines via %s)", c.buf.LineCount(), strategy)
+			if c.fallbackClip != nil {
+				c.copyMsg += " · press t to save tmp file"
+			}
 		} else {
 			c.copyMsg = "(copy failed — no clipboard provider)"
 		}
 		return c, notebook.ClearCopyAfter(c.id), true
 	}
-	if mode != notebook.ViewMode {
+	// 't' invokes the fallback clipboard with the last payload —
+	// usable only while the previous copy toast is still up AND
+	// a fallback is configured. Otherwise passthrough so the
+	// notebook (or another cell) can claim 't' for its own use.
+	if keyMsg.String() == "t" {
+		if c.fallbackClip == nil || c.copyMsg == "" || c.lastCopy == "" {
+			return c, nil, false
+		}
+		strategy, ok := c.fallbackClip(c.lastCopy)
+		if ok {
+			c.copyMsg = fmt.Sprintf("(saved %d lines to %s)", c.buf.LineCount(), strategy)
+		} else {
+			c.copyMsg = "(fallback save failed)"
+		}
+		return c, notebook.ClearCopyAfter(c.id), true
+	}
+	if mode != notebook.CellActiveMode {
 		return c, nil, false
 	}
 	switch keyMsg.String() {

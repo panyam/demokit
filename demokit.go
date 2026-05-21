@@ -51,24 +51,24 @@ type EventAwareRenderer interface {
 
 // Demo is the top-level container for an interactive example.
 type Demo struct {
-	title           string
-	description     string
-	dir             string // directory name for run commands in generated README
-	runPrefix       string // path prefix for run commands (default: "examples")
-	actors          []ActorDef
-	items           []item
-	stepCount       int
-	renderer        Renderer // nil means PlainRenderer
-	maxSteps        int      // upper bound on total step visits per Execute (0 = default)
-	maxVisits       int      // upper bound on visits to any single step (0 = unlimited)
-	autoAcceptAfter      time.Duration
-	showCountdown        bool
-	showStepDenominator  bool
-	inputTimeout         time.Duration // default per-prompt deadline; 0 = wait forever. Per-step override via StepDef.InputTimeout.
-	boxedVerbatim        bool          // render verbatim blocks inside the TUI bordered box (default: unboxed, today's behavior)
-	recorder        Recorder
-	replay          []TraceEntry
-	replayCursor    int
+	title               string
+	description         string
+	dir                 string // directory name for run commands in generated README
+	runPrefix           string // path prefix for run commands (default: "examples")
+	actors              []ActorDef
+	items               []item
+	stepCount           int
+	renderer            Renderer // nil means PlainRenderer
+	maxSteps            int      // upper bound on total step visits per Execute (0 = default)
+	maxVisits           int      // upper bound on visits to any single step (0 = unlimited)
+	autoAcceptAfter     time.Duration
+	showCountdown       bool
+	showStepDenominator bool
+	inputTimeout        time.Duration // default per-prompt deadline; 0 = wait forever. Per-step override via StepDef.InputTimeout.
+	boxedVerbatim       bool          // render verbatim blocks inside the TUI bordered box (default: unboxed, today's behavior)
+	recorder            Recorder
+	replay              []TraceEntry
+	replayCursor        int
 
 	// CLI flag state. Populated either by RegisterFlags + the user's own
 	// FlagSet.Parse, or — if RegisterFlags is never called — by Execute's
@@ -77,10 +77,10 @@ type Demo struct {
 	flagNonInteractive bool
 	flagRecordPath     string
 	flagReplayPath     string
-	flagDoc            string // md|html|json|bundle (empty = not requested)
-	flagFrom           string // optional trace path used with --doc
-	flagOut            string // output file for --doc bundle (else stdout)
-	flagServe          string // address (e.g. ":8765") to serve the live demo on
+	flagDoc            string        // md|html|json|bundle (empty = not requested)
+	flagFrom           string        // optional trace path used with --doc
+	flagOut            string        // output file for --doc bundle (else stdout)
+	flagServe          string        // address (e.g. ":8765") to serve the live demo on
 	flagInputTimeout   time.Duration // demo-level prompt deadline; per-step .InputTimeout takes precedence
 	flagVariant        string        // --variant=<label>|all|default; filters multi-variant verbatim output in non-TUI contexts
 
@@ -667,7 +667,11 @@ walk:
 			// (or auto-accept countdown). Skipped in --serve mode — no
 			// stdin to wait on; the browser advances events as they arrive.
 			if stdinAttached && len(v.inputs) == 0 {
-				offset := d.events.Append(events.WaitForAdvance{Visit: totalVisits})
+				wait := events.WaitForAdvance{Visit: totalVisits}
+				if waitOpts.AutoAcceptAfter > 0 {
+					wait.Deadline = time.Now().Add(waitOpts.AutoAcceptAfter)
+				}
+				offset := d.events.Append(wait)
 				if isEventAware {
 					// Queue-side rendezvous: event-aware renderer's
 					// user input calls q.Resolve. Blocks here until
@@ -1005,4 +1009,3 @@ func (d *Demo) assignStepIDs() {
 		}
 	}
 }
-

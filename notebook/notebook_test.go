@@ -250,15 +250,17 @@ func TestStopUnblocksRun(t *testing.T) {
 
 // newSizedModel constructs a model with a sized store for
 // viewport tests. Wires up the minimum scaffolding (a Notebook
-// with store + rendezvous + DefaultKeyMap, no tea.Program).
+// with store + rendezvous + DefaultKeyMap + DefaultMouseConfig,
+// no tea.Program).
 func newSizedModel(t *testing.T, width, height int) (*model, *store) {
 	t.Helper()
 	nb := &Notebook{
-		store:   newStore(),
-		rdv:     newRendezvous(),
-		keymap:  DefaultKeyMap(),
-		ready:   make(chan struct{}),
-		stopped: make(chan struct{}),
+		store:       newStore(),
+		rdv:         newRendezvous(),
+		keymap:      DefaultKeyMap(),
+		mouseConfig: DefaultMouseConfig(),
+		ready:       make(chan struct{}),
+		stopped:     make(chan struct{}),
 	}
 	m := newModel(nb, width, height)
 	return &m, nb.store
@@ -298,7 +300,7 @@ func TestRemoveAtTopAdjustsViewport(t *testing.T) {
 
 // --- handleKey (model directly) ---
 
-func TestSelectModeJKMovesCursor(t *testing.T) {
+func TestNavigationModeJKMovesCursor(t *testing.T) {
 	m, st := newSizedModel(t, 40, 24)
 	st.insert(-1, newTestCell("a", 1))
 	st.insert(-1, newTestCell("b", 1))
@@ -318,14 +320,14 @@ func TestKeyRoutingHitsFocusedCellInBothModes(t *testing.T) {
 	m, st := newSizedModel(t, 40, 24)
 	tc := newTestCell("a", 1)
 	st.insert(-1, tc)
-	// SelectMode: non-nav keys route to the focused cell so 'c'-copy
-	// works without entering ViewMode first.
+	// NavigationMode: non-nav keys route to the focused cell so 'c'-copy
+	// works without entering CellActiveMode first.
 	m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("c")})
 	got, _ := st.get("a")
 	if got.(*testCell).updates == 0 {
-		t.Error("focused cell did not receive 'c' in SelectMode")
+		t.Error("focused cell did not receive 'c' in NavigationMode")
 	}
-	if got.(*testCell).lastMode != SelectMode {
-		t.Errorf("cell saw mode %v, want SelectMode", got.(*testCell).lastMode)
+	if got.(*testCell).lastMode != NavigationMode {
+		t.Errorf("cell saw mode %v, want NavigationMode", got.(*testCell).lastMode)
 	}
 }

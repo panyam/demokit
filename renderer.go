@@ -200,14 +200,14 @@ func (r *PlainRenderer) RenderStep(stepNum, totalSteps int, step *StepDef) {
 // printVerbatim emits a step's verbatim blocks in plain-text form.
 // Layout:
 //
-//	  <Block label>
+//	<Block label>
 //
-//	    [N] variant-label (default)
-//	        content line 1
-//	        content line 2
+//	  [N] variant-label (default)
+//	      content line 1
+//	      content line 2
 //
-//	    [N+1] other-variant
-//	        ...
+//	  [N+1] other-variant
+//	      ...
 //
 // Copyable variants are numbered globally across the step — the same N
 // a user types at the pause prompt to copy the variant. Non-copyable

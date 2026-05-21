@@ -18,7 +18,7 @@ func TestFilterArgsBuiltInStripsOnly(t *testing.T) {
 		"--from=trace.json",
 		"--variant", "curl",
 		"-addr", ":8081", // unrelated, must pass through
-		"positional",     // positional, must pass through
+		"positional", // positional, must pass through
 	})
 	want := []string{"-addr", ":8081", "positional"}
 	if !reflect.DeepEqual(got, want) {

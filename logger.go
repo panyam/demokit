@@ -29,7 +29,7 @@ const (
 	ANSIYellow       = "\033[33m"
 	ANSIBlue         = "\033[34m"
 	ANSICyan         = "\033[36m"
-	ANSIGray         = "\033[37m"  // light gray — subdued but readable on dark backgrounds
+	ANSIGray         = "\033[37m" // light gray — subdued but readable on dark backgrounds
 	ANSIBrightRed    = "\033[91m"
 	ANSIBrightGreen  = "\033[92m"
 	ANSIBrightYellow = "\033[93m"

@@ -111,7 +111,7 @@ type PromptFactory func(id CellID, inputs []Input) Cell
 
 // AwaitInput is the convenience that builds a prompt cell from
 // the configured PromptFactory, Appends it, AND moves cursor +
-// ViewMode to the new prompt (via FocusCell) so the user can
+// CellActiveMode to the new prompt (via FocusCell) so the user can
 // type immediately. Panics if no factory was configured.
 //
 // AwaitInputBy (the primitive) does NOT auto-focus — callers
