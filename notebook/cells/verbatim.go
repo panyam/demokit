@@ -79,6 +79,7 @@ type VerbatimCell struct {
 
 	id            string
 	clip          notebook.Clipboard
+	fallbackClip  notebook.Clipboard
 	cachedWidth   int
 	cachedFocused bool
 	cachedActive  int
@@ -87,6 +88,7 @@ type VerbatimCell struct {
 	cachedLines   []string
 	cachedHeight  int
 	copyMsg       string
+	lastCopy      string // payload retained after 'c' so 't' can replay it
 }
 
 // NewVerbatim builds a VerbatimCell with DefaultVerbatimStyle.
@@ -117,6 +119,14 @@ func (c *VerbatimCell) SetClipboard(clip notebook.Clipboard) {
 		clip = notebook.NoClipboard
 	}
 	c.clip = clip
+}
+
+// SetFallbackClipboard wires the clipboard the cell uses on 't' as
+// a backup after 'c'. Pass nil to disable — 't' then passes through.
+// Whether to wire it (and to what — typically notebook.FileClipboard)
+// is the application's choice; notebook ships no auto-injection.
+func (c *VerbatimCell) SetFallbackClipboard(clip notebook.Clipboard) {
+	c.fallbackClip = clip
 }
 
 // ID implements notebook.Cell.
@@ -160,7 +170,7 @@ func (c *VerbatimCell) RenderRows(width, startRow, endRow int, focused bool, _ n
 }
 
 // Update implements notebook.Cell. 'c' copies regardless of mode;
-// in ViewMode Enter advances, Tab / Shift+Tab cycle variants,
+// in CellActiveMode Enter advances, Tab / Shift+Tab cycle variants,
 // '1'..'9' jump, Esc releases focus. Other keys passthrough.
 func (c *VerbatimCell) Update(msg tea.Msg, mode notebook.Mode) (notebook.Cell, tea.Cmd, bool) {
 	if cm, ok := msg.(notebook.ClearCopyMsg); ok && cm.CellID == c.id {
@@ -173,6 +183,7 @@ func (c *VerbatimCell) Update(msg tea.Msg, mode notebook.Mode) (notebook.Cell, t
 	}
 	if keyMsg.String() == "c" {
 		v := c.Variants[c.Active]
+		c.lastCopy = v.Content
 		strategy, ok := c.clip(v.Content)
 		if ok {
 			label := v.Label
@@ -181,12 +192,29 @@ func (c *VerbatimCell) Update(msg tea.Msg, mode notebook.Mode) (notebook.Cell, t
 			} else {
 				c.copyMsg = "(copied " + label + " via " + strategy + ")"
 			}
+			if c.fallbackClip != nil {
+				c.copyMsg += " · press t to save tmp file"
+			}
 		} else {
 			c.copyMsg = "(copy failed — no clipboard provider)"
 		}
 		return c, notebook.ClearCopyAfter(c.id), true
 	}
-	if mode != notebook.ViewMode {
+	// 't' invokes the fallback clipboard with the last payload;
+	// passthrough when no fallback configured or no recent copy.
+	if keyMsg.String() == "t" {
+		if c.fallbackClip == nil || c.copyMsg == "" || c.lastCopy == "" {
+			return c, nil, false
+		}
+		strategy, ok := c.fallbackClip(c.lastCopy)
+		if ok {
+			c.copyMsg = "(saved to " + strategy + ")"
+		} else {
+			c.copyMsg = "(fallback save failed)"
+		}
+		return c, notebook.ClearCopyAfter(c.id), true
+	}
+	if mode != notebook.CellActiveMode {
 		return c, nil, false
 	}
 	switch keyMsg.String() {

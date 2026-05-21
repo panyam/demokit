@@ -23,13 +23,13 @@ func feed(c *OutputCell, lines ...string) {
 // follow is on) scrollOffset settles to the buffer end. Tests
 // that inspect scrollOffset directly call this before asserting.
 func render(c *OutputCell) {
-	_ = c.RenderRows(80, 0, c.HeightHint(80), false, notebook.ViewMode)
+	_ = c.RenderRows(80, 0, c.HeightHint(80), false, notebook.CellActiveMode)
 }
 
 func TestOutputCellRendersBufferContent(t *testing.T) {
 	c := NewOutput("o", 10)
 	feed(c, "line one", "line two")
-	joined := strings.Join(allRows(c, 80, false, notebook.ViewMode), "\n")
+	joined := strings.Join(allRows(c, 80, false, notebook.CellActiveMode), "\n")
 	for _, want := range []string{"line one", "line two"} {
 		if !strings.Contains(joined, want) {
 			t.Errorf("expected %q in render, got:\n%s", want, joined)
@@ -39,7 +39,7 @@ func TestOutputCellRendersBufferContent(t *testing.T) {
 
 func TestOutputCellEmptyShowsPlaceholder(t *testing.T) {
 	c := NewOutput("o", 10)
-	joined := strings.Join(allRows(c, 80, false, notebook.ViewMode), "\n")
+	joined := strings.Join(allRows(c, 80, false, notebook.CellActiveMode), "\n")
 	if !strings.Contains(joined, "(no output yet)") {
 		t.Errorf("empty cell should show placeholder, got:\n%s", joined)
 	}
@@ -78,7 +78,7 @@ func TestOutputCellManualScrollDisablesFollow(t *testing.T) {
 		c.Buffer().Append([]byte("x\n"))
 	}
 	render(c) // initial follow-driven scroll
-	c.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("k")}, notebook.ViewMode)
+	c.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("k")}, notebook.CellActiveMode)
 	if c.follow {
 		t.Error("follow should be off after k")
 	}
@@ -90,7 +90,7 @@ func TestOutputCellManualScrollDisablesFollow(t *testing.T) {
 	if c.scrollOffset != frozen {
 		t.Errorf("follow off: render advanced scrollOffset %d→%d", frozen, c.scrollOffset)
 	}
-	c.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("G")}, notebook.ViewMode)
+	c.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("G")}, notebook.CellActiveMode)
 	if !c.follow {
 		t.Error("follow should be on after G")
 	}
@@ -103,7 +103,7 @@ func TestOutputCellManualScrollDisablesFollow(t *testing.T) {
 func TestOutputCellRenderShowsLatestLinesWhenFollowing(t *testing.T) {
 	c := NewOutput("o", 3)
 	feed(c, "line1", "line2", "line3", "line4", "line5")
-	joined := strings.Join(allRows(c, 80, false, notebook.ViewMode), "\n")
+	joined := strings.Join(allRows(c, 80, false, notebook.CellActiveMode), "\n")
 	for _, want := range []string{"line3", "line4", "line5"} {
 		if !strings.Contains(joined, want) {
 			t.Errorf("expected latest line %q, got:\n%s", want, joined)
@@ -116,12 +116,12 @@ func TestOutputCellRenderShowsLatestLinesWhenFollowing(t *testing.T) {
 	}
 }
 
-func TestOutputCellCopyInSelectMode(t *testing.T) {
+func TestOutputCellCopyInNavigationMode(t *testing.T) {
 	var got string
 	c := NewOutput("o", 10)
 	c.SetClipboard(captureClipboard(&got))
 	feed(c, "hello", "world")
-	c.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("c")}, notebook.SelectMode)
+	c.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("c")}, notebook.NavigationMode)
 	if got != "hello\nworld" {
 		t.Errorf("clipboard = %q, want %q", got, "hello\nworld")
 	}
@@ -154,7 +154,7 @@ func TestOutputCellSetMaxBodyClampsScroll(t *testing.T) {
 		c.Buffer().Append([]byte("y\n"))
 	}
 	// Follow drives scrollOffset to 30-12 = 18 at this point.
-	_ = allRows(c, 80, false, notebook.ViewMode)
+	_ = allRows(c, 80, false, notebook.CellActiveMode)
 	c.SetMaxBody(4)
 	// New ceiling: 30 - 4 = 26. scrollOffset was 18, still ≤ 26.
 	// To exercise the clamp, scroll past the new max first:
@@ -172,7 +172,7 @@ func TestOutputCellDefaultEdgesAreHorizontalOnly(t *testing.T) {
 	}
 	// Render should NOT contain '│' (left/right border char).
 	feed(c, "hello")
-	out := strings.Join(allRows(c, 80, false, notebook.ViewMode), "\n")
+	out := strings.Join(allRows(c, 80, false, notebook.CellActiveMode), "\n")
 	if strings.Contains(out, "│") {
 		t.Errorf("default OutputCell render contains '│' (L/R border) — should be HorizontalEdges:\n%s", out)
 	}
@@ -182,13 +182,13 @@ func TestOutputCellEdgesAllShowsLeftRightBorders(t *testing.T) {
 	c := NewOutput("o", 10)
 	c.Style.Edges = AllEdges()
 	feed(c, "hello")
-	out := strings.Join(allRows(c, 80, false, notebook.ViewMode), "\n")
+	out := strings.Join(allRows(c, 80, false, notebook.CellActiveMode), "\n")
 	if !strings.Contains(out, "│") {
 		t.Errorf("AllEdges render missing '│' (L/R border):\n%s", out)
 	}
 }
 
-func TestOutputCellWheelScrollsBodyInViewMode(t *testing.T) {
+func TestOutputCellWheelScrollsBodyInCellActiveMode(t *testing.T) {
 	c := NewOutput("o", 3)
 	for i := 0; i < 20; i++ {
 		c.Buffer().Append([]byte(fmt.Sprintf("line%d\n", i)))
@@ -198,9 +198,9 @@ func TestOutputCellWheelScrollsBodyInViewMode(t *testing.T) {
 	_, _, handled := c.Update(tea.MouseMsg{
 		Action: tea.MouseActionPress,
 		Button: tea.MouseButtonWheelUp,
-	}, notebook.ViewMode)
+	}, notebook.CellActiveMode)
 	if !handled {
-		t.Fatal("wheel-up in ViewMode on overflowing buffer should be handled by the cell")
+		t.Fatal("wheel-up in CellActiveMode on overflowing buffer should be handled by the cell")
 	}
 	if c.follow {
 		t.Error("wheel-up should turn follow off")
@@ -211,13 +211,13 @@ func TestOutputCellWheelScrollsBodyInViewMode(t *testing.T) {
 	_, _, _ = c.Update(tea.MouseMsg{
 		Action: tea.MouseActionPress,
 		Button: tea.MouseButtonWheelDown,
-	}, notebook.ViewMode)
+	}, notebook.CellActiveMode)
 	if c.scrollOffset != before {
 		t.Errorf("wheel-down scrollOffset = %d, want %d", c.scrollOffset, before)
 	}
 }
 
-func TestOutputCellWheelPassthroughInSelectMode(t *testing.T) {
+func TestOutputCellWheelPassthroughInNavigationMode(t *testing.T) {
 	c := NewOutput("o", 3)
 	for i := 0; i < 20; i++ {
 		c.Buffer().Append([]byte(fmt.Sprintf("line%d\n", i)))
@@ -226,9 +226,9 @@ func TestOutputCellWheelPassthroughInSelectMode(t *testing.T) {
 	_, _, handled := c.Update(tea.MouseMsg{
 		Action: tea.MouseActionPress,
 		Button: tea.MouseButtonWheelUp,
-	}, notebook.SelectMode)
+	}, notebook.NavigationMode)
 	if handled {
-		t.Error("wheel in SelectMode should passthrough (notebook moves the cell cursor); click to activate first")
+		t.Error("wheel in NavigationMode should passthrough (notebook moves the cell cursor); click to activate first")
 	}
 }
 
@@ -238,9 +238,9 @@ func TestOutputCellWheelPassthroughWhenBufferFits(t *testing.T) {
 	_, _, handled := c.Update(tea.MouseMsg{
 		Action: tea.MouseActionPress,
 		Button: tea.MouseButtonWheelUp,
-	}, notebook.ViewMode)
+	}, notebook.CellActiveMode)
 	if handled {
-		t.Error("wheel on non-overflowing buffer should passthrough even in ViewMode")
+		t.Error("wheel on non-overflowing buffer should passthrough even in CellActiveMode")
 	}
 }
 
@@ -256,12 +256,59 @@ func TestOutputCellSetMaxBodyIgnoresNonPositive(t *testing.T) {
 	}
 }
 
+func TestOutputCellFallbackClipboardBannerAndReplay(t *testing.T) {
+	var primary, fallback string
+	c := NewOutput("o", 10)
+	c.SetClipboard(captureClipboard(&primary))
+	c.SetFallbackClipboard(func(s string) (string, bool) {
+		fallback = s
+		return "/tmp/file.txt", true
+	})
+	feed(c, "alpha", "beta")
+	c.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("c")}, notebook.CellActiveMode)
+	if primary != "alpha\nbeta" {
+		t.Errorf("primary clipboard = %q, want %q", primary, "alpha\nbeta")
+	}
+	if !strings.Contains(c.copyMsg, "press t to save tmp file") {
+		t.Errorf("banner missing 't' hint when fallback configured: %q", c.copyMsg)
+	}
+	c.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("t")}, notebook.CellActiveMode)
+	if fallback != "alpha\nbeta" {
+		t.Errorf("fallback clipboard = %q, want %q", fallback, "alpha\nbeta")
+	}
+	if !strings.Contains(c.copyMsg, "/tmp/file.txt") {
+		t.Errorf("post-t banner should show fallback strategy; got %q", c.copyMsg)
+	}
+}
+
+func TestOutputCellTPassesThroughWhenNoFallback(t *testing.T) {
+	c := NewOutput("o", 10)
+	feed(c, "alpha")
+	c.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("c")}, notebook.CellActiveMode)
+	if strings.Contains(c.copyMsg, "press t") {
+		t.Errorf("banner should not mention 't' when no fallback: %q", c.copyMsg)
+	}
+	_, _, handled := c.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("t")}, notebook.CellActiveMode)
+	if handled {
+		t.Error("'t' should passthrough (handled=false) when no fallback is configured")
+	}
+}
+
+func TestOutputCellTPassesThroughWithoutPriorCopy(t *testing.T) {
+	c := NewOutput("o", 10)
+	c.SetFallbackClipboard(func(string) (string, bool) { return "x", true })
+	_, _, handled := c.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("t")}, notebook.CellActiveMode)
+	if handled {
+		t.Error("'t' should passthrough (handled=false) when there is no prior 'c' to replay")
+	}
+}
+
 func TestOutputCellMarkDoneChangesState(t *testing.T) {
 	c := NewOutput("o", 10)
 	feed(c, "x")
-	before := strings.Join(allRows(c, 80, false, notebook.ViewMode), "\n")
+	before := strings.Join(allRows(c, 80, false, notebook.CellActiveMode), "\n")
 	c.MarkDone()
-	after := strings.Join(allRows(c, 80, false, notebook.ViewMode), "\n")
+	after := strings.Join(allRows(c, 80, false, notebook.CellActiveMode), "\n")
 	if before == after {
 		t.Error("MarkDone produced no visible state change")
 	}

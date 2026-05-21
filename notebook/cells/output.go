@@ -64,7 +64,14 @@ func DefaultOutputStyle() OutputStyle { return DarkOutputStyle() }
 // capped at maxBody rows. While following (the default), new lines
 // keep the bottom of the buffer visible — like `tail -f`. Manual
 // scroll (j/k/g/pgup/pgdown) turns follow off; G turns it back on.
-// 'c' copies the whole buffer via the injected Clipboard.
+// 'c' copies the whole buffer via the injected Clipboard; 't'
+// invokes the optional FallbackClipboard with the same payload —
+// useful when the primary clipboard write was silently suppressed
+// (e.g. iTerm blocking OSC 52).
+//
+// 'c' and 't' are OutputCell conventions, not notebook framework
+// rules — custom cells handle their own copy UX. When no fallback
+// is configured the 't' hint is omitted and 't' passes through.
 //
 // Content is read live from the OutputBuffer on every render, so a
 // caller streaming into the buffer needs only to trigger a repaint.
@@ -75,10 +82,12 @@ type OutputCell struct {
 	buf          *notebook.OutputBuffer
 	maxBody      int
 	clip         notebook.Clipboard
+	fallbackClip notebook.Clipboard
 	scrollOffset int
 	follow       bool
 	done         bool
 	copyMsg      string
+	lastCopy     string // payload retained after 'c' so 't' can replay it
 }
 
 // NewOutput builds an OutputCell over a fresh OutputBuffer.
@@ -109,6 +118,15 @@ func (c *OutputCell) SetClipboard(clip notebook.Clipboard) {
 		clip = notebook.NoClipboard
 	}
 	c.clip = clip
+}
+
+// SetFallbackClipboard wires the clipboard the cell uses on 't' as
+// a backup after 'c'. Pass nil to disable — 't' then passes through.
+// Typically wired to notebook.FileClipboard("") when the primary is
+// OSC 52 so the user can recover from terminals that suppress the
+// escape silently.
+func (c *OutputCell) SetFallbackClipboard(clip notebook.Clipboard) {
+	c.fallbackClip = clip
 }
 
 // MarkDone flips the box state accent from "·live" to "·end".
@@ -224,7 +242,7 @@ func (c *OutputCell) RenderRows(width, startRow, endRow int, focused bool, _ not
 }
 
 // Update implements notebook.Cell. 'c' copies regardless of mode;
-// in ViewMode scroll keys (j/k/g/G/pgup/pgdown) move within the
+// in CellActiveMode scroll keys (j/k/g/G/pgup/pgdown) move within the
 // buffer, Enter advances, Esc releases focus. Other keys
 // passthrough.
 func (c *OutputCell) Update(msg tea.Msg, mode notebook.Mode) (notebook.Cell, tea.Cmd, bool) {
@@ -233,15 +251,15 @@ func (c *OutputCell) Update(msg tea.Msg, mode notebook.Mode) (notebook.Cell, tea
 		return c, nil, true
 	}
 	// Mouse wheel: scroll the body line-by-line when the cell
-	// is activated (ViewMode) AND the buffer overflows maxBody.
-	// In SelectMode (cell-to-cell nav), the wheel passes through
+	// is activated (CellActiveMode) AND the buffer overflows maxBody.
+	// In NavigationMode (cell-to-cell nav), the wheel passes through
 	// so the notebook moves the cell cursor instead. Click on
 	// the cell to activate it.
 	if mouse, ok := msg.(tea.MouseMsg); ok {
 		if mouse.Action != tea.MouseActionPress {
 			return c, nil, false
 		}
-		if mode != notebook.ViewMode {
+		if mode != notebook.CellActiveMode {
 			return c, nil, false
 		}
 		if c.buf.LineCount() <= c.maxBody {
@@ -267,15 +285,35 @@ func (c *OutputCell) Update(msg tea.Msg, mode notebook.Mode) (notebook.Cell, tea
 	}
 	if keyMsg.String() == "c" {
 		all := strings.Join(c.buf.AllLines(), "\n")
+		c.lastCopy = all
 		strategy, ok := c.clip(all)
 		if ok {
 			c.copyMsg = fmt.Sprintf("(copied %d lines via %s)", c.buf.LineCount(), strategy)
+			if c.fallbackClip != nil {
+				c.copyMsg += " · press t to save tmp file"
+			}
 		} else {
 			c.copyMsg = "(copy failed — no clipboard provider)"
 		}
 		return c, notebook.ClearCopyAfter(c.id), true
 	}
-	if mode != notebook.ViewMode {
+	// 't' invokes the fallback clipboard with the last payload —
+	// usable only while the previous copy toast is still up AND
+	// a fallback is configured. Otherwise passthrough so the
+	// notebook (or another cell) can claim 't' for its own use.
+	if keyMsg.String() == "t" {
+		if c.fallbackClip == nil || c.copyMsg == "" || c.lastCopy == "" {
+			return c, nil, false
+		}
+		strategy, ok := c.fallbackClip(c.lastCopy)
+		if ok {
+			c.copyMsg = fmt.Sprintf("(saved %d lines to %s)", c.buf.LineCount(), strategy)
+		} else {
+			c.copyMsg = "(fallback save failed)"
+		}
+		return c, notebook.ClearCopyAfter(c.id), true
+	}
+	if mode != notebook.CellActiveMode {
 		return c, nil, false
 	}
 	switch keyMsg.String() {

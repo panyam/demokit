@@ -12,7 +12,7 @@ import (
 
 func TestAdvancePromptRendersLabel(t *testing.T) {
 	c := NewAdvance("a", "Press Enter to continue")
-	out := strings.Join(allRows(c, 60, false, notebook.SelectMode), "\n")
+	out := strings.Join(allRows(c, 60, false, notebook.NavigationMode), "\n")
 	if !strings.Contains(out, "Press Enter to continue") {
 		t.Errorf("render missing label:\n%s", out)
 	}
@@ -20,7 +20,7 @@ func TestAdvancePromptRendersLabel(t *testing.T) {
 
 func TestAdvancePromptDefaultsLabelWhenEmpty(t *testing.T) {
 	c := NewAdvance("a", "")
-	out := strings.Join(allRows(c, 60, false, notebook.SelectMode), "\n")
+	out := strings.Join(allRows(c, 60, false, notebook.NavigationMode), "\n")
 	if !strings.Contains(out, "Press Enter to continue") {
 		t.Errorf("empty label should default; got:\n%s", out)
 	}
@@ -28,7 +28,7 @@ func TestAdvancePromptDefaultsLabelWhenEmpty(t *testing.T) {
 
 func TestAdvancePromptEnterEmitsSubmittedUserSource(t *testing.T) {
 	c := NewAdvance("a", "")
-	_, cmd, handled := c.Update(tea.KeyMsg{Type: tea.KeyEnter}, notebook.ViewMode)
+	_, cmd, handled := c.Update(tea.KeyMsg{Type: tea.KeyEnter}, notebook.CellActiveMode)
 	if !handled {
 		t.Fatal("Enter should be handled")
 	}
@@ -53,7 +53,7 @@ func TestAdvancePromptEnterEmitsSubmittedUserSource(t *testing.T) {
 
 func TestAdvancePromptEscReleasesFocus(t *testing.T) {
 	c := NewAdvance("a", "")
-	_, cmd, handled := c.Update(tea.KeyMsg{Type: tea.KeyEsc}, notebook.ViewMode)
+	_, cmd, handled := c.Update(tea.KeyMsg{Type: tea.KeyEsc}, notebook.CellActiveMode)
 	if !handled {
 		t.Fatal("Esc should be handled")
 	}
@@ -67,17 +67,17 @@ func TestAdvancePromptEscReleasesFocus(t *testing.T) {
 
 func TestAdvancePromptOtherKeysPassthrough(t *testing.T) {
 	c := NewAdvance("a", "")
-	_, _, handled := c.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")}, notebook.ViewMode)
+	_, _, handled := c.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")}, notebook.CellActiveMode)
 	if handled {
 		t.Error("'j' should passthrough (handled=false) so notebook KeyMap can act")
 	}
 }
 
-func TestAdvancePromptIgnoresKeysInSelectMode(t *testing.T) {
+func TestAdvancePromptIgnoresKeysInNavigationMode(t *testing.T) {
 	c := NewAdvance("a", "")
-	_, _, handled := c.Update(tea.KeyMsg{Type: tea.KeyEnter}, notebook.SelectMode)
+	_, _, handled := c.Update(tea.KeyMsg{Type: tea.KeyEnter}, notebook.NavigationMode)
 	if handled {
-		t.Error("Enter in SelectMode should passthrough — cell only handles in ViewMode")
+		t.Error("Enter in NavigationMode should passthrough — cell only handles in CellActiveMode")
 	}
 }
 
@@ -86,7 +86,7 @@ func TestAdvancePromptDeadlineSchedulesAutoAdvance(t *testing.T) {
 	c.Deadline = time.Now().Add(20 * time.Millisecond)
 	// First Update of any kind schedules the timer. Send a
 	// non-key msg so the schedule cmd is the only return.
-	_, cmd, _ := c.Update(struct{}{}, notebook.ViewMode)
+	_, cmd, _ := c.Update(struct{}{}, notebook.CellActiveMode)
 	if cmd == nil {
 		t.Fatal("Deadline-set cell did not schedule a tick on first Update")
 	}
@@ -105,7 +105,7 @@ func TestAdvancePromptDeadlineSchedulesAutoAdvance(t *testing.T) {
 func TestAdvancePromptDeadlineRendersBar(t *testing.T) {
 	c := NewAdvance("a", "")
 	c.Deadline = time.Now().Add(5 * time.Second)
-	out := strings.Join(allRows(c, 60, false, notebook.ViewMode), "\n")
+	out := strings.Join(allRows(c, 60, false, notebook.CellActiveMode), "\n")
 	// Bar uses U+2588 (full block) and U+2591 (light shade).
 	if !strings.ContainsAny(out, "█░") {
 		t.Errorf("countdown bar missing from render:\n%s", out)
@@ -119,11 +119,11 @@ func TestAdvancePromptDeadlineRendersBar(t *testing.T) {
 func TestAdvancePromptDoneIgnoresFurtherKeys(t *testing.T) {
 	c := NewAdvance("a", "")
 	// First Enter — accepted.
-	if _, _, handled := c.Update(tea.KeyMsg{Type: tea.KeyEnter}, notebook.ViewMode); !handled {
+	if _, _, handled := c.Update(tea.KeyMsg{Type: tea.KeyEnter}, notebook.CellActiveMode); !handled {
 		t.Fatal("first Enter should be handled")
 	}
 	// Second Enter — cell is done; should passthrough.
-	if _, _, handled := c.Update(tea.KeyMsg{Type: tea.KeyEnter}, notebook.ViewMode); handled {
+	if _, _, handled := c.Update(tea.KeyMsg{Type: tea.KeyEnter}, notebook.CellActiveMode); handled {
 		t.Error("second Enter on done cell should passthrough")
 	}
 }

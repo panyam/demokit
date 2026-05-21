@@ -13,36 +13,36 @@ func TestKeyMapLookupGlobalFirstThenMode(t *testing.T) {
 	km := KeyMap{
 		Global: map[string]Action{"ctrl+c": gAction},
 		Modes: map[Mode]map[string]Action{
-			SelectMode: {"j": mAction},
-			custom:     {"x": mAction},
+			NavigationMode: {"j": mAction},
+			custom:         {"x": mAction},
 		},
 	}
 	// Global matches in any mode.
-	if got := km.lookup(SelectMode, "ctrl+c"); got == nil {
-		t.Error("global ctrl+c missing in SelectMode")
+	if got := km.lookup(NavigationMode, "ctrl+c"); got == nil {
+		t.Error("global ctrl+c missing in NavigationMode")
 	}
 	if got := km.lookup(custom, "ctrl+c"); got == nil {
 		t.Error("global ctrl+c missing in custom mode")
 	}
 	// Mode-specific matches only in their mode.
-	if got := km.lookup(SelectMode, "j"); got == nil {
-		t.Error("SelectMode j missing")
+	if got := km.lookup(NavigationMode, "j"); got == nil {
+		t.Error("NavigationMode j missing")
 	}
 	if got := km.lookup(custom, "j"); got != nil {
-		t.Error("SelectMode j leaked into custom mode")
+		t.Error("NavigationMode j leaked into custom mode")
 	}
 	// Unknown keys return nil.
-	if got := km.lookup(SelectMode, "z"); got != nil {
+	if got := km.lookup(NavigationMode, "z"); got != nil {
 		t.Error("unknown key z should not match")
 	}
 }
 
 func TestDefaultKeyMapDoesNotBindQ(t *testing.T) {
 	km := DefaultKeyMap()
-	if km.lookup(SelectMode, "q") != nil {
+	if km.lookup(NavigationMode, "q") != nil {
 		t.Error("default KeyMap should NOT bind 'q' (apps add it explicitly)")
 	}
-	if km.lookup(SelectMode, "ctrl+c") == nil {
+	if km.lookup(NavigationMode, "ctrl+c") == nil {
 		t.Error("default KeyMap MUST bind ctrl+c")
 	}
 }
@@ -65,9 +65,9 @@ type fallthroughCell struct {
 	gotKeys []string
 }
 
-func (c *fallthroughCell) ID() string              { return c.id }
-func (c *fallthroughCell) HeightHint(int) int      { return 1 }
-func (c *fallthroughCell) StatusHint(Mode) string  { return "" }
+func (c *fallthroughCell) ID() string             { return c.id }
+func (c *fallthroughCell) HeightHint(int) int     { return 1 }
+func (c *fallthroughCell) StatusHint(Mode) string { return "" }
 func (c *fallthroughCell) RenderRows(int, int, int, bool, Mode) []string {
 	return []string{c.id}
 }
@@ -95,7 +95,7 @@ func TestCellFirstThenKeyMapWhenPassthrough(t *testing.T) {
 	cell := &fallthroughCell{id: "a"}
 	st.insert(-1, cell)
 
-	// 'j' in SelectMode: cell sees it (passthrough), then KeyMap
+	// 'j' in NavigationMode: cell sees it (passthrough), then KeyMap
 	// fires NavDown — but only one cell, so cursor stays clamped.
 	// Better: add a second cell so NavDown has somewhere to go.
 	st.insert(-1, &fallthroughCell{id: "b"})
@@ -124,15 +124,15 @@ func TestCellHandledSuppressesKeyMap(t *testing.T) {
 	}
 }
 
-func TestReleaseFocusReturnsToSelectMode(t *testing.T) {
+func TestReleaseFocusReturnsToNavigationMode(t *testing.T) {
 	m, st := newSizedModel(t, 40, 24)
 	st.insert(-1, &fallthroughCell{id: "a"})
-	m.mode = ViewMode
+	m.mode = CellActiveMode
 
 	next, _ := m.Update(ReleaseFocusMsg{})
 	got := next.(model)
-	if got.mode != SelectMode {
-		t.Errorf("mode after ReleaseFocusMsg = %v, want SelectMode", got.mode)
+	if got.mode != NavigationMode {
+		t.Errorf("mode after ReleaseFocusMsg = %v, want NavigationMode", got.mode)
 	}
 }
 
@@ -150,28 +150,28 @@ func TestCellAdvanceMovesCursorAndExits(t *testing.T) {
 	m, st := newSizedModel(t, 40, 24)
 	st.insert(-1, &fallthroughCell{id: "a"})
 	st.insert(-1, &fallthroughCell{id: "b"})
-	m.mode = ViewMode
+	m.mode = CellActiveMode
 
 	next, _ := m.Update(CellAdvanceMsg{})
 	got := next.(model)
-	if got.mode != SelectMode {
-		t.Errorf("mode after CellAdvance = %v, want SelectMode", got.mode)
+	if got.mode != NavigationMode {
+		t.Errorf("mode after CellAdvance = %v, want NavigationMode", got.mode)
 	}
 	if got := st.cursorPos(); got != 1 {
 		t.Errorf("cursor after CellAdvance = %d, want 1", got)
 	}
 }
 
-func TestPromptSubmittedExitsViewModeWithoutMovingCursor(t *testing.T) {
+func TestPromptSubmittedExitsCellActiveModeWithoutMovingCursor(t *testing.T) {
 	m, st := newSizedModel(t, 40, 24)
 	st.insert(-1, &fallthroughCell{id: "a"})
 	st.insert(-1, &fallthroughCell{id: "b"})
-	m.mode = ViewMode
+	m.mode = CellActiveMode
 	// Cursor at "a" (idx 0).
 	next, _ := m.Update(PromptSubmittedMsg{CellID: "a", Answers: map[string]any{}})
 	got := next.(model)
-	if got.mode != SelectMode {
-		t.Errorf("mode = %v, want SelectMode", got.mode)
+	if got.mode != NavigationMode {
+		t.Errorf("mode = %v, want NavigationMode", got.mode)
 	}
 	if c := st.cursorPos(); c != 0 {
 		t.Errorf("cursor = %d, want 0 (PromptSubmitted must NOT move cursor)", c)
@@ -195,20 +195,26 @@ func TestMouseWheelMovesCursor(t *testing.T) {
 	}
 }
 
-func TestMouseLeftClickSelectsCellAndEntersViewMode(t *testing.T) {
+func TestMouseLeftClickSelectsCellAndEntersCellActiveMode(t *testing.T) {
 	m, st := newSizedModel(t, 40, 30)
 	// Three 1-row cells: a@row 0, b@row 1, c@row 2. No header.
 	st.insert(-1, &fallthroughCell{id: "a"})
 	st.insert(-1, &fallthroughCell{id: "b"})
 	st.insert(-1, &fallthroughCell{id: "c"})
 
-	next, _ := m.Update(tea.MouseMsg{Action: tea.MouseActionPress, Button: tea.MouseButtonLeft, Y: 2})
-	got := next.(model)
+	// ClickActivate sets cursor synchronously (via store) and
+	// returns a cmd that emits setModeMsg for the mode change.
+	next, cmd := m.Update(tea.MouseMsg{Action: tea.MouseActionPress, Button: tea.MouseButtonLeft, Y: 2})
 	if pos := st.cursorPos(); pos != 2 {
 		t.Errorf("click at Y=2 → cursor = %d, want 2", pos)
 	}
-	if got.mode != ViewMode {
-		t.Errorf("click → mode = %v, want ViewMode (so wheel-scroll within the cell takes effect)", got.mode)
+	if cmd == nil {
+		t.Fatal("ClickActivate returned nil cmd; want a setModeMsg-emitting cmd")
+	}
+	next, _ = next.Update(cmd())
+	got := next.(model)
+	if got.mode != CellActiveMode {
+		t.Errorf("after draining cmd: mode = %v, want CellActiveMode", got.mode)
 	}
 }
 
@@ -279,11 +285,12 @@ func TestCustomModeBindings(t *testing.T) {
 		},
 	}
 	nb := &Notebook{
-		store:   newStore(),
-		rdv:     newRendezvous(),
-		keymap:  km,
-		ready:   make(chan struct{}),
-		stopped: make(chan struct{}),
+		store:       newStore(),
+		rdv:         newRendezvous(),
+		keymap:      km,
+		mouseConfig: DefaultMouseConfig(),
+		ready:       make(chan struct{}),
+		stopped:     make(chan struct{}),
 	}
 	nb.store.insert(-1, &fallthroughCell{id: "a"})
 	m := newModel(nb, 40, 24)
@@ -295,7 +302,7 @@ func TestCustomModeBindings(t *testing.T) {
 	}
 	// Wrong mode: shouldn't fire.
 	fired = false
-	m.mode = SelectMode
+	m.mode = NavigationMode
 	m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("x")})
 	if fired {
 		t.Error("custom mode binding fired in wrong mode")

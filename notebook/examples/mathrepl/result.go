@@ -16,10 +16,10 @@ import (
 // Lives in the mathrepl module to demonstrate that consumers can
 // implement notebook.Cell themselves without touching notebook/.
 type ResultCell struct {
-	id      string
-	expr    string
-	value   string
-	errMsg  string
+	id       string
+	expr     string
+	value    string
+	errMsg   string
 	rendered []string
 }
 
@@ -54,10 +54,10 @@ func (c *ResultCell) RenderRows(width, startRow, endRow int, _ bool, _ notebook.
 	return out
 }
 
-// Update implements notebook.Cell. Read-only; Esc in ViewMode
+// Update implements notebook.Cell. Read-only; Esc in CellActiveMode
 // releases focus by convention. Other keys passthrough.
 func (c *ResultCell) Update(msg tea.Msg, mode notebook.Mode) (notebook.Cell, tea.Cmd, bool) {
-	if k, ok := msg.(tea.KeyMsg); ok && k.String() == "esc" && mode == notebook.ViewMode {
+	if k, ok := msg.(tea.KeyMsg); ok && k.String() == "esc" && mode == notebook.CellActiveMode {
 		return c, notebook.ReleaseFocus, true
 	}
 	return c, nil, false

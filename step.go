@@ -29,16 +29,16 @@ type item interface {
 
 // StepDef defines one executable step in the demo.
 type StepDef struct {
-	demo        *Demo // back-pointer set by Demo.Step (and Demo.Bind) so renderers can query demo-wide flags (BoxedVerbatim, ...). Nil only for steps constructed standalone in tests.
-	id          string
-	title       string
-	arrows      []arrowDef
-	refs        []Ref
-	note        string
-	inputs      []InputDef
-	verbatim    []verbatimBlock
-	coalesce    func(map[string]any) any
-	runFn       func(StepContext) *StepResult
+	demo         *Demo // back-pointer set by Demo.Step (and Demo.Bind) so renderers can query demo-wide flags (BoxedVerbatim, ...). Nil only for steps constructed standalone in tests.
+	id           string
+	title        string
+	arrows       []arrowDef
+	refs         []Ref
+	note         string
+	inputs       []InputDef
+	verbatim     []verbatimBlock
+	coalesce     func(map[string]any) any
+	runFn        func(StepContext) *StepResult
 	timeout      time.Duration // 0 = no timeout
 	cancellable  bool          // press-Enter cancels in interactive mode
 	inputTimeout time.Duration // per-step prompt deadline; 0 = inherit Demo.InputTimeout
@@ -115,9 +115,9 @@ type VerbatimView struct {
 // VariantSelectionNamed) rather than the struct literal — internal
 // fields may shift.
 type VariantSelection struct {
-	all      bool
-	defOnly  bool   // strict: error if no Default-marked variant exists
-	name     string // empty = no name filter
+	all     bool
+	defOnly bool   // strict: error if no Default-marked variant exists
+	name    string // empty = no name filter
 }
 
 // VariantSelectionAll renders every variant of every block.

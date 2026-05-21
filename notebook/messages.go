@@ -33,12 +33,12 @@ func ClearCopyAfter(cellID string) tea.Cmd {
 }
 
 // CellAdvanceMsg signals that a focused cell has finished its
-// interactive work — the notebook should return to SelectMode AND
+// interactive work — the notebook should return to NavigationMode AND
 // advance to the next cell.
 //
 // Cells that don't use Enter for their own purposes (Verbatim,
 // Output, etc.) emit this on Enter so the default UX matches
-// SelectMode Enter. PromptCell emits it on successful submit.
+// NavigationMode Enter. PromptCell emits it on successful submit.
 type CellAdvanceMsg struct{}
 
 // CellAdvance is the tea.Cmd that emits CellAdvanceMsg. Use it as
@@ -70,13 +70,13 @@ type PromptSubmittedMsg struct {
 }
 
 // ReleaseFocusMsg signals that a focused cell wants to give focus
-// back to the notebook (drop to SelectMode) without advancing the
+// back to the notebook (drop to NavigationMode) without advancing the
 // cursor. Built-in cells emit it on Esc by convention; custom
 // cells decide their own release semantics.
 type ReleaseFocusMsg struct{}
 
 // ReleaseFocus is the tea.Cmd that emits ReleaseFocusMsg. Return
-// it from Cell.Update when the cell wants to exit ViewMode but
+// it from Cell.Update when the cell wants to exit CellActiveMode but
 // keep the cursor where it is.
 func ReleaseFocus() tea.Msg { return ReleaseFocusMsg{} }
 

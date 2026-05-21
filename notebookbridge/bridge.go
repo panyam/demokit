@@ -64,10 +64,10 @@ func (b *Bridge) AttachEventQueue(q *events.EventQueue) { b.queue = q }
 // trigger to start the notebook program lazily.
 func (b *Bridge) RenderHeader(string, string, int) { b.ensureBridge() }
 
-func (b *Bridge) RenderStep(int, int, *demokit.StepDef)      { b.ensureBridge() }
+func (b *Bridge) RenderStep(int, int, *demokit.StepDef)         { b.ensureBridge() }
 func (b *Bridge) RenderResult(int, string, *demokit.StepResult) {}
-func (b *Bridge) RenderSection(*demokit.SectionDef)              {}
-func (b *Bridge) WaitForStep(demokit.WaitOpts)                   {}
+func (b *Bridge) RenderSection(*demokit.SectionDef)             {}
+func (b *Bridge) WaitForStep(demokit.WaitOpts)                  {}
 func (b *Bridge) Prompt(string, []demokit.InputDef) map[string]any {
 	return nil
 }

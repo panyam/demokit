@@ -589,8 +589,8 @@ func (r *Renderer) WaitForStep(opts demokit.WaitOpts) {
 //
 //   - Enter (KeyEnter or '\n') → accept and advance.
 //   - Any other key            → drop into the line-based interactive
-//                                 hold (copy loop for copyable steps,
-//                                 plain Enter wait otherwise).
+//     hold (copy loop for copyable steps,
+//     plain Enter wait otherwise).
 //   - Timer fires              → auto-advance.
 //
 // On terminals where raw mode is unavailable, WaitForKeyOrTimeout

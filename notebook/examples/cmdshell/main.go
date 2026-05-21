@@ -84,6 +84,10 @@ func runREPL(nb *notebook.Notebook) {
 func runCommand(nb *notebook.Notebook, n int, src string) notebook.CellID {
 	id := notebook.CellID(fmt.Sprintf("cmd-%d", n))
 	oc := cells.NewOutput(string(id), 12)
+	// Manual fallback path for the iTerm "Applications may access
+	// clipboard" case: OSC52 reports success but is suppressed.
+	// 't' after 'c' writes the buffer to /tmp.
+	oc.SetFallbackClipboard(notebook.FileClipboard(""))
 	if _, err := nb.Append(oc); err != nil {
 		return id
 	}

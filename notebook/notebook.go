@@ -30,6 +30,7 @@ type Notebook struct {
 	rdv           *rendezvous
 	promptFactory PromptFactory
 	keymap        KeyMap
+	mouseConfig   MouseConfig
 
 	ready   chan struct{}
 	stopped chan struct{}
@@ -50,7 +51,8 @@ type notebookOpts struct {
 	height        int
 	clip          Clipboard
 	promptFactory PromptFactory
-	keymap        *KeyMap // nil = DefaultKeyMap
+	keymap        *KeyMap      // nil = DefaultKeyMap
+	mouseConfig   *MouseConfig // nil = DefaultMouseConfig
 }
 
 // WithHeadless runs the Bubble Tea program against a blocking
@@ -93,6 +95,14 @@ func WithKeyMap(km KeyMap) Option {
 	return func(o *notebookOpts) { o.keymap = &km }
 }
 
+// WithMouseConfig overrides the notebook-level mouse handlers.
+// Without it, DefaultMouseConfig is used (left-click activates,
+// wheel falls back to cell-cursor nav). See MouseConfig in
+// mouse.go for the customization shape.
+func WithMouseConfig(mc MouseConfig) Option {
+	return func(o *notebookOpts) { o.mouseConfig = &mc }
+}
+
 // New constructs a Notebook. The Bubble Tea program is wired up
 // but not started; call Run to start it (Run blocks).
 func New(opts ...Option) *Notebook {
@@ -109,6 +119,11 @@ func New(opts ...Option) *Notebook {
 		km = *cfg.keymap
 	}
 
+	mc := DefaultMouseConfig()
+	if cfg.mouseConfig != nil {
+		mc = *cfg.mouseConfig
+	}
+
 	st := newStore()
 	ready := make(chan struct{})
 	stopped := make(chan struct{})
@@ -121,6 +136,7 @@ func New(opts ...Option) *Notebook {
 		rdv:           rdv,
 		promptFactory: cfg.promptFactory,
 		keymap:        km,
+		mouseConfig:   mc,
 		ready:         ready,
 		stopped:       stopped,
 	}

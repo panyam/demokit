@@ -19,9 +19,9 @@ import (
 )
 
 // Mode is an opaque value identifying the notebook's current
-// interaction mode. The framework ships SelectMode and ViewMode as
-// convenient defaults but apps can define their own via NewMode
-// and register per-mode bindings in KeyMap.
+// interaction mode. The framework ships NavigationMode and
+// CellActiveMode as convenient defaults but apps can define their
+// own via NewMode and register per-mode bindings in KeyMap.
 //
 // Cells receive the current Mode as a parameter to Update so they
 // can react contextually; cells do not store mode themselves.
@@ -41,15 +41,23 @@ type mode struct{ name string }
 
 func (m *mode) Name() string { return m.name }
 
-// SelectMode is the canonical "navigate between cells" mode used
-// by the DefaultKeyMap. Apps that don't use the defaults can
-// ignore it.
-var SelectMode = NewMode("SELECT")
-
-// ViewMode is the canonical "focused-cell-owns-keys" mode used by
-// the DefaultKeyMap. Apps that don't use the defaults can ignore
-// it.
-var ViewMode = NewMode("VIEW")
+// NavigationMode and CellActiveMode are the two built-in modes the
+// framework promotes as canonical. Most apps only need these two;
+// richer apps add their own via NewMode and register per-mode
+// bindings in KeyMap / MouseConfig. The DefaultKeyMap and
+// DefaultMouseConfig are written against these two.
+//
+//   - NavigationMode: cell-to-cell cursor navigation. The cursor
+//     cell still sees keys via cell.Update (so 'c'-copy etc. works)
+//     but the notebook owns nav keys (j/k/↑/↓) and click sets cursor.
+//
+//   - CellActiveMode: the cursor cell is "activated" and owns
+//     nearly every keystroke — text input for PromptCell, scroll
+//     for OutputCell, etc. Esc returns to NavigationMode.
+var (
+	NavigationMode = NewMode("NAV")
+	CellActiveMode = NewMode("ACTIVE")
+)
 
 // Cell is the unit the notebook viewport navigates and renders.
 // Implementations own their content; render is range-based.

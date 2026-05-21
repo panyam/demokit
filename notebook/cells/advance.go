@@ -126,9 +126,9 @@ func (c *AdvancePromptCell) RenderRows(width, startRow, endRow int, focused bool
 	return out
 }
 
-// Update implements notebook.Cell. Enter in ViewMode emits
+// Update implements notebook.Cell. Enter in CellActiveMode emits
 // PromptSubmittedMsg with Source="user-submitted". Esc in
-// ViewMode releases focus without submitting. Other keys
+// CellActiveMode releases focus without submitting. Other keys
 // passthrough.
 //
 // When Deadline is set, the first Update arrival schedules a
@@ -158,7 +158,7 @@ func (c *AdvancePromptCell) Update(msg tea.Msg, mode notebook.Mode) (notebook.Ce
 	if !ok {
 		return c, schedCmd, false
 	}
-	if mode != notebook.ViewMode {
+	if mode != notebook.CellActiveMode {
 		return c, schedCmd, false
 	}
 	switch keyMsg.String() {

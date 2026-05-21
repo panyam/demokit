@@ -131,8 +131,8 @@ func TestRoundTrip_HeaderInputResultDone(t *testing.T) {
 	if got := readUntil(t, c, "header")["demo"].(map[string]any)["title"]; got != "Test Demo" {
 		t.Fatalf("header title: got %v want %v", got, "Test Demo")
 	}
-	readUntil(t, c, "step-start")    // pick
-	readUntil(t, c, "input-needed")  // for pick
+	readUntil(t, c, "step-start")   // pick
+	readUntil(t, c, "input-needed") // for pick
 
 	sendInput(t, c, map[string]any{"choice": "b"})
 

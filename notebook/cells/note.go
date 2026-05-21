@@ -56,6 +56,7 @@ type NoteCell struct {
 
 	id            string
 	clip          notebook.Clipboard
+	fallbackClip  notebook.Clipboard
 	cachedWidth   int
 	cachedFocused bool
 	cachedStyle   NoteStyle
@@ -64,6 +65,7 @@ type NoteCell struct {
 	cachedLines   []string
 	cachedHeight  int
 	copyMsg       string
+	lastCopy      string
 }
 
 // NewNote builds a NoteCell with DefaultNoteStyle. Clipboard
@@ -85,6 +87,13 @@ func (c *NoteCell) SetClipboard(clip notebook.Clipboard) {
 		clip = notebook.NoClipboard
 	}
 	c.clip = clip
+}
+
+// SetFallbackClipboard wires the clipboard the cell uses on 't' as
+// a backup after 'c'. Pass nil to disable — 't' then passes through.
+// App-level wiring (the notebook ships no auto-injection).
+func (c *NoteCell) SetFallbackClipboard(clip notebook.Clipboard) {
+	c.fallbackClip = clip
 }
 
 // ID implements notebook.Cell.
@@ -128,7 +137,7 @@ func (c *NoteCell) RenderRows(width, startRow, endRow int, focused bool, _ noteb
 }
 
 // Update implements notebook.Cell. 'c' copies regardless of mode;
-// Enter in ViewMode signals cell-advance; Esc in ViewMode releases
+// Enter in CellActiveMode signals cell-advance; Esc in CellActiveMode releases
 // focus. Other keys passthrough (handled=false) so notebook KeyMap
 // gets a turn.
 func (c *NoteCell) Update(msg tea.Msg, mode notebook.Mode) (notebook.Cell, tea.Cmd, bool) {
@@ -141,15 +150,31 @@ func (c *NoteCell) Update(msg tea.Msg, mode notebook.Mode) (notebook.Cell, tea.C
 		return c, nil, false
 	}
 	if keyMsg.String() == "c" {
+		c.lastCopy = c.Body
 		strategy, ok := c.clip(c.Body)
 		if ok {
 			c.copyMsg = "(copied via " + strategy + ")"
+			if c.fallbackClip != nil {
+				c.copyMsg += " · press t to save tmp file"
+			}
 		} else {
 			c.copyMsg = "(copy failed — no clipboard provider)"
 		}
 		return c, notebook.ClearCopyAfter(c.id), true
 	}
-	if mode != notebook.ViewMode {
+	if keyMsg.String() == "t" {
+		if c.fallbackClip == nil || c.copyMsg == "" || c.lastCopy == "" {
+			return c, nil, false
+		}
+		strategy, ok := c.fallbackClip(c.lastCopy)
+		if ok {
+			c.copyMsg = "(saved to " + strategy + ")"
+		} else {
+			c.copyMsg = "(fallback save failed)"
+		}
+		return c, notebook.ClearCopyAfter(c.id), true
+	}
+	if mode != notebook.CellActiveMode {
 		return c, nil, false
 	}
 	switch keyMsg.String() {

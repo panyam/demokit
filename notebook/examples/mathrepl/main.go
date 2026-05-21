@@ -98,6 +98,7 @@ func appendResultCell(nb *notebook.Notebook, n int, src, value string, err error
 // across the body doesn't pick up vertical bar characters.
 func appendStressCell(nb *notebook.Notebook, n, count int) {
 	oc := cells.NewOutput(fmt.Sprintf("lines-%d", n), 12)
+	oc.SetFallbackClipboard(notebook.FileClipboard(""))
 	id, err := nb.Append(oc)
 	if err != nil {
 		return

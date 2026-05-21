@@ -24,10 +24,10 @@ func newStreamCell(id string) *streamCell {
 	return &streamCell{id: id, buf: NewOutputBuffer()}
 }
 
-func (c *streamCell) ID() string                { return c.id }
-func (c *streamCell) HeightHint(int) int        { return c.buf.LineCount() + 2 }
-func (c *streamCell) StatusHint(Mode) string    { return "" }
-func (c *streamCell) Buffer() *OutputBuffer     { return c.buf }
+func (c *streamCell) ID() string             { return c.id }
+func (c *streamCell) HeightHint(int) int     { return c.buf.LineCount() + 2 }
+func (c *streamCell) StatusHint(Mode) string { return "" }
+func (c *streamCell) Buffer() *OutputBuffer  { return c.buf }
 func (c *streamCell) Update(tea.Msg, Mode) (Cell, tea.Cmd, bool) {
 	return c, nil, false
 }

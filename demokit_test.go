@@ -238,12 +238,20 @@ type recordingRenderer struct {
 	calls []string
 }
 
-func (r *recordingRenderer) RenderHeader(title, desc string, n int)            { r.calls = append(r.calls, "header:"+title) }
-func (r *recordingRenderer) RenderStep(num, total int, s *StepDef)              { r.calls = append(r.calls, "step:"+s.title) }
-func (r *recordingRenderer) RenderResult(num int, out string, res *StepResult)  { r.calls = append(r.calls, "result") }
-func (r *recordingRenderer) RenderSection(s *SectionDef)                        { r.calls = append(r.calls, "section:"+s.title) }
-func (r *recordingRenderer) RenderDone()                                        { r.calls = append(r.calls, "done") }
-func (r *recordingRenderer) WaitForStep(opts WaitOpts)                          {} // no-op
+func (r *recordingRenderer) RenderHeader(title, desc string, n int) {
+	r.calls = append(r.calls, "header:"+title)
+}
+func (r *recordingRenderer) RenderStep(num, total int, s *StepDef) {
+	r.calls = append(r.calls, "step:"+s.title)
+}
+func (r *recordingRenderer) RenderResult(num int, out string, res *StepResult) {
+	r.calls = append(r.calls, "result")
+}
+func (r *recordingRenderer) RenderSection(s *SectionDef) {
+	r.calls = append(r.calls, "section:"+s.title)
+}
+func (r *recordingRenderer) RenderDone()               { r.calls = append(r.calls, "done") }
+func (r *recordingRenderer) WaitForStep(opts WaitOpts) {} // no-op
 func (r *recordingRenderer) Prompt(stepID string, inputs []InputDef) map[string]any {
 	out := make(map[string]any, len(inputs))
 	for _, in := range inputs {

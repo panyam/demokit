@@ -103,7 +103,7 @@ func NewPrompt(id string, inputs []notebook.Input) *PromptCell {
 	// Intentionally NOT calling fields[0].Focus() — textinput's
 	// blinking cursor is the cell's "I'm focused" manifestation,
 	// and the cell isn't focused at construction. syncFieldFocus
-	// in RenderRows turns it on when (focused && ViewMode).
+	// in RenderRows turns it on when (focused && CellActiveMode).
 	return &PromptCell{
 		id:     id,
 		inputs: inputs,
@@ -116,9 +116,9 @@ func NewPrompt(id string, inputs []notebook.Input) *PromptCell {
 // syncFieldFocus drives the textinput Focus state from the
 // cell's render-time (focused, mode) so the cursor only blinks
 // when the cell itself is focused AND the notebook is in
-// ViewMode. Idempotent — safe to call every render.
+// CellActiveMode. Idempotent — safe to call every render.
 func (c *PromptCell) syncFieldFocus(focused bool, mode notebook.Mode) {
-	wantFocused := focused && mode == notebook.ViewMode && !c.done
+	wantFocused := focused && mode == notebook.CellActiveMode && !c.done
 	for i := range c.fields {
 		on := wantFocused && i == c.active
 		if on && !c.fields[i].Focused() {
@@ -219,14 +219,14 @@ func (c *PromptCell) RenderRows(width, startRow, endRow int, focused bool, mode 
 
 // Update implements notebook.Cell. Routes keys to the active
 // textinput; Enter / Tab / Shift+Tab control submission /
-// navigation; Esc releases focus without submitting. In ViewMode
+// navigation; Esc releases focus without submitting. In CellActiveMode
 // the cell claims every key (typing into the textinput counts);
 // in other modes or once submitted, keys passthrough.
 func (c *PromptCell) Update(msg tea.Msg, mode notebook.Mode) (notebook.Cell, tea.Cmd, bool) {
 	if c.done {
 		return c, nil, false
 	}
-	if mode != notebook.ViewMode {
+	if mode != notebook.CellActiveMode {
 		return c, nil, false
 	}
 	keyMsg, isKey := msg.(tea.KeyMsg)

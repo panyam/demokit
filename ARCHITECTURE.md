@@ -281,7 +281,8 @@ demokit/                              module github.com/panyam/demokit
 
 | File | Responsibility |
 |---|---|
-| `notebook.go` | `Notebook` struct, `New`, `Run`, `Stop`, options (`WithKeyMap`, `WithClipboard`, `WithPromptFactory`, `WithHeadless`, `WithSize`), `Snapshot` |
+| `notebook.go` | `Notebook` struct, `New`, `Run`, `Stop`, options (`WithKeyMap`, `WithMouseConfig`, `WithClipboard`, `WithPromptFactory`, `WithHeadless`, `WithSize`), `Snapshot` |
+| `mouse.go` | `MouseConfig`, `MouseContext`, `MouseHandler`, `ClickActivate` / `ClickCursorOnly` / `WheelNavCursor` / `DefaultOnClick`, `DefaultMouseConfig` |
 | `model.go` | `tea.Model` — viewport, mode, key & mouse dispatch, render |
 | `store.go` | `store` — shared RWMutex-guarded cells + cursor + header |
 | `crud.go` | `Append` / `Insert` / `Update` / `Remove` / `Get` / `IndexOf` / `Len` / `SetCursor` / `FocusCell` / `SetHeader` / `SetDone` |
@@ -289,9 +290,9 @@ demokit/                              module github.com/panyam/demokit
 | `stream.go` | `Stream(id) io.Writer` over a cell's `OutputBuffer` |
 | `keymap.go` | `KeyMap`, `Action`, built-in actions (`Quit` / `NavUp` / `NavDown` / `EnterFocus` / `ExitFocus` / `SetMode`), `DefaultKeyMap` |
 | `keys.go` | `KeyEnter` / `KeyEsc` / `KeyCtrlC` / ... — canonical key-string constants |
-| `clipboard.go` | `Clipboard` type, `NoClipboard`, `OSC52Clipboard` (terminal-escape-based) |
+| `clipboard.go` | `Clipboard` type, `NoClipboard`, `OSC52Clipboard` (terminal-escape-based), `FileClipboard(dir)` (tmp-file fallback) |
 | `messages.go` | `ClearCopyMsg`, `CellAdvanceMsg`, `PromptSubmittedMsg`, `ReleaseFocusMsg`, `setModeMsg` + helpers |
-| `cell.go` | `Cell` interface, `Mode` interface, `NewMode`, `SelectMode` / `ViewMode` |
+| `cell.go` | `Cell` interface, `Mode` interface, `NewMode`, `NavigationMode` / `CellActiveMode` |
 | `input.go` | `Input` interface + `StringInput` / `IntInput` / `ChoiceInput` |
 | `output_buffer.go` | `OutputBuffer` (line-indexed, RWMutex-guarded, `io.Writer`) |
 | `cells/` | `HeaderCell`, `NoteCell`, `VerbatimCell`, `OutputCell`, `PromptCell` + per-cell `*Style` types + `Theme` aggregator |
@@ -302,11 +303,20 @@ Every keystroke routes to the cursor cell first. `Cell.Update` returns `(Cell, t
 
 The principle: **cells own how they react to keys when focused, including how they signal release.** The notebook claims no key unconditionally. `Ctrl+C` lives in `DefaultKeyMap.Global` — cells that don't intercept it (every built-in cell, by convention) passthrough and the global binding catches it. A cell that wants to consume `Ctrl+C` (a confirmation cell, an undo-stack cell, …) returns `handled=true` and the global never fires.
 
-`Esc → ReleaseFocus` is a convention, not a notebook rule. Built-in cells handle Esc → `notebook.ReleaseFocus` cmd; the model exits ViewMode. Cells with internal sub-modes can consume multiple Escs before returning ReleaseFocus.
+`Esc → ReleaseFocus` is a convention, not a notebook rule. Built-in cells handle Esc → `notebook.ReleaseFocus` cmd; the model exits CellActiveMode back to NavigationMode. Cells with internal sub-modes can consume multiple Escs before returning ReleaseFocus.
 
-### Modes are app-defined
+### Two built-in modes; apps add more
 
-`Mode` is opaque (`NewMode("CUSTOM")`); `SelectMode` and `ViewMode` are shipped defaults but apps can use any number of modes. `KeyMap.Modes[mode]` holds per-mode bindings; `KeyMap.Global` applies in every mode. A mode with no `Modes` entry means "no notebook bindings here" — every key passes through to the cell (the natural setup for ViewMode).
+The framework promotes two modes as canonical:
+
+- **`NavigationMode`** — cell-to-cell cursor nav. Notebook owns nav keys (j/k/↑/↓), clicks land on cells geometrically.
+- **`CellActiveMode`** — cursor cell is "activated" and owns nearly every keystroke (text input, scroll, …).
+
+Apps extend via `NewMode("CUSTOM")` and register per-mode bindings in `KeyMap.Modes[mode]`; `KeyMap.Global` applies in every mode. A mode with no `Modes` entry means "no notebook bindings here" — every key passes through to the cell (the natural setup for CellActiveMode).
+
+### Mouse customization via `MouseConfig`
+
+Mouse routing follows the same shape as keys: cells see wheel events first (cell-first dispatch), and the notebook falls back to `MouseConfig` handlers when cells don't claim. Clicks are geometric — they go straight to `MouseConfig.OnClick`. `DefaultMouseConfig` wires left-click → `ClickActivate` (sets cursor + CellActiveMode) and wheel-fallback → `WheelNavCursor` (cell-to-cell nav). Apps swap handlers via `WithMouseConfig` — see `notebook/mouse.go`.
 
 ### Focus presentation belongs to the cell
 

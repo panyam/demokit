@@ -19,8 +19,8 @@ package web
 
 import (
 	"bytes"
-	_ "embed"
 	"embed"
+	_ "embed"
 	"fmt"
 	"html/template"
 	"os"

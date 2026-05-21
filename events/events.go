@@ -87,10 +87,10 @@ type inputHeader struct {
 	Default any
 }
 
-func (h inputHeader) isInput()             {}
-func (h inputHeader) InputName() string    { return h.Name }
-func (h inputHeader) InputPrompt() string  { return h.Prompt }
-func (h inputHeader) InputDefault() any    { return h.Default }
+func (h inputHeader) isInput()            {}
+func (h inputHeader) InputName() string   { return h.Name }
+func (h inputHeader) InputPrompt() string { return h.Prompt }
+func (h inputHeader) InputDefault() any   { return h.Default }
 
 // StringInput declares a free-form text input.
 type StringInput struct {
@@ -215,7 +215,7 @@ type WaitForAdvance struct {
 // Source describes how the wait completed; useful for trace /
 // replay annotations.
 type AdvanceResolution struct {
-	Source    string    // "user-enter", "user-space", "timeout", "auto-advance", "legacy-renderer"
+	Source    string // "user-enter", "user-space", "timeout", "auto-advance", "legacy-renderer"
 	Timestamp time.Time
 }
 
