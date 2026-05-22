@@ -63,7 +63,7 @@ func (c *testCell) Update(msg tea.Msg, mode Mode) (Cell, tea.Cmd, bool) {
 
 func TestAppendReturnsIDAndIncrementsLen(t *testing.T) {
 	nb := New()
-	id, err := nb.Append(newTestCell("a", 1))
+	id, err := nb.Append(newTestCell("a", 1), RevealNone)
 	if err != nil {
 		t.Fatalf("Append error: %v", err)
 	}
@@ -77,9 +77,9 @@ func TestAppendReturnsIDAndIncrementsLen(t *testing.T) {
 
 func TestInsertAtIndexPositionsCellAndCursor(t *testing.T) {
 	nb := New()
-	nb.Append(newTestCell("a", 1))
-	nb.Append(newTestCell("c", 1))
-	if _, err := nb.Insert(1, newTestCell("b", 1)); err != nil {
+	nb.Append(newTestCell("a", 1), RevealNone)
+	nb.Append(newTestCell("c", 1), RevealNone)
+	if _, err := nb.Insert(1, newTestCell("b", 1), RevealNone); err != nil {
 		t.Fatalf("Insert error: %v", err)
 	}
 	for i, want := range []string{"a", "b", "c"} {
@@ -91,8 +91,8 @@ func TestInsertAtIndexPositionsCellAndCursor(t *testing.T) {
 
 func TestInsertAtNegativeIndexAppends(t *testing.T) {
 	nb := New()
-	nb.Append(newTestCell("a", 1))
-	if _, err := nb.Insert(-1, newTestCell("b", 1)); err != nil {
+	nb.Append(newTestCell("a", 1), RevealNone)
+	if _, err := nb.Insert(-1, newTestCell("b", 1), RevealNone); err != nil {
 		t.Fatalf("Insert(-1) error: %v", err)
 	}
 	if got := nb.store.snapshot().cells[1].ID(); got != "b" {
@@ -102,8 +102,8 @@ func TestInsertAtNegativeIndexAppends(t *testing.T) {
 
 func TestInsertRejectsDuplicateID(t *testing.T) {
 	nb := New()
-	nb.Append(newTestCell("dup", 1))
-	if _, err := nb.Insert(0, newTestCell("dup", 1)); err == nil {
+	nb.Append(newTestCell("dup", 1), RevealNone)
+	if _, err := nb.Insert(0, newTestCell("dup", 1), RevealNone); err == nil {
 		t.Error("Insert with duplicate ID should error")
 	}
 	if got := nb.Len(); got != 1 {
@@ -113,8 +113,8 @@ func TestInsertRejectsDuplicateID(t *testing.T) {
 
 func TestRemoveReturnsTrueAndShortensList(t *testing.T) {
 	nb := New()
-	nb.Append(newTestCell("a", 1))
-	nb.Append(newTestCell("b", 1))
+	nb.Append(newTestCell("a", 1), RevealNone)
+	nb.Append(newTestCell("b", 1), RevealNone)
 	if !nb.Remove("a") {
 		t.Error("Remove(a) returned false")
 	}
@@ -128,9 +128,9 @@ func TestRemoveReturnsTrueAndShortensList(t *testing.T) {
 
 func TestRemoveAdjustsCursorWhenFocused(t *testing.T) {
 	nb := New()
-	nb.Append(newTestCell("a", 1))
-	nb.Append(newTestCell("b", 1))
-	nb.Append(newTestCell("c", 1))
+	nb.Append(newTestCell("a", 1), RevealNone)
+	nb.Append(newTestCell("b", 1), RevealNone)
+	nb.Append(newTestCell("c", 1), RevealNone)
 	nb.store.moveCursor(+2) // cursor on c
 	nb.Remove("c")
 	if got := nb.store.cursorPos(); got != 1 {
@@ -145,7 +145,7 @@ func TestRemoveAdjustsCursorWhenFocused(t *testing.T) {
 
 func TestUpdateReplacesCell(t *testing.T) {
 	nb := New()
-	nb.Append(newTestCell("a", 1))
+	nb.Append(newTestCell("a", 1), RevealNone)
 	replaced := newTestCell("a", 5) // same id, new height
 	ok := nb.Update("a", func(_ Cell) Cell { return replaced })
 	if !ok {
@@ -159,8 +159,8 @@ func TestUpdateReplacesCell(t *testing.T) {
 
 func TestGetAndIndexOf(t *testing.T) {
 	nb := New()
-	nb.Append(newTestCell("a", 1))
-	nb.Append(newTestCell("b", 1))
+	nb.Append(newTestCell("a", 1), RevealNone)
+	nb.Append(newTestCell("b", 1), RevealNone)
 	if c, ok := nb.Get("b"); !ok || c.ID() != "b" {
 		t.Errorf("Get(b) = (%v, %v), want b/true", c, ok)
 	}
@@ -185,7 +185,7 @@ func TestAppendAutoInjectsClipboard(t *testing.T) {
 	myClip := Clipboard(func(s string) (string, bool) { return "test", true })
 	nb := New(WithClipboard(myClip))
 	cc := &clipCell{testCell: newTestCell("c", 1)}
-	nb.Append(cc)
+	nb.Append(cc, RevealNone)
 	if cc.got == nil {
 		t.Error("SetClipboard was not called on Append")
 	}
@@ -219,8 +219,8 @@ func TestSnapshotRendersAppendedCells(t *testing.T) {
 	go nb.Run()
 	t.Cleanup(nb.Stop)
 
-	nb.Append(newTestCell("alpha", 1))
-	nb.Append(newTestCell("beta", 1))
+	nb.Append(newTestCell("alpha", 1), RevealNone)
+	nb.Append(newTestCell("beta", 1), RevealNone)
 	snap := nb.Snapshot()
 	for _, want := range []string{"alpha", "beta"} {
 		if !strings.Contains(snap, want) {

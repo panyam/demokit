@@ -105,7 +105,7 @@ func (s *shellState) runFromCommandBar(nb *notebook.Notebook, src string) {
 
 func runREPL(nb *notebook.Notebook, repl *shellState) {
 	nb.SetHeader("cmdshell", "type a shell command · : opens command bar · q quits · clear wipes history")
-	nb.Append(cells.NewNote("intro", "Try", introBody()))
+	nb.Append(cells.NewNote("intro", "Try", introBody()), notebook.RevealBottom)
 
 	for {
 		repl.mu.Lock()
@@ -156,7 +156,7 @@ func runCommand(nb *notebook.Notebook, n int, src string) notebook.CellID {
 	// clipboard" case: OSC52 reports success but is suppressed.
 	// 't' after 'c' writes the buffer to /tmp.
 	oc.SetFallbackClipboard(notebook.FileClipboard(""))
-	if _, err := nb.Append(oc); err != nil {
+	if _, err := nb.Append(oc, notebook.RevealBottom); err != nil {
 		return id
 	}
 	w := nb.Stream(id)

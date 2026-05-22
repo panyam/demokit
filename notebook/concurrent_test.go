@@ -74,7 +74,7 @@ func TestStreamFillsCellIncrementally(t *testing.T) {
 	t.Cleanup(nb.Stop)
 
 	c := newStreamCell("out")
-	nb.Append(c)
+	nb.Append(c, RevealNone)
 	w := nb.Stream("out")
 	for i := 0; i < 5; i++ {
 		fmt.Fprintf(w, "line %d\n", i)
@@ -95,7 +95,7 @@ func TestStreamAfterRemoveDiscards(t *testing.T) {
 	t.Cleanup(nb.Stop)
 
 	c := newStreamCell("out")
-	nb.Append(c)
+	nb.Append(c, RevealNone)
 	w := nb.Stream("out")
 	nb.Remove("out")
 	// After removal, the next Stream("out") returns Discard.
@@ -127,7 +127,7 @@ func TestPromptResolvesWithSubmittedAnswer(t *testing.T) {
 	go nb.Run()
 	t.Cleanup(nb.Stop)
 
-	nb.Append(newStreamCell("p")) // any cell; AwaitInputBy doesn't care
+	nb.Append(newStreamCell("p"), RevealNone) // any cell; AwaitInputBy doesn't care
 	done := make(chan InputResponse, 1)
 	go func() { done <- nb.AwaitInputBy("p") }()
 	waitForInputWaiter(t, nb, "p")
@@ -154,7 +154,7 @@ func TestAwaitInputCancelledOnRemove(t *testing.T) {
 	go nb.Run()
 	t.Cleanup(nb.Stop)
 
-	nb.Append(newStreamCell("p"))
+	nb.Append(newStreamCell("p"), RevealNone)
 	done := make(chan InputResponse, 1)
 	go func() { done <- nb.AwaitInputBy("p") }()
 	waitForInputWaiter(t, nb, "p")
@@ -176,7 +176,7 @@ func TestStopUnblocksAwaitInput(t *testing.T) {
 	nb := New(WithHeadless(), WithSize(40, 10))
 	go nb.Run()
 
-	nb.Append(newStreamCell("p"))
+	nb.Append(newStreamCell("p"), RevealNone)
 	done := make(chan InputResponse, 1)
 	go func() { done <- nb.AwaitInputBy("p") }()
 	waitForInputWaiter(t, nb, "p")
@@ -202,7 +202,7 @@ func TestConcurrentStreams(t *testing.T) {
 	const cells = 4
 	const linesPerCell = 200
 	for i := 0; i < cells; i++ {
-		nb.Append(newStreamCell(fmt.Sprintf("c%d", i)))
+		nb.Append(newStreamCell(fmt.Sprintf("c%d", i)), RevealNone)
 	}
 	var wg sync.WaitGroup
 	for i := 0; i < cells; i++ {
@@ -230,7 +230,7 @@ func TestAppendDuringStream(t *testing.T) {
 	t.Cleanup(nb.Stop)
 
 	c := newStreamCell("stream")
-	nb.Append(c)
+	nb.Append(c, RevealNone)
 	w := nb.Stream("stream")
 
 	streamDone := make(chan struct{})
@@ -243,7 +243,7 @@ func TestAppendDuringStream(t *testing.T) {
 
 	// Append many cells while the stream runs.
 	for i := 0; i < 100; i++ {
-		if _, err := nb.Append(newStreamCell(fmt.Sprintf("a%d", i))); err != nil {
+		if _, err := nb.Append(newStreamCell(fmt.Sprintf("a%d", i)), RevealNone); err != nil {
 			t.Fatalf("Append a%d error: %v", i, err)
 		}
 	}
@@ -263,7 +263,7 @@ func TestStreamLineCountUnderLoad(t *testing.T) {
 	t.Cleanup(nb.Stop)
 
 	c := newStreamCell("hi")
-	nb.Append(c)
+	nb.Append(c, RevealNone)
 	w := nb.Stream("hi")
 
 	const N = 5000

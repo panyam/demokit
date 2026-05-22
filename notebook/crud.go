@@ -4,20 +4,62 @@ package notebook
 // are safe from any goroutine. The model's repaint tick picks
 // changes up within one frame.
 
-// Append adds c to the end of the cell list. On a duplicate ID
-// returns an error; the cell is not added. Auto-wires the
-// configured clipboard into cells that implement SetClipboard.
-func (nb *Notebook) Append(c Cell) (CellID, error) {
-	nb.injectClipboard(c)
-	return nb.store.insert(-1, c)
+// Reveal tells Append / Insert whether to scroll the new cell into
+// view. It is a mandatory parameter (not an option with a silent
+// default) so every caller makes a deliberate choice — the common
+// "I appended a streaming cell but it never shows up" bug comes from
+// forgetting to follow it, and a required arg surfaces that at the
+// call site instead of at runtime on a short terminal.
+type Reveal int
+
+const (
+	// RevealNone leaves the viewport where it is. The new cell may be
+	// off-screen until the user scrolls to it. Pass this explicitly
+	// when the cell isn't what the user should be looking at.
+	RevealNone Reveal = iota
+	// RevealBottom scrolls the new cell into view and makes it the
+	// viewport's follow anchor (the cursor), so it stays visible as it
+	// streams/grows — the `tail -f` behavior. Use for output a caller
+	// streams into, prompts, and anything the user should track.
+	RevealBottom
+	// Future: RevealTop, RevealMiddle (see issues). Adding values here
+	// is backward-compatible — the enum, not the signature, grows.
+)
+
+// Append adds c to the end of the cell list and reveals it per the
+// given Reveal. On a duplicate ID returns an error; the cell is not
+// added. Auto-wires the configured clipboard into cells that
+// implement SetClipboard.
+func (nb *Notebook) Append(c Cell, reveal Reveal) (CellID, error) {
+	return nb.Insert(-1, c, reveal)
 }
 
 // Insert places c at the given index — index < 0 or past the end
-// appends. On a duplicate ID returns an error; the cell is not
-// inserted. Auto-wires the configured clipboard.
-func (nb *Notebook) Insert(index int, c Cell) (CellID, error) {
+// appends — and reveals it per the given Reveal. On a duplicate ID
+// returns an error; the cell is not inserted. Auto-wires the
+// configured clipboard.
+func (nb *Notebook) Insert(index int, c Cell, reveal Reveal) (CellID, error) {
 	nb.injectClipboard(c)
-	return nb.store.insert(index, c)
+	id, err := nb.store.insert(index, c)
+	if err != nil {
+		return id, err
+	}
+	if reveal == RevealBottom {
+		// Make the new cell the cursor; the model's per-frame
+		// ensureCursorVisible then keeps it in view as it grows.
+		nb.store.setCursorByIdx(nb.indexOrEndLocked(id))
+	}
+	return id, nil
+}
+
+// indexOrEndLocked returns the current index of id, or the last
+// index if not found (shouldn't happen right after a successful
+// insert). Used to anchor RevealBottom on the just-inserted cell.
+func (nb *Notebook) indexOrEndLocked(id CellID) int {
+	if idx, ok := nb.store.indexOf(id); ok {
+		return idx
+	}
+	return nb.store.count() - 1
 }
 
 // Update replaces the cell with the given ID by fn(old). Returns
