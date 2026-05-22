@@ -6,7 +6,7 @@ require (
 	charm.land/lipgloss/v2 v2.0.3
 	github.com/charmbracelet/bubbletea v1.3.10
 	github.com/expr-lang/expr v1.17.8
-	github.com/panyam/demokit/notebook v0.0.24
+	github.com/panyam/demokit/notebook v0.0.25
 )
 
 require (
