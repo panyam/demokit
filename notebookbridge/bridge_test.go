@@ -3,8 +3,10 @@ package notebookbridge
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/panyam/demokit/events"
+	"github.com/panyam/demokit/notebook"
 )
 
 func TestSlugifyNormalizesCommonShapes(t *testing.T) {
@@ -74,6 +76,48 @@ func TestBuildCellsFromStepStartProducesHeaderAndVerbatims(t *testing.T) {
 	}
 	if out[1].ID() != "refresh#0.verbatim0" {
 		t.Errorf("verbatim id = %q, want refresh#0.verbatim0", out[1].ID())
+	}
+}
+
+// Regression for #40. demokit.Execute appends the Header (and
+// usually the first StepStart) before RenderHeader spawns the
+// bridge's drain goroutine, so those events predate Subscribe().
+// gocurrent's Notify only fires for post-subscribe activity (see
+// gocurrent's TestLateSubscriberSeesAllPastEvents) — the backlog
+// is reached via ReadFrom, not Notify. With the producer parked
+// in AwaitResolution, no further append ever signals, so a drainer
+// that waits on Notify without an initial catch-up read never sees
+// the header and the notebook renders empty. Here every event is
+// appended before the drainer starts, so only a catch-up drain can
+// surface them.
+func TestDrainDeliversEventsAppendedBeforeSubscribe(t *testing.T) {
+	q := events.NewQueue()
+	q.Append(events.Header{Title: "Cave of Cards", Description: "an adventure"})
+	q.Append(events.StepStart{Visit: 1, StepID: "entrance", Title: "The Entrance"})
+
+	b := New()
+	b.queue = q
+	b.outCellByVisit = map[int]notebook.CellID{}
+	b.nbDone = make(chan struct{})
+	nb := notebook.New(notebook.WithHeadless(), notebook.WithSize(60, 20))
+	b.nb = nb
+	go nb.Run()
+	defer nb.Stop()
+	defer close(b.nbDone)
+
+	go b.drainEvents()
+
+	deadline := time.After(2 * time.Second)
+	for {
+		snap := nb.Snapshot()
+		if strings.Contains(snap, "Cave of Cards") && strings.Contains(snap, "The Entrance") {
+			return
+		}
+		select {
+		case <-deadline:
+			t.Fatalf("header/step never rendered — events appended before Subscribe were dropped:\n%s", snap)
+		case <-time.After(20 * time.Millisecond):
+		}
 	}
 }
 

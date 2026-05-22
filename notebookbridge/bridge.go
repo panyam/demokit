@@ -145,19 +145,35 @@ func (b *Bridge) ensureBridge() {
 func (b *Bridge) drainEvents() {
 	sub := b.queue.Subscribe()
 	defer sub.Close()
-	offset := 0
+	// Catch-up drain before waiting on Notify. demokit.Execute
+	// appends the Header (and usually the first StepStart +
+	// WaitForAdvance) before RenderHeader spawns this goroutine, so
+	// those events predate Subscribe. gocurrent's Notify only fires
+	// for post-subscribe activity — the backlog is reached via
+	// ReadFrom, not Notify — and the producer is already parked in
+	// AwaitResolution for that WaitForAdvance, so no further append
+	// will ever wake us. Without this read we deadlock with an empty
+	// notebook (#40). A post-subscribe append still leaves a pending
+	// Notify token, so the loop below never misses a wakeup.
+	offset := b.drainFrom(0)
 	for {
 		select {
 		case <-sub.Notify():
-			evs, newOff := b.queue.ReadFrom(offset)
-			for i, ev := range evs {
-				b.handleEvent(offset+i, ev)
-			}
-			offset = newOff
+			offset = b.drainFrom(offset)
 		case <-b.nbDone:
 			return
 		}
 	}
+}
+
+// drainFrom dispatches every event at [offset, end) and returns the
+// new offset to resume from.
+func (b *Bridge) drainFrom(offset int) int {
+	evs, newOff := b.queue.ReadFrom(offset)
+	for i, ev := range evs {
+		b.handleEvent(offset+i, ev)
+	}
+	return newOff
 }
 
 func (b *Bridge) handleEvent(off int, ev events.Event) {
