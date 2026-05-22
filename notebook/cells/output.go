@@ -64,6 +64,10 @@ func DefaultOutputStyle() OutputStyle { return DarkOutputStyle() }
 // capped at maxBody rows. While following (the default), new lines
 // keep the bottom of the buffer visible — like `tail -f`. Manual
 // scroll (j/k/g/pgup/pgdown) turns follow off; G turns it back on.
+// Apps that want every line visible (no in-cell scroll) pass a
+// maxBody >= the known final line count via NewOutput or
+// SetMaxBody; the notebook's viewport handles scroll between
+// cells when the cell outgrows the screen.
 // 'c' copies the whole buffer via the injected Clipboard; 't'
 // invokes the optional FallbackClipboard with the same payload —
 // useful when the primary clipboard write was silently suppressed

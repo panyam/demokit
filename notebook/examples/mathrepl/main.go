@@ -1,7 +1,9 @@
 // mathrepl is a standalone math REPL built on the notebook
 // component — no demokit anywhere. Type expressions to see
 // results; type `plot <expr> from <a> to <b>` for a braille graph;
-// `q` quits.
+// `series <expr> from <a> to <b>` to stream a table of values
+// line-by-line (exercises the OutputCell streaming path); `q`
+// quits.
 //
 // The point of the demo is to prove that notebook is genuinely
 // reusable: a third-party consumer with its own custom Cell
@@ -15,28 +17,45 @@ import (
 	"strconv"
 	"strings"
 
+	tea "github.com/charmbracelet/bubbletea"
+
 	"github.com/panyam/demokit/notebook"
 	"github.com/panyam/demokit/notebook/cells"
 )
 
 func main() {
 	env := NewEnv()
+	seriesCtl := newSeriesController()
+
+	// Override Ctrl+C: when any series is streaming, cancel
+	// them all and stay running (so the prompt remains usable).
+	// With no series in flight, fall through to Quit — preserves
+	// the default UX for non-series workflows.
+	km := notebook.DefaultKeyMap()
+	km.Global["ctrl+c"] = func(nb *notebook.Notebook) tea.Cmd {
+		if seriesCtl.cancelAll() {
+			return nil
+		}
+		return notebook.Quit(nb)
+	}
+
 	nb := notebook.New(
 		notebook.WithPromptFactory(cells.PromptFactory()),
+		notebook.WithKeyMap(km),
 	)
 
 	// The REPL drives the notebook from a goroutine; the BT
 	// program runs in main and blocks until Stop. Standard
 	// bubbletea-driven-from-outside pattern.
-	go runREPL(nb, env)
+	go runREPL(nb, env, seriesCtl)
 	if err := nb.Run(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
 }
 
-func runREPL(nb *notebook.Notebook, env *Env) {
-	nb.SetHeader("Math Notebook", "expressions · plot <e> from <a> to <b> · q quits")
+func runREPL(nb *notebook.Notebook, env *Env, seriesCtl *seriesController) {
+	nb.SetHeader("Math Notebook", "expressions · plot · series · q quits")
 	nb.Append(cells.NewNote("intro", "How to use", introBody()))
 
 	n := 0
@@ -65,6 +84,14 @@ func runREPL(nb *notebook.Notebook, env *Env) {
 				continue
 			}
 			nb.Append(cell)
+		case strings.HasPrefix(src, "series "):
+			// `series <e> from <a> to <b>` — streams f(x) values
+			// into an OutputCell one row at a time. The eval loop
+			// runs in its own goroutine so the notebook stays
+			// interactive while the series fills in.
+			if err := runSeries(nb, seriesCtl, n, src, env); err != nil {
+				appendResultCell(nb, n, src, "", err)
+			}
 		case strings.HasPrefix(src, "lines "):
 			// `lines N` — appends an OutputCell with N generated
 			// lines. Use it to exercise scroll + drag-select
@@ -127,6 +154,9 @@ func introBody() string {
 		"  x = 5",
 		"  x * x",
 		"  plot sin(x) from 0 to pi*2",
+		"  series x*x from 1 to 20                 # streams 20 lines (60ms per row) — watch them arrive live",
+		"  series sin(x) from 0 to pi*2 step pi/24",
+		"  series x from 1 to 200 rate 25          # 25ms cadence; Ctrl+C cancels a running series",
 		"  lines 50          # streaming-cell stress test (mouse wheel scrolls, drag-select copies)",
 		"",
 		"Type q to quit. Available: sin cos tan sqrt log exp abs floor ceil pow · pi e",
