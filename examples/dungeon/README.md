@@ -28,7 +28,7 @@ before letting you any further in.
 - `name` = `Wanderer`
 
 ```
-(The cave murmurs: "Welcome, Wanderer the Reluctant.")
+(The cave murmurs: "Welcome, Wanderer the Foolhardy.")
 ```
 
 ### 3. Listen for a moment
@@ -85,6 +85,9 @@ A red dragon reclines on a heap of gold, flipping through a magazine
 titled *Hoard Quarterly*. It glances up at you.
 
 "Oh good. Lunch."
+
+(The reveal streams line-by-line — press Enter at any point to
+skip ahead to the verdict.)
 
 ```
 [38;5;245m      The cave widens. Your torch flickers and gives up entirely.[0m
@@ -145,7 +148,7 @@ before letting you any further in.
 - `name` = `Wanderer`
 
 ```
-(The cave murmurs: "Back so soon, Wanderer the Reluctant?")
+(The cave murmurs: "Back so soon, Wanderer the Foolhardy?")
 ```
 
 ### 11. Listen for a moment _(visit 2)_
@@ -197,6 +200,9 @@ A red dragon reclines on a heap of gold, flipping through a magazine
 titled *Hoard Quarterly*. It glances up at you.
 
 "Oh good. Lunch."
+
+(The reveal streams line-by-line — press Enter at any point to
+skip ahead to the verdict.)
 
 ```
 [38;5;245m      The cave widens. Your torch flickers and gives up entirely.[0m
@@ -257,7 +263,7 @@ before letting you any further in.
 - `name` = `Wanderer`
 
 ```
-(The cave murmurs: "Back so soon, Wanderer the Reluctant?")
+(The cave murmurs: "Back so soon, Wanderer the Foolhardy?")
 ```
 
 ### 19. Listen for a moment _(visit 3)_
@@ -310,6 +316,9 @@ titled *Hoard Quarterly*. It glances up at you.
 
 "Oh good. Lunch."
 
+(The reveal streams line-by-line — press Enter at any point to
+skip ahead to the verdict.)
+
 ```
 [38;5;245m      The cave widens. Your torch flickers and gives up entirely.[0m
 [38;5;245m      Something else takes over the lighting.[0m
@@ -352,4 +361,12 @@ dying. Your boots crunch on something that might have been a previous
 adventurer.
 
 → jumped to `entrance`
+
+### 25. The entrance _(visit 4)_
+
+The cave mouth yawns dark. A breeze stirs the tall grass behind you.
+Three paths lead onward. Your boots crunch on something that might
+have been a previous adventurer.
+
+> **Error:** max visits (3) exceeded for step "entrance"
 

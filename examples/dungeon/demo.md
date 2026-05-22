@@ -127,6 +127,9 @@ suspiciously generous about second chances.
 > titled *Hoard Quarterly*. It glances up at you.
 >
 > "Oh good. Lunch."
+>
+> (The reveal streams line-by-line — press Enter at any point to
+> skip ahead to the verdict.)
 
 ## Victorious! {#victory}
 

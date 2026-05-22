@@ -69,6 +69,17 @@ const (
 	ansiScale      = "\033[38;5;88m"  // 256-color: deep crimson
 )
 
+// dragonVerdict is the dragon step's branching tail — same
+// outcome whether the user watched the full reveal or skipped
+// past it with Enter. Lifted out so both code paths share the
+// decision; ring presence stays the only state input.
+func dragonVerdict(hasRing bool) *demokit.StepResult {
+	if hasRing {
+		return &demokit.StepResult{Next: "victory"}
+	}
+	return &demokit.StepResult{Next: "death"}
+}
+
 // dragonScene is revealed line-by-line in the dragon step, exercising
 // streaming output: each line prints with a brief sleep so the
 // silhouette assembles in front of the user instead of dumping all
@@ -256,24 +267,37 @@ func main() {
 
 	// --- the dragon (state-driven outcome) ---
 
-	demo.Bind("dragon").Run(func(ctx demokit.StepContext) *demokit.StepResult {
-		// Reveal the lair scene line by line. Each Println streams
-		// out as soon as it's written (PlainRenderer / TUI both
-		// implement StreamingRenderer); the user sees the dragon
-		// assemble in real time instead of getting a wall-of-text
-		// dump after Run returns.
-		for _, line := range dragonScene {
-			fmt.Println(line)
-			time.Sleep(80 * time.Millisecond)
-		}
-		// Beat for dramatic effect before the verdict.
-		time.Sleep(700 * time.Millisecond)
-
-		if hasRing {
-			return &demokit.StepResult{Next: "victory"}
-		}
-		return &demokit.StepResult{Next: "death"}
-	})
+	// Cancellable: pressing Enter during the reveal skips the
+	// remaining lines and jumps straight to the verdict. The
+	// shape mirrors mathrepl's `series` cancellation — both
+	// loops select on a Done channel between iterations and
+	// short-circuit on cancel. demokit's Cancellable wires
+	// Enter → ctx.Ctx cancel; the notebookbridge's repaint tick
+	// surfaces each Println within one frame.
+	demo.Bind("dragon").Cancellable(true).
+		Run(func(ctx demokit.StepContext) *demokit.StepResult {
+			for _, line := range dragonScene {
+				select {
+				case <-ctx.Ctx.Done():
+					fmt.Println("…(you can't bear to look any longer)")
+					return dragonVerdict(hasRing)
+				default:
+				}
+				fmt.Println(line)
+				select {
+				case <-time.After(80 * time.Millisecond):
+				case <-ctx.Ctx.Done():
+					fmt.Println("…(you can't bear to look any longer)")
+					return dragonVerdict(hasRing)
+				}
+			}
+			// Beat for dramatic effect before the verdict.
+			select {
+			case <-time.After(700 * time.Millisecond):
+			case <-ctx.Ctx.Done():
+			}
+			return dragonVerdict(hasRing)
+		})
 
 	// --- terminal nodes ---
 
