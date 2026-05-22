@@ -36,8 +36,25 @@ type Bridge struct {
 	outCellByVisit map[int]notebook.CellID
 
 	// configurable knobs
-	theme *cells.Theme
+	theme      *cells.Theme
+	maxOutBody int
 }
+
+// defaultMaxOutputBody is the OutputCell row cap the bridge
+// installs on every step's output cell. Set effectively-unlimited
+// (1<<30 rows) so the bridge stays a data adapter — it routes
+// stream chunks into a buffer, full stop, and the cell grows to
+// fit. View concerns (in-cell scroll vs grow-with-data) live on
+// the notebook side. Apps that explicitly want in-cell scroll
+// for very long streams set a smaller cap via WithMaxOutputBody.
+//
+// Why this matters: a low cap (the old default of 12) silently
+// turns on follow-mode tailing — early lines scroll off the top
+// before the user can read them, making a long ASCII reveal look
+// like it "appeared all at once at the end" when streaming was
+// actually working. Removing the cap by default makes the
+// streaming visible.
+const defaultMaxOutputBody = 1 << 30
 
 // New returns an unstarted Bridge. demokit.Execute discovers the
 // event-aware path via the AttachEventQueue method.
@@ -49,6 +66,19 @@ func New() *Bridge {
 // appended cells. nil uses cells.DefaultTheme() (dark).
 func (b *Bridge) WithTheme(t cells.Theme) *Bridge {
 	b.theme = &t
+	return b
+}
+
+// WithMaxOutputBody overrides the per-step OutputCell row cap.
+// n <= 0 is treated as "use the default" (currently 100).
+// Apps with steps that produce very large streams may want a
+// smaller cap so in-cell scroll (j/k/wheel/PgUp/PgDn) becomes
+// the natural way to look back; apps with finite reveals can
+// leave the generous default.
+func (b *Bridge) WithMaxOutputBody(n int) *Bridge {
+	if n > 0 {
+		b.maxOutBody = n
+	}
 	return b
 }
 
@@ -150,7 +180,11 @@ func (b *Bridge) handleEvent(off int, ev events.Event) {
 
 	case events.StepReadyToRun:
 		oid := outputID(e.Visit, "" /* StepID not on StepReadyToRun */)
-		oc := cells.NewOutput(oid, 12)
+		max := b.maxOutBody
+		if max <= 0 {
+			max = defaultMaxOutputBody
+		}
+		oc := cells.NewOutput(oid, max)
 		if b.theme != nil {
 			oc.Style = b.theme.Output
 		}
