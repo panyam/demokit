@@ -83,7 +83,8 @@ type OutputCell struct {
 	Style OutputStyle
 
 	id           string
-	buf          *notebook.OutputBuffer
+	buf          *notebook.OutputBuffer // storage + streaming sink (Stream/Buffer)
+	layout       notebook.LineSource    // width→visual-rows view over buf; swappable impl
 	maxBody      int
 	clip         notebook.Clipboard
 	fallbackClip notebook.Clipboard
@@ -92,6 +93,7 @@ type OutputCell struct {
 	done         bool
 	copyMsg      string
 	lastCopy     string // payload retained after 'c' so 't' can replay it
+	lastWidth    int    // body width from the last render; scopes key/wheel scroll math to visual rows
 }
 
 // NewOutput builds an OutputCell over a fresh OutputBuffer.
@@ -101,9 +103,11 @@ func NewOutput(id string, maxBody int) *OutputCell {
 	if maxBody <= 0 {
 		maxBody = defaultMaxBody
 	}
+	buf := notebook.NewOutputBuffer()
 	return &OutputCell{
 		id:      id,
-		buf:     notebook.NewOutputBuffer(),
+		buf:     buf,
+		layout:  notebook.NewEagerLineSource(buf),
 		maxBody: maxBody,
 		Style:   DefaultOutputStyle(),
 		clip:    notebook.NoClipboard,
@@ -150,18 +154,39 @@ func (c *OutputCell) SetMaxBody(n int) {
 		return
 	}
 	c.maxBody = n
-	c.clampScroll()
+	c.clampScroll(c.rowCount())
 }
 
 // ID implements notebook.Cell.
 func (c *OutputCell) ID() string { return c.id }
 
+// bodyWidth is the usable text-column count inside the box at the
+// given outer width. innerWidth nets out the border budget and one
+// Padding(0,1); lipgloss's Width(inner) reserves that padding again
+// inside the box, so the real content area is two columns narrower.
+// Wrapping to anything wider lets lipgloss re-wrap and desync the
+// row count against HeightHint.
+func (c *OutputCell) bodyWidth(width int) int {
+	return max(innerWidth(width, c.Style.Edges)-2, 1)
+}
+
+// rowCount reports the total visual-row count at the last rendered
+// width. Before the first render (lastWidth == 0) it falls back to
+// the logical line count — a safe proxy for the "does the buffer
+// overflow maxBody?" checks until a real width is known.
+func (c *OutputCell) rowCount() int {
+	if c.lastWidth <= 0 {
+		return c.buf.LineCount()
+	}
+	return c.layout.RowCount(c.lastWidth)
+}
+
 // HeightHint implements notebook.Cell. Box = (top border?) +
 // title + body + status + (bottom border?). An empty buffer
 // still reserves one body row for the "(no output yet)"
 // placeholder. Chrome shrinks when Style.Edges turns sides off.
-func (c *OutputCell) HeightHint(_ int) int {
-	bodyRows := c.buf.LineCount()
+func (c *OutputCell) HeightHint(width int) int {
+	bodyRows := c.layout.RowCount(c.bodyWidth(width))
 	if bodyRows == 0 {
 		bodyRows = 1
 	}
@@ -177,27 +202,18 @@ func (c *OutputCell) HeightHint(_ int) int {
 
 // RenderRows implements notebook.Cell.
 func (c *OutputCell) RenderRows(width, startRow, endRow int, focused bool, _ notebook.Mode) []string {
-	c.clampScroll()
+	inner := innerWidth(width, c.Style.Edges)
+	c.lastWidth = c.bodyWidth(width)
+	totalRows := c.layout.RowCount(c.lastWidth)
+	c.clampScroll(totalRows)
 
 	border := c.Style.BorderColor
 	if focused {
 		border = c.Style.FocusBorderColor
 	}
 
-	totalLines := c.buf.LineCount()
-	bodyRows := min(totalLines, c.maxBody)
-	body := c.buf.Lines(c.scrollOffset, c.scrollOffset+bodyRows)
-	// Hard-truncate long lines so lipgloss doesn't wrap them: a
-	// wrap would push the box past HeightHint and desync viewport
-	// row math.
-	inner := innerWidth(width, c.Style.Edges)
-	for i, line := range body {
-		line = strings.TrimRight(line, "\r")
-		if len(line) > inner {
-			line = line[:inner]
-		}
-		body[i] = line
-	}
+	bodyRows := min(totalRows, c.maxBody)
+	body := c.layout.Rows(c.lastWidth, c.scrollOffset, c.scrollOffset+bodyRows)
 
 	titleStyle := lipgloss.NewStyle().Bold(true).Foreground(c.Style.TitleColor)
 	dim := lipgloss.NewStyle().Foreground(c.Style.DimColor)
@@ -213,7 +229,7 @@ func (c *OutputCell) RenderRows(width, startRow, endRow int, focused bool, _ not
 	if bodyText == "" {
 		bodyText = dim.Render("(no output yet)")
 	}
-	status := dim.Render(c.statusLine(totalLines))
+	status := dim.Render(c.statusLine(totalRows))
 	content := title + "\n" + bodyText + "\n" + status
 
 	boxStyle := lipgloss.NewStyle().
@@ -226,22 +242,22 @@ func (c *OutputCell) RenderRows(width, startRow, endRow int, focused bool, _ not
 		Padding(0, 1).
 		Width(inner)
 	rendered := boxStyle.Render(content)
-	rows := strings.Split(rendered, "\n")
+	boxRows := strings.Split(rendered, "\n")
 	if c.copyMsg != "" {
-		rows = append(rows, "  "+c.copyMsg)
+		boxRows = append(boxRows, "  "+c.copyMsg)
 	}
 
 	if startRow < 0 {
 		startRow = 0
 	}
-	if endRow > len(rows) {
-		endRow = len(rows)
+	if endRow > len(boxRows) {
+		endRow = len(boxRows)
 	}
 	if startRow >= endRow {
 		return nil
 	}
 	out := make([]string, endRow-startRow)
-	copy(out, rows[startRow:endRow])
+	copy(out, boxRows[startRow:endRow])
 	return out
 }
 
@@ -266,19 +282,19 @@ func (c *OutputCell) Update(msg tea.Msg, mode notebook.Mode) (notebook.Cell, tea
 		if mode != notebook.CellActiveMode {
 			return c, nil, false
 		}
-		if c.buf.LineCount() <= c.maxBody {
+		if c.rowCount() <= c.maxBody {
 			return c, nil, false
 		}
 		switch mouse.Button {
 		case tea.MouseButtonWheelUp:
 			c.follow = false
 			c.scrollOffset--
-			c.clampScroll()
+			c.clampScroll(c.rowCount())
 			return c, nil, true
 		case tea.MouseButtonWheelDown:
 			c.follow = false
 			c.scrollOffset++
-			c.clampScroll()
+			c.clampScroll(c.rowCount())
 			return c, nil, true
 		}
 		return c, nil, false
@@ -328,22 +344,22 @@ func (c *OutputCell) Update(msg tea.Msg, mode notebook.Mode) (notebook.Cell, tea
 	case "j", "down":
 		c.follow = false
 		c.scrollOffset++
-		c.clampScroll()
+		c.clampScroll(c.rowCount())
 		return c, nil, true
 	case "k", "up":
 		c.follow = false
 		c.scrollOffset--
-		c.clampScroll()
+		c.clampScroll(c.rowCount())
 		return c, nil, true
 	case "pgdown":
 		c.follow = false
 		c.scrollOffset += c.maxBody
-		c.clampScroll()
+		c.clampScroll(c.rowCount())
 		return c, nil, true
 	case "pgup":
 		c.follow = false
 		c.scrollOffset -= c.maxBody
-		c.clampScroll()
+		c.clampScroll(c.rowCount())
 		return c, nil, true
 	case "g":
 		c.follow = false
@@ -351,8 +367,8 @@ func (c *OutputCell) Update(msg tea.Msg, mode notebook.Mode) (notebook.Cell, tea
 		return c, nil, true
 	case "G":
 		c.follow = true
-		c.scrollOffset = c.buf.LineCount()
-		c.clampScroll()
+		c.scrollOffset = c.rowCount()
+		c.clampScroll(c.rowCount())
 		return c, nil, true
 	}
 	return c, nil, false
@@ -360,22 +376,23 @@ func (c *OutputCell) Update(msg tea.Msg, mode notebook.Mode) (notebook.Cell, tea
 
 // StatusHint implements notebook.Cell.
 func (c *OutputCell) StatusHint(_ notebook.Mode) string {
-	if c.buf.LineCount() > c.maxBody {
+	if c.rowCount() > c.maxBody {
 		return "j/k scroll · g/G top/bot · c copy"
 	}
 	return "c copy"
 }
 
-// clampScroll updates scrollOffset for the current LineCount. When
-// follow is true, it sticks scrollOffset to the end of the buffer
-// so the latest maxBody lines stay visible (the "tail -f" behavior).
-// When follow is false, it just clamps the manually-set offset.
+// clampScroll keeps scrollOffset valid for a body of total visual
+// rows. When follow is true, it sticks the offset to the end so
+// the latest maxBody rows stay visible (the "tail -f" behavior);
+// when false, it just clamps the manually-set offset. total is the
+// visual-row count (logical lines after wrapping), so follow tails
+// the last wrapped row of the in-flight line, not just whole lines.
 //
 // Called at the top of RenderRows so every frame reflects the
 // current buffer state without an external "append happened"
 // hook — Stream writes to the buffer, the next render picks it up.
-func (c *OutputCell) clampScroll() {
-	total := c.buf.LineCount()
+func (c *OutputCell) clampScroll(total int) {
 	if c.follow {
 		c.scrollOffset = total - c.maxBody
 	}
@@ -388,7 +405,7 @@ func (c *OutputCell) clampScroll() {
 	}
 }
 
-// statusLine builds the "[ x-y / total ]" indicator.
+// statusLine builds the "[ x-y / total ]" indicator over visual rows.
 func (c *OutputCell) statusLine(total int) string {
 	end := min(c.scrollOffset+c.maxBody, total)
 	if total <= c.maxBody {
