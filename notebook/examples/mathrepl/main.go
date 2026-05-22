@@ -56,7 +56,7 @@ func main() {
 
 func runREPL(nb *notebook.Notebook, env *Env, seriesCtl *seriesController) {
 	nb.SetHeader("Math Notebook", "expressions · plot · series · q quits")
-	nb.Append(cells.NewNote("intro", "How to use", introBody()))
+	nb.Append(cells.NewNote("intro", "How to use", introBody()), notebook.RevealBottom)
 
 	n := 0
 	for {
@@ -83,7 +83,7 @@ func runREPL(nb *notebook.Notebook, env *Env, seriesCtl *seriesController) {
 				appendResultCell(nb, n, src, "", err)
 				continue
 			}
-			nb.Append(cell)
+			nb.Append(cell, notebook.RevealBottom)
 		case strings.HasPrefix(src, "series "):
 			// `series <e> from <a> to <b>` — streams f(x) values
 			// into an OutputCell one row at a time. The eval loop
@@ -115,7 +115,7 @@ func appendResultCell(nb *notebook.Notebook, n int, src, value string, err error
 	if err != nil {
 		msg = err.Error()
 	}
-	nb.Append(NewResult(fmt.Sprintf("res-%d", n), src, value, msg))
+	nb.Append(NewResult(fmt.Sprintf("res-%d", n), src, value, msg), notebook.RevealBottom)
 }
 
 // appendStressCell creates an OutputCell with N generated lines.
@@ -126,7 +126,7 @@ func appendResultCell(nb *notebook.Notebook, n int, src, value string, err error
 func appendStressCell(nb *notebook.Notebook, n, count int) {
 	oc := cells.NewOutput(fmt.Sprintf("lines-%d", n), 12)
 	oc.SetFallbackClipboard(notebook.FileClipboard(""))
-	id, err := nb.Append(oc)
+	id, err := nb.Append(oc, notebook.RevealBottom)
 	if err != nil {
 		return
 	}

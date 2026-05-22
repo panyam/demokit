@@ -187,11 +187,11 @@ func (b *Bridge) handleEvent(off int, ev events.Event) {
 		if b.theme != nil {
 			note.Style = b.theme.Note
 		}
-		b.nb.Append(note)
+		b.nb.Append(note, notebook.RevealBottom)
 
 	case events.StepStart:
 		for _, c := range b.buildCellsFromStepStart(e) {
-			b.nb.Append(c)
+			b.nb.Append(c, notebook.RevealBottom)
 		}
 
 	case events.StepReadyToRun:
@@ -204,7 +204,7 @@ func (b *Bridge) handleEvent(off int, ev events.Event) {
 		if b.theme != nil {
 			oc.Style = b.theme.Output
 		}
-		b.nb.Append(oc)
+		b.nb.Append(oc, notebook.RevealBottom)
 		b.visitMu.Lock()
 		b.outCellByVisit[e.Visit] = oid
 		b.visitMu.Unlock()
@@ -234,7 +234,7 @@ func (b *Bridge) handleEvent(off int, ev events.Event) {
 			ac.Style = b.theme.Advance
 		}
 		ac.Deadline = e.Deadline // zero = no auto-advance
-		b.nb.Append(ac)
+		b.nb.Append(ac, notebook.RevealBottom)
 		b.nb.FocusCell(id)
 		resp := b.nb.AwaitInputBy(id)
 		_ = b.queue.Resolve(off, &events.AdvanceResolution{

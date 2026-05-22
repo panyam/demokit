@@ -64,7 +64,7 @@ func TestDock_ReplaceBottomWithCustomThenRestoreDefault(t *testing.T) {
 
 func TestDock_AfterAndBeforeStoreDistinctly(t *testing.T) {
 	nb := New()
-	nb.Append(newTestCell("x", 1))
+	nb.Append(newTestCell("x", 1), RevealNone)
 	a := newTestCell("a", 1)
 	b := newTestCell("b", 1)
 	nb.SetDockedCell(After("x"), a)
@@ -79,7 +79,7 @@ func TestDock_AfterAndBeforeStoreDistinctly(t *testing.T) {
 
 func TestDock_AfterAutoUnregistersOnAnchorRemoval(t *testing.T) {
 	nb := New()
-	nb.Append(newTestCell("x", 1))
+	nb.Append(newTestCell("x", 1), RevealNone)
 	nb.SetDockedCell(After("x"), newTestCell("a", 1))
 	nb.SetDockedCell(Before("x"), newTestCell("b", 1))
 	if !nb.Remove("x") {
@@ -95,8 +95,8 @@ func TestDock_AfterAutoUnregistersOnAnchorRemoval(t *testing.T) {
 
 func TestDock_RemoveOnlyAffectsMatchingAnchor(t *testing.T) {
 	nb := New()
-	nb.Append(newTestCell("x", 1))
-	nb.Append(newTestCell("y", 1))
+	nb.Append(newTestCell("x", 1), RevealNone)
+	nb.Append(newTestCell("y", 1), RevealNone)
 	keepA := newTestCell("ka", 1)
 	keepB := newTestCell("kb", 1)
 	nb.SetDockedCell(After("y"), keepA)
@@ -256,9 +256,9 @@ func TestDock_CtrlWNoopWhenBottomCleared(t *testing.T) {
 
 func TestStatusCell_RendersLegacyFormat(t *testing.T) {
 	nb := New()
-	nb.Append(newTestCell("a", 1))
-	nb.Append(newTestCell("b", 1))
-	nb.Append(newTestCell("c", 1))
+	nb.Append(newTestCell("a", 1), RevealNone)
+	nb.Append(newTestCell("b", 1), RevealNone)
+	nb.Append(newTestCell("c", 1), RevealNone)
 	cell, _ := nb.DockedCell(Bottom)
 	rows := cell.RenderRows(40, 0, 1, false, NavigationMode)
 	if len(rows) != 1 {

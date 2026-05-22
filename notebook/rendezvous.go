@@ -25,44 +25,72 @@ type InputResponse struct {
 // All channels are buffered cap 1 so resolveInput never blocks
 // even if the awaiter has already returned via a different select
 // arm (e.g. <-stopped).
+//
+// resolveInput may legitimately fire BEFORE registerInput: a caller
+// typically focuses the cell (enabling its Enter -> PromptSubmittedMsg
+// -> resolveInput) and only then calls AwaitInputBy (registerInput).
+// A fast keystroke lands in that gap. So an unmatched resolution is
+// buffered in `early` and handed to the next registerInput for that
+// id, rather than dropped — the same resolve-before-await guarantee
+// gocurrent's Queue.AwaitResolution makes on the producer side.
 type rendezvous struct {
 	mu     sync.Mutex
 	inputs map[CellID]chan InputResponse
+	early  map[CellID]InputResponse // resolutions that arrived before a waiter registered
 }
 
 func newRendezvous() *rendezvous {
-	return &rendezvous{inputs: map[CellID]chan InputResponse{}}
+	return &rendezvous{
+		inputs: map[CellID]chan InputResponse{},
+		early:  map[CellID]InputResponse{},
+	}
 }
 
-// registerInput enrols a waiter keyed by the prompt cell's ID.
+// registerInput enrols a waiter keyed by the prompt cell's ID. If a
+// resolution for id already arrived (resolve-before-register), the
+// returned channel is pre-loaded with it so the waiter never blocks.
 func (r *rendezvous) registerInput(id CellID) chan InputResponse {
 	ch := make(chan InputResponse, 1)
 	r.mu.Lock()
-	r.inputs[id] = ch
+	if resp, ok := r.early[id]; ok {
+		delete(r.early, id)
+		ch <- resp // cap-1 buffer; non-blocking
+	} else {
+		r.inputs[id] = ch
+	}
 	r.mu.Unlock()
 	return ch
 }
 
-// removeInput drops the waiter for id without resolving it.
+// removeInput drops the waiter for id without resolving it, and
+// discards any buffered early resolution so it can't leak or be
+// delivered to an unrelated later waiter.
 func (r *rendezvous) removeInput(id CellID) {
 	r.mu.Lock()
 	delete(r.inputs, id)
+	delete(r.early, id)
 	r.mu.Unlock()
 }
 
-// resolveInput hands the waiter for id (if any) its response.
+// resolveInput hands the waiter for id its response, or buffers it
+// for the next registerInput if no waiter is enrolled yet. Returns
+// true if a live waiter received it directly. First resolution for
+// an id wins; later ones for the same un-awaited id are ignored.
 func (r *rendezvous) resolveInput(id CellID, answers map[string]any, source string) bool {
+	resp := InputResponse{Answers: answers, Source: source, At: time.Now()}
 	r.mu.Lock()
 	ch, ok := r.inputs[id]
 	if ok {
 		delete(r.inputs, id)
+	} else if _, buffered := r.early[id]; !buffered {
+		r.early[id] = resp
 	}
 	r.mu.Unlock()
 	if !ok {
 		return false
 	}
 	select {
-	case ch <- InputResponse{Answers: answers, Source: source, At: time.Now()}:
+	case ch <- resp:
 	default:
 	}
 	return true
@@ -74,6 +102,7 @@ func (r *rendezvous) cancelAll() {
 	r.mu.Lock()
 	inputs := r.inputs
 	r.inputs = map[CellID]chan InputResponse{}
+	r.early = map[CellID]InputResponse{}
 	r.mu.Unlock()
 
 	for _, ch := range inputs {
@@ -122,7 +151,7 @@ func (nb *Notebook) AwaitInput(inputs []Input) InputResponse {
 	}
 	id := nb.nextPromptID()
 	cell := nb.promptFactory(id, inputs)
-	if _, err := nb.Append(cell); err != nil {
+	if _, err := nb.Append(cell, RevealBottom); err != nil {
 		// Duplicate ID — shouldn't happen because nextPromptID is
 		// monotonic per Notebook, but surface it via cancelled
 		// rather than blocking forever.

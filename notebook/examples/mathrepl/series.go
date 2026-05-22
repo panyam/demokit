@@ -182,7 +182,7 @@ func runSeries(nb *notebook.Notebook, ctl *seriesController, n int, src string, 
 	// as it grows — no in-cell scroll, the notebook viewport
 	// handles overflow between cells.
 	oc := cells.NewOutput(string(id), count+2)
-	if _, err := nb.Append(oc); err != nil {
+	if _, err := nb.Append(oc, notebook.RevealBottom); err != nil {
 		return err
 	}
 	w := nb.Stream(id)
