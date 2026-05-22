@@ -4,7 +4,7 @@ go 1.26.2
 
 require (
 	github.com/charmbracelet/bubbletea v1.3.10
-	github.com/panyam/demokit/notebook v0.0.2
+	github.com/panyam/demokit/notebook v0.0.23
 )
 
 require (

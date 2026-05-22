@@ -60,6 +60,8 @@ github.com/panyam/demokit/notebook v0.0.1 h1:pfzP4ukYuHcDS1GC/aPlOIq367TcsSHF9f/
 github.com/panyam/demokit/notebook v0.0.1/go.mod h1:1DD05Qr3l221f6fGaN6fyq/KzDXwSM7+oAnrqXi3LEs=
 github.com/panyam/demokit/notebook v0.0.2 h1:v2/f/KmUl9oZUvabrl+Y3lTSIEAjs176jCJE/9oKsC8=
 github.com/panyam/demokit/notebook v0.0.2/go.mod h1:412YG4kCp9K/VqrfAg6cJqaBhcRQOi0Jc81Nc75nf0k=
+github.com/panyam/demokit/notebook v0.0.23 h1:8ZyCZeAM1lN19F1y9NC38o5k7Do14wzgsUDoCNXlcBU=
+github.com/panyam/demokit/notebook v0.0.23/go.mod h1:412YG4kCp9K/VqrfAg6cJqaBhcRQOi0Jc81Nc75nf0k=
 github.com/panyam/gocurrent v0.1.1 h1:UFFCkAxYNdGL4RuUCYBneWCS0jIlquIpvgvDcezegaU=
 github.com/panyam/gocurrent v0.1.1/go.mod h1:jIIhcNfNnnIe2JXH8aY2+ba+/5G1fzwCWoZXdcMNw6o=
 github.com/panyam/goutils v0.1.13 h1:V819IdZTEJ3rpu33ZqohC6O9ou7KOu6cxfigoYT12OQ=
