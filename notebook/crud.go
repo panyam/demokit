@@ -114,6 +114,14 @@ func (nb *Notebook) SetCursor(id CellID) bool {
 // without manually navigating + entering focus first.
 //
 // Returns false if no such cell.
+//
+// NOT safe to call from inside a KeyMap action handler — it
+// transitively calls [Notebook.SetMode], which Sends to the BT
+// loop and deadlocks when invoked on the BT goroutine itself
+// (silent UI freeze). From a KeyMap action, do the two parts
+// directly: call [Notebook.SetCursor](id) (safe store mutation) and
+// return [ModeCmd](CellActiveMode) so the mode flips as a tea.Cmd.
+// See ARCHITECTURE.md § Concurrency model.
 func (nb *Notebook) FocusCell(id CellID) bool {
 	if !nb.SetCursor(id) {
 		return false

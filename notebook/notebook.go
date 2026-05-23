@@ -182,8 +182,17 @@ func (nb *Notebook) Run() error {
 	return err
 }
 
-// SetMode requests a mode change. Safe to call from any
-// goroutine — internally Sends a tea.Msg that the model applies.
+// SetMode requests a mode change by Sending a tea.Msg to the
+// model. Intended for callers on a goroutine OTHER than the Bubble
+// Tea event loop (e.g. a notebook driver goroutine that just
+// Appended a prompt cell).
+//
+// NOT safe to call from inside a KeyMap action handler — those run
+// on the BT goroutine itself, so the Send blocks waiting for the
+// same goroutine that needs to drain it (silent UI freeze). From a
+// KeyMap action, return [ModeCmd](m) instead so the mode change
+// composes as a tea.Cmd the loop processes after the action returns.
+// See ARCHITECTURE.md § Concurrency model.
 func (nb *Notebook) SetMode(m Mode) {
 	nb.program.Send(setModeMsg{mode: m})
 }
@@ -319,6 +328,13 @@ func (nb *Notebook) safeSend(msg tea.Msg) {
 // Stop signals the program to quit and drains any pending
 // AwaitInput callers with Source: "cancelled". Run returns
 // shortly after. Idempotent.
+//
+// NOT safe to call from inside a KeyMap action handler — Stop
+// invokes program.Quit which is internally Send-based, so calling
+// it on the BT goroutine deadlocks (silent UI freeze). From a
+// KeyMap action, return [tea.Quit] instead and let the BT loop
+// process it after the action returns. See ARCHITECTURE.md
+// § Concurrency model.
 func (nb *Notebook) Stop() {
 	nb.stopOnce.Do(func() {
 		close(nb.stopped)
