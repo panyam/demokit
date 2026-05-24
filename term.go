@@ -8,15 +8,35 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"sync"
 
 	"github.com/charmbracelet/x/term"
 	"github.com/muesli/cancelreader"
 )
 
+// stdoutMu serialises access to the global os.Stdout / os.Stderr
+// variables, which captureOutput mutates to redirect a step's
+// prints into a pipe. Without it, a concurrent demo's TermWidth
+// (or the originalStdout snapshot in Execute) reads the variable
+// while captureOutput writes it — a Go data race the -race
+// detector flags under `go test -race ./web/`.
+//
+// Writers (captureOutput) hold Lock for the WHOLE redirect window
+// including the user fn — only one captureOutput at a time across
+// the process. Readers (TermWidth and similar snapshots) hold
+// RLock for the bare moment they evaluate os.Stdout / os.Stderr.
+// Per issue 23 (Option 3): concurrent demos' runFns serialise; the
+// principled long-term fix (no global mutation) is left to a
+// future Option-1 refactor.
+var stdoutMu sync.RWMutex
+
 // TermWidth returns the current terminal width, or 80 as fallback.
 // Tries stdout, then stderr (which stays connected even when stdout is piped).
 func TermWidth() int {
-	for _, f := range []*os.File{os.Stdout, os.Stderr} {
+	stdoutMu.RLock()
+	stdout, stderr := os.Stdout, os.Stderr
+	stdoutMu.RUnlock()
+	for _, f := range []*os.File{stdout, stderr} {
 		if w, _, err := term.GetSize(f.Fd()); err == nil && w > 0 {
 			return w
 		}
@@ -83,6 +103,15 @@ func cancelReason(err error) string {
 // output (returned string) still contains everything regardless of
 // onChunk — the chunk callback tees, it doesn't replace the buffer.
 func captureOutput(fn func(StepContext) *StepResult, ctx StepContext, onChunk func([]byte)) (output string, result *StepResult) {
+	// Hold the package mutex for the WHOLE redirect window — mutation,
+	// user fn execution, AND restore. The redirect is in effect during
+	// fn; another captureOutput re-redirecting would corrupt this
+	// demo's capture, and the variable swap itself races with any
+	// concurrent reader (TermWidth, the Execute-side originalStdout
+	// snapshot). See stdoutMu's doc comment.
+	stdoutMu.Lock()
+	defer stdoutMu.Unlock()
+
 	oldOut, oldErr := os.Stdout, os.Stderr
 	r, w, err := os.Pipe()
 	if err != nil {

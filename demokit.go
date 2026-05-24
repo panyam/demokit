@@ -741,7 +741,13 @@ walk:
 				streaming = true
 			}
 			stepNum := totalVisits
+			// Snapshot the real terminal stdout before captureOutput
+			// redirects it. RLock-gated so we read a stable value even
+			// if a concurrent demo's captureOutput is mid-mutation —
+			// see term.go's stdoutMu.
+			stdoutMu.RLock()
 			originalStdout := os.Stdout
+			stdoutMu.RUnlock()
 			// Always emit OutputChunk events (so the queue is the
 			// canonical log for any consumer); pass through to
 			// the streaming renderer when present.
