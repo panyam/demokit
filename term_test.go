@@ -199,3 +199,34 @@ func TestExecuteStreamingTraceCapturesFullOutput(t *testing.T) {
 		t.Errorf("trace[0].Output = %q, want %q", rec.Entries[0].Output, "archive me")
 	}
 }
+
+// Regression for issue 23: captureOutput's mutation of global
+// os.Stdout / os.Stderr raced with concurrent readers (TermWidth,
+// the originalStdout snapshot in Execute) — race-flagged by
+// `go test -race ./web/`. Drive both sides in parallel under
+// -race; the test passes when both are gated by stdoutMu, and
+// fails (race detector) when they aren't.
+func TestCaptureOutputDoesNotRaceWithTermWidth(t *testing.T) {
+	const goroutines = 6
+	const iters = 25
+	var wg sync.WaitGroup
+	for i := 0; i < goroutines; i++ {
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			for j := 0; j < iters; j++ {
+				_, _ = captureOutput(func(ctx StepContext) *StepResult {
+					fmt.Print("x")
+					return nil
+				}, StepContext{}, nil)
+			}
+		}()
+		go func() {
+			defer wg.Done()
+			for j := 0; j < iters*4; j++ {
+				_ = TermWidth()
+			}
+		}()
+	}
+	wg.Wait()
+}
