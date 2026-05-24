@@ -134,6 +134,11 @@ type Header struct {
 	Title       string
 	Description string
 	StepCount   int
+	// BoxedVerbatim mirrors Demo.IsBoxedVerbatim — renderers that
+	// project verbatim blocks need it to decide whether single-variant
+	// blocks get a numbered "[N]" header (true) or render inline (false).
+	// Carried on Header because it's a demo-wide flag set once.
+	BoxedVerbatim bool
 }
 
 // Section is emitted for each non-executable explanatory block.
@@ -147,10 +152,15 @@ type Section struct {
 // own cell/widget representation. The Run output and per-visit
 // state arrive in subsequent events.
 type StepStart struct {
-	Visit     int
-	StepID    string
-	Title     string
-	Note      string
+	Visit  int
+	StepID string
+	Title  string
+	Note   string
+	// Declared is the resolved per-step denominator a renderer would
+	// print: stepCount when Demo.ShowStepDenominator is set, 0
+	// otherwise. Carried per-event (rather than inferred from Header)
+	// so renderers don't have to track demo-wide flags themselves.
+	Declared  int
 	Arrows    []Arrow
 	Refs      []Ref
 	Verbatims []Verbatim
