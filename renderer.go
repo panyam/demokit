@@ -7,10 +7,13 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/charmbracelet/x/term"
 	"github.com/muesli/cancelreader"
+
+	"github.com/panyam/demokit/events"
 )
 
 // Renderer controls how demo output is displayed. Implement this interface
@@ -77,14 +80,45 @@ type PlainRenderer struct {
 	// Fraction of terminal width to use. 0 means 0.90.
 	Fraction float64
 
-	// lastStep is set by RenderStep and consulted by WaitForStep to
-	// build the digit-to-copy prompt from the step's numbered copyable
-	// variants. Cleared at the next RenderStep so a step with no
-	// copyables falls through to the plain Enter pause.
+	// lastStep is set by RenderStep (legacy path) and consulted by
+	// WaitForStep to build the digit-to-copy prompt. Cleared at the
+	// next RenderStep so a step with no copyables falls through to
+	// the plain Enter pause.
 	lastStep *StepDef
+
+	// --- event-aware path (demokit.EventAwareRenderer) ---
+	//
+	// When Execute attaches its queue via AttachEventQueue, plain
+	// becomes a queue consumer like the bridge: a goroutine drains
+	// the *discrete* events (Header, StepStart, Section, StepEnd,
+	// Done, sync waits/prompts) and dispatches to the same printX
+	// helpers the legacy methods use. OutputChunk events are
+	// deliberately NOT handled here — chunks continue to flow live
+	// to the user's terminal via the StreamingRenderer.StreamOutput
+	// inline tee in Execute, which already has the real
+	// pre-captureOutput stdout writer to print to. Execute skips
+	// its dual legacy-method calls for the discrete events when
+	// this renderer is attached (see demokit.go).
+	queue      *events.EventQueue
+	boxedFlag  bool              // mirror of events.Header.BoxedVerbatim
+	lastStepEv *events.StepStart // event-side mirror of lastStep, for the copy prompt
+	done       bool              // set by Done; tells drainEvents to exit so the goroutine doesn't leak across runs/tests
+	drainWG    sync.WaitGroup    // tracks the drain goroutine so Finish can wait for it
+
+	// Snapshots of os.Stdout / os.Stderr taken at AttachEventQueue
+	// time, when no captureOutput is in flight. The drain goroutine
+	// prints through these instead of reading the live os.Stdout
+	// var — otherwise it races with captureOutput's stdout redirect
+	// (issue 23 same class), AND nested RLock acquisition (drain
+	// RLock + TermWidth RLock) deadlocks Go's RWMutex when a
+	// writer's waiting.
+	snapOut *os.File
+	snapErr *os.File
 }
 
-// width returns the usable output width.
+// width returns the usable output width. Uses the renderer's snapshot
+// *os.File handles when set (drain path) so the term.GetSize call
+// doesn't race with captureOutput's os.Stdout swap.
 func (r *PlainRenderer) width() int {
 	frac := r.Fraction
 	if frac <= 0 {
@@ -94,7 +128,7 @@ func (r *PlainRenderer) width() int {
 	if maxW <= 0 {
 		maxW = 120
 	}
-	w := int(float64(TermWidth()) * frac)
+	w := int(float64(r.termWidth()) * frac)
 	if w > maxW {
 		w = maxW
 	}
@@ -102,6 +136,23 @@ func (r *PlainRenderer) width() int {
 		w = 40
 	}
 	return w
+}
+
+// termWidth queries the terminal width through the renderer's
+// snapshot file handles (drain path) or live os.Stdout/Stderr (legacy
+// path), 80 fallback. The drain-side path takes no extra lock — its
+// snapshots are pinned at AttachEventQueue time.
+func (r *PlainRenderer) termWidth() int {
+	if r.snapOut != nil || r.snapErr != nil {
+		for _, f := range []*os.File{r.stdoutFile(), r.stderrFile()} {
+			if w, _, err := term.GetSize(f.Fd()); err == nil && w > 0 {
+				return w
+			}
+		}
+		return 80
+	}
+	// Legacy path: live os.Stdout/Stderr, gated by TermWidth's RLock.
+	return TermWidth()
 }
 
 // wrapText wraps a string to fit within width, respecting an indent prefix.
@@ -137,8 +188,10 @@ func wrapText(s string, width int, indent string) string {
 }
 
 // printLine prints a line and optionally sleeps for the smooth scroll effect.
+// Writes through r.stdoutFor() so the event-aware drain uses its
+// snapshotted *os.File (race-free with captureOutput's redirect).
 func (r *PlainRenderer) printLine(format string, args ...any) {
-	fmt.Printf(format, args...)
+	fmt.Fprintf(r.stdoutFor(), format, args...)
 	if r.Delay > 0 {
 		time.Sleep(r.Delay)
 	}
@@ -154,26 +207,45 @@ func (r *PlainRenderer) RenderHeader(title, description string, stepCount int) {
 	}
 	r.printLine("  %d steps\n", stepCount)
 	r.printLine("%s\n", sep)
-	fmt.Println()
+	fmt.Fprintln(r.stdoutFor())
 }
 
 func (r *PlainRenderer) RenderStep(stepNum, totalSteps int, step *StepDef) {
 	r.lastStep = step
+	demo := step.Demo()
+	r.printStepBlock(stepNum, totalSteps, events.StepStart{
+		Visit:     stepNum,
+		StepID:    step.id,
+		Title:     step.title,
+		Note:      step.note,
+		Declared:  totalSteps,
+		Arrows:    arrowsToEvents(step.Arrows()),
+		Refs:      refsToEvents(step.Refs()),
+		Verbatims: verbatimsToEvents(step.VerbatimBlocks()),
+	}, demo != nil && demo.IsBoxedVerbatim())
+}
+
+// printStepBlock is the shared formatter: the legacy RenderStep
+// extracts fields from *StepDef into the event projection and calls
+// here; the event drain calls here directly with the projection it
+// already has. boxedDefault is the demo-wide flag (Header carries it
+// for the drain; the legacy path pulls it from step.Demo()).
+func (r *PlainRenderer) printStepBlock(stepNum, totalSteps int, e events.StepStart, boxedDefault bool) {
 	w := r.width()
 	// totalSteps == 0 means "no denominator" — Demo.ShowStepDenominator
 	// defaults off because the count is misleading for cyclic graphs.
 	// stepNum > totalSteps is a belt-and-suspenders fallback if a demo
 	// opts in but ends up cyclic anyway.
 	if totalSteps == 0 || stepNum > totalSteps {
-		r.printLine("  Step %d: %s\n", stepNum, step.title)
+		r.printLine("  Step %d: %s\n", stepNum, e.Title)
 	} else {
-		r.printLine("  Step %d/%d: %s\n", stepNum, totalSteps, step.title)
+		r.printLine("  Step %d/%d: %s\n", stepNum, totalSteps, e.Title)
 	}
 	r.printLine("  %s\n", strings.Repeat("-", w-2))
 
-	if len(step.refs) > 0 {
+	if len(e.Refs) > 0 {
 		refs := "    Refs: "
-		for i, ref := range step.refs {
+		for i, ref := range e.Refs {
 			if i > 0 {
 				refs += ", "
 			}
@@ -182,19 +254,19 @@ func (r *PlainRenderer) RenderStep(stepNum, totalSteps int, step *StepDef) {
 		r.printLine("%s\n", refs)
 	}
 
-	for _, a := range step.arrows {
+	for _, a := range e.Arrows {
 		arrow := "->>"
-		if a.dashed {
+		if a.Dashed {
 			arrow = "-->>"
 		}
-		r.printLine("    %s %s %s: %s\n", a.from, arrow, a.to, a.label)
+		r.printLine("    %s %s %s: %s\n", a.From, arrow, a.To, a.Label)
 	}
 
-	if step.note != "" {
-		r.printLine("\n%s\n", wrapText(step.note, w, "    "))
+	if e.Note != "" {
+		r.printLine("\n%s\n", wrapText(e.Note, w, "    "))
 	}
 
-	r.printVerbatim(step)
+	r.printVerbatimBlocks(e.Verbatims, boxedDefault)
 }
 
 // printVerbatim emits a step's verbatim blocks in plain-text form.
@@ -223,14 +295,13 @@ func (r *PlainRenderer) RenderStep(stepNum, totalSteps int, step *StepDef) {
 // users need every variant visible so they can pick by number. The
 // filter is for documentation output (markdown / HTML / JSON), where
 // reference docs do want trimmable output.
-func (r *PlainRenderer) printVerbatim(step *StepDef) {
-	blocks := step.VerbatimBlocks()
+// printVerbatimBlocks is the shared formatter: takes the
+// already-projected event vocabulary so the drain can call it
+// without reconstructing a *StepDef.
+func (r *PlainRenderer) printVerbatimBlocks(blocks []events.Verbatim, boxedDefault bool) {
 	if len(blocks) == 0 {
 		return
 	}
-	demo := step.Demo()
-	boxedDefault := demo != nil && demo.IsBoxedVerbatim()
-
 	counter := 0
 	for _, b := range blocks {
 		if len(b.Variants) == 0 {
@@ -238,12 +309,12 @@ func (r *PlainRenderer) printVerbatim(step *StepDef) {
 		}
 		copyable := boxedDefault || len(b.Variants) > 1
 
-		fmt.Println()
+		fmt.Fprintln(r.stdoutFor())
 		if b.Label != "" {
 			r.printLine("  %s\n", b.Label)
 		}
 		for _, va := range b.Variants {
-			fmt.Println()
+			fmt.Fprintln(r.stdoutFor())
 			if copyable {
 				counter++
 				label := va.Label
@@ -264,7 +335,7 @@ func (r *PlainRenderer) printVerbatim(step *StepDef) {
 			}
 		}
 	}
-	fmt.Println()
+	fmt.Fprintln(r.stdoutFor())
 }
 
 func (r *PlainRenderer) RenderResult(_ int, output string, result *StepResult) {
@@ -291,14 +362,19 @@ func (r *PlainRenderer) RenderResult(_ int, output string, result *StepResult) {
 			r.printLine("%s\n", line)
 		}
 	}
-	fmt.Println()
+	fmt.Fprintln(r.stdoutFor())
 }
 
 func (r *PlainRenderer) RenderSection(section *SectionDef) {
+	r.printSection(section.title, section.body)
+}
+
+// printSection is the shared formatter the event drain also calls.
+func (r *PlainRenderer) printSection(title, body string) {
 	w := r.width()
-	r.printLine("  --- %s ---\n", section.title)
-	r.printLine("%s\n", wrapText(section.body, w, "    "))
-	fmt.Println()
+	r.printLine("  --- %s ---\n", title)
+	r.printLine("%s\n", wrapText(body, w, "    "))
+	fmt.Fprintln(r.stdoutFor())
 }
 
 func (r *PlainRenderer) RenderDone() {
@@ -323,25 +399,25 @@ func (r *PlainRenderer) WaitForStep(opts WaitOpts) {
 	}
 
 	if opts.AutoAcceptAfter <= 0 {
-		fmt.Print("\n    Press Enter to run this step...")
+		fmt.Fprint(r.stdoutFor(), "\n    Press Enter to run this step...")
 		bufio.NewReader(os.Stdin).ReadString('\n')
-		fmt.Println()
+		fmt.Fprintln(r.stdoutFor())
 		return
 	}
 
 	var key byte
 	var gotKey bool
 	if !opts.ShowCountdown {
-		fmt.Printf("\n    Press Enter to run (auto in %s · any key to hold)...", opts.AutoAcceptAfter.Round(time.Second))
+		fmt.Fprintf(r.stdoutFor(), "\n    Press Enter to run (auto in %s · any key to hold)...", opts.AutoAcceptAfter.Round(time.Second))
 		key, gotKey = WaitForKeyOrTimeout(opts.AutoAcceptAfter, nil)
-		fmt.Println()
+		fmt.Fprintln(r.stdoutFor())
 	} else {
-		fmt.Println()
+		fmt.Fprintln(r.stdoutFor())
 		key, gotKey = WaitForKeyOrTimeout(opts.AutoAcceptAfter, func(remaining time.Duration) {
 			bar := countdownBar(remaining, opts.AutoAcceptAfter, 20)
-			fmt.Printf("\r    %s  %4.1fs  (Enter to accept · any key to hold)", bar, remaining.Seconds())
+			fmt.Fprintf(r.stdoutFor(), "\r    %s  %4.1fs  (Enter to accept · any key to hold)", bar, remaining.Seconds())
 		})
-		fmt.Printf("\r    %s\n", strings.Repeat(" ", 60))
+		fmt.Fprintf(r.stdoutFor(), "\r    %s\n", strings.Repeat(" ", 60))
 	}
 
 	if !gotKey || key == KeyEnter || key == '\n' {
@@ -350,7 +426,7 @@ func (r *PlainRenderer) WaitForStep(opts WaitOpts) {
 	// Any other key cancels the countdown. Drop into a cooked-mode
 	// "press Enter to continue" hold so the user can read the screen
 	// before advancing.
-	fmt.Print("    (countdown stopped — press Enter to continue) ")
+	fmt.Fprint(r.stdoutFor(), "    (countdown stopped — press Enter to continue) ")
 	bufio.NewReader(os.Stdin).ReadString('\n')
 }
 
@@ -370,9 +446,9 @@ func (r *PlainRenderer) waitWithCopyPrompt(opts WaitOpts, copyables []NumberedCo
 	hint := promptFromCopyables(copyables)
 
 	if opts.AutoAcceptAfter > 0 {
-		fmt.Printf("\n    %s · any key holds (auto in %s): ", hint, opts.AutoAcceptAfter.Round(time.Second))
+		fmt.Fprintf(r.stdoutFor(), "\n    %s · any key holds (auto in %s): ", hint, opts.AutoAcceptAfter.Round(time.Second))
 		key, gotKey := WaitForKeyOrTimeout(opts.AutoAcceptAfter, nil)
-		fmt.Println() // newline after the dangling prompt
+		fmt.Fprintln(r.stdoutFor()) // newline after the dangling prompt
 		if !gotKey {
 			return // timer fired — auto-advance
 		}
@@ -383,7 +459,7 @@ func (r *PlainRenderer) waitWithCopyPrompt(opts WaitOpts, copyables []NumberedCo
 	}
 
 	for {
-		fmt.Printf("\n    %s: ", hint)
+		fmt.Fprintf(r.stdoutFor(), "\n    %s: ", hint)
 		text, _ := bufio.NewReader(os.Stdin).ReadString('\n')
 		line := strings.TrimRight(text, "\r\n")
 
@@ -397,13 +473,13 @@ func (r *PlainRenderer) waitWithCopyPrompt(opts WaitOpts, copyables []NumberedCo
 				c := copyables[n-1]
 				strategy, ok := Copy(c.Content)
 				if !ok {
-					fmt.Println("    (copy failed — no clipboard provider available)")
+					fmt.Fprintln(r.stdoutFor(), "    (copy failed — no clipboard provider available)")
 					continue
 				}
 				if c.Label != "" {
-					fmt.Printf("    (copied %s via %s)\n", c.Label, strategy)
+					fmt.Fprintf(r.stdoutFor(), "    (copied %s via %s)\n", c.Label, strategy)
 				} else {
-					fmt.Printf("    (copied via %s)\n", strategy)
+					fmt.Fprintf(r.stdoutFor(), "    (copied via %s)\n", strategy)
 				}
 				continue
 			}
@@ -638,7 +714,7 @@ func (r *PlainRenderer) Prompt(stepID string, inputs []InputDef) map[string]any 
 
 	for attempt := 0; ; attempt++ {
 		if attempt > 0 {
-			fmt.Println("    Re-enter values (Enter to keep [bracketed]):")
+			fmt.Fprintln(r.stdoutFor(), "    Re-enter values (Enter to keep [bracketed]):")
 		}
 		result := map[string]any{}
 		errored := false
@@ -648,9 +724,9 @@ func (r *PlainRenderer) Prompt(stepID string, inputs []InputDef) map[string]any 
 				label = in.Name
 			}
 			if in.Default != nil {
-				fmt.Printf("    %s [%v]: ", label, in.Default)
+				fmt.Fprintf(r.stdoutFor(), "    %s [%v]: ", label, in.Default)
 			} else {
-				fmt.Printf("    %s: ", label)
+				fmt.Fprintf(r.stdoutFor(), "    %s: ", label)
 			}
 			line, _ := stdin.ReadString('\n')
 			line = strings.TrimRight(line, "\r\n")
@@ -666,7 +742,7 @@ func (r *PlainRenderer) Prompt(stepID string, inputs []InputDef) map[string]any 
 			}
 			val, err := parser(line)
 			if err != nil {
-				fmt.Printf("    [error] %v\n", err)
+				fmt.Fprintf(r.stdoutFor(), "    [error] %v\n", err)
 				errored = true
 				continue
 			}
@@ -693,4 +769,307 @@ func countdownBar(remaining, total time.Duration, width int) string {
 		filled = width
 	}
 	return "[" + strings.Repeat("#", filled) + strings.Repeat(" ", width-filled) + "]"
+}
+
+// --- EventAwareRenderer (demokit.EventAwareRenderer) ---
+
+// AttachEventQueue wires the demokit event queue and spawns the
+// drain goroutine. Execute calls this once per run; once attached,
+// PlainRenderer drains discrete events on its own goroutine and
+// Execute stops dual-calling the legacy Render* methods. Chunks
+// still flow live via StreamOutput (see struct doc).
+//
+// Resets per-run state so a renderer reused across Execute calls
+// (tests do this) starts each run with a fresh drain rather than
+// inheriting `done` from a previous Done event.
+func (r *PlainRenderer) AttachEventQueue(q *events.EventQueue) {
+	r.queue = q
+	r.done = false
+	r.lastStepEv = nil
+	r.boxedFlag = false
+	// Snapshot the real terminal stdout/stderr under stdoutMu.RLock
+	// (per #23) so the drain has stable writers that don't race with
+	// captureOutput's later swaps.
+	stdoutMu.RLock()
+	r.snapOut = os.Stdout
+	r.snapErr = os.Stderr
+	stdoutMu.RUnlock()
+	r.drainWG.Add(1)
+	go func() {
+		defer r.drainWG.Done()
+		r.drainEvents()
+	}()
+}
+
+// stdoutFor returns the writer the drain (and legacy path) should
+// write to. Drain uses the snapshot; legacy falls back to live
+// os.Stdout. Same shape for stderr-side queries via stderrFile.
+func (r *PlainRenderer) stdoutFor() io.Writer {
+	if r.snapOut != nil {
+		return r.snapOut
+	}
+	return os.Stdout
+}
+
+func (r *PlainRenderer) stdoutFile() *os.File {
+	if r.snapOut != nil {
+		return r.snapOut
+	}
+	return os.Stdout
+}
+
+func (r *PlainRenderer) stderrFile() *os.File {
+	if r.snapErr != nil {
+		return r.snapErr
+	}
+	return os.Stderr
+}
+
+// Finish waits for the drain goroutine to exit. Execute calls this
+// (via the FinishableRenderer interface) after emitting Done so the
+// renderer's writes are sequenced before Execute returns — needed
+// for the race detector and for test hygiene.
+func (r *PlainRenderer) Finish() {
+	r.drainWG.Wait()
+}
+
+// drainEvents subscribes to the queue and dispatches events.
+// Catch-up drain before blocking on Notify — same lesson as the
+// notebookbridge (issue 40): the first events are usually appended
+// before the subscribe goroutine wakes. The drain exits when
+// handleEvent processes a Done event (sets r.done), so the goroutine
+// doesn't leak across Execute calls or test runs.
+func (r *PlainRenderer) drainEvents() {
+	sub := r.queue.Subscribe()
+	defer sub.Close()
+	offset := r.drainFrom(0)
+	for !r.done {
+		<-sub.Notify()
+		offset = r.drainFrom(offset)
+	}
+}
+
+func (r *PlainRenderer) drainFrom(offset int) int {
+	evs, newOff := r.queue.ReadFrom(offset)
+	for i, ev := range evs {
+		r.handleEvent(offset+i, ev)
+	}
+	return newOff
+}
+
+// handleEvent dispatches one event. OutputChunk + StepReadyToRun
+// are intentionally no-ops here — chunks tee live via StreamOutput.
+// No outer stdoutMu lock needed: the drain writes through
+// snapshotted *os.File handles (r.snapOut / r.snapErr) taken at
+// AttachEventQueue time, so it never touches the live os.Stdout
+// variable that captureOutput mutates.
+func (r *PlainRenderer) handleEvent(off int, ev events.Event) {
+	switch e := ev.(type) {
+	case events.Header:
+		r.boxedFlag = e.BoxedVerbatim
+		r.RenderHeader(e.Title, e.Description, e.StepCount)
+	case events.Section:
+		r.printSection(e.Title, e.Body)
+	case events.StepStart:
+		stepCopy := e
+		r.lastStepEv = &stepCopy
+		r.printStepBlock(e.Visit, e.Declared, e, r.boxedFlag)
+	case events.StepEnd:
+		// Output already streamed via StreamOutput's inline tee in
+		// Execute, so RenderResult receives "" (matches today's
+		// displayOutput="" path for streaming/event-aware).
+		r.RenderResult(e.Visit, "", stepResultFromEvent(e))
+	case events.Done:
+		r.RenderDone()
+		r.done = true
+	case events.WaitForAdvance:
+		// Skip if already resolved (e.g. non-interactive paths where
+		// demokit Resolves the offset itself before the drain reaches
+		// it). Otherwise the drain would block on stdin for a wait
+		// nobody is waiting on.
+		if _, resolved := r.queue.Resolution(off); resolved {
+			return
+		}
+		opts := WaitOpts{}
+		if !e.Deadline.IsZero() {
+			opts.AutoAcceptAfter = time.Until(e.Deadline)
+		}
+		r.handleWaitForAdvance(opts)
+		_ = r.queue.Resolve(off, &events.AdvanceResolution{
+			Source: "user-submitted", Timestamp: time.Now(),
+		})
+	case events.PromptOpen:
+		// Same as WaitForAdvance: demokit pre-resolves with defaults in
+		// non-interactive mode. If already resolved, don't try to read
+		// stdin — there's nothing to collect for.
+		if _, resolved := r.queue.Resolution(off); resolved {
+			return
+		}
+		answers := r.handlePromptOpen(e.Inputs)
+		_ = r.queue.Resolve(off, &events.PromptResolution{
+			Answers: answers, Source: "user-submitted", Timestamp: time.Now(),
+		})
+	}
+}
+
+// handleWaitForAdvance is the event-side analogue of WaitForStep.
+// Builds copyables from the cached StepStart event so the digit-to-
+// copy prompt matches the legacy path's numbering.
+func (r *PlainRenderer) handleWaitForAdvance(opts WaitOpts) {
+	var copyables []NumberedCopyable
+	if r.lastStepEv != nil {
+		copyables = numberedCopyablesFromVerbatims(r.lastStepEv.Verbatims, r.boxedFlag)
+	}
+	if len(copyables) > 0 {
+		r.waitWithCopyPrompt(opts, copyables)
+		return
+	}
+	// Fall through to the plain Enter pause — same shape as the
+	// non-copyable branch of WaitForStep.
+	if opts.AutoAcceptAfter <= 0 {
+		fmt.Fprint(r.stdoutFor(), "\n    Press Enter to run this step...")
+		bufio.NewReader(os.Stdin).ReadString('\n')
+		fmt.Fprintln(r.stdoutFor())
+		return
+	}
+	var key byte
+	var gotKey bool
+	if !opts.ShowCountdown {
+		fmt.Fprintf(r.stdoutFor(), "\n    Press Enter to run (auto in %s · any key to hold)...", opts.AutoAcceptAfter.Round(time.Second))
+		key, gotKey = WaitForKeyOrTimeout(opts.AutoAcceptAfter, nil)
+		fmt.Fprintln(r.stdoutFor())
+	} else {
+		fmt.Fprintln(r.stdoutFor())
+		key, gotKey = WaitForKeyOrTimeout(opts.AutoAcceptAfter, func(remaining time.Duration) {
+			bar := countdownBar(remaining, opts.AutoAcceptAfter, 20)
+			fmt.Fprintf(r.stdoutFor(), "\r    %s  %4.1fs  (Enter to accept · any key to hold)", bar, remaining.Seconds())
+		})
+		fmt.Fprintf(r.stdoutFor(), "\r    %s\n", strings.Repeat(" ", 60))
+	}
+	if !gotKey || key == KeyEnter || key == '\n' {
+		return
+	}
+	fmt.Fprint(r.stdoutFor(), "    (countdown stopped — press Enter to continue) ")
+	bufio.NewReader(os.Stdin).ReadString('\n')
+}
+
+// handlePromptOpen runs the line-mode prompt loop on event-side
+// inputs, returning the collected answers. Mirrors PlainRenderer.Prompt
+// but reads from the events.Input projection (which carries the same
+// name/prompt/default/Parse surface via the typed events.IntInput /
+// ChoiceInput / StringInput types).
+func (r *PlainRenderer) handlePromptOpen(inputs []events.Input) map[string]any {
+	out := make(map[string]any, len(inputs))
+	reader := bufio.NewReader(os.Stdin)
+	for _, in := range inputs {
+		for {
+			prompt := in.InputPrompt()
+			if def := in.InputDefault(); def != nil {
+				fmt.Fprintf(r.stdoutFor(), "    %s [%v]: ", prompt, def)
+			} else {
+				fmt.Fprintf(r.stdoutFor(), "    %s: ", prompt)
+			}
+			raw, err := reader.ReadString('\n')
+			if err != nil {
+				out[in.InputName()] = in.InputDefault()
+				break
+			}
+			raw = strings.TrimRight(raw, "\r\n")
+			if raw == "" && in.InputDefault() != nil {
+				out[in.InputName()] = in.InputDefault()
+				break
+			}
+			val, err := parseEventInput(in, raw)
+			if err != nil {
+				fmt.Fprintf(r.stdoutFor(), "    %v\n", err)
+				continue
+			}
+			out[in.InputName()] = val
+			break
+		}
+	}
+	return out
+}
+
+// numberedCopyablesFromVerbatims rebuilds NumberedCopyable entries
+// from the events.Verbatim projection. Mirrors StepDef.NumberedCopyables
+// so the event-aware copy prompt numbers match the legacy path exactly.
+func numberedCopyablesFromVerbatims(blocks []events.Verbatim, boxedDefault bool) []NumberedCopyable {
+	var out []NumberedCopyable
+	for _, b := range blocks {
+		if len(b.Variants) == 0 {
+			continue
+		}
+		if !(boxedDefault || len(b.Variants) > 1) {
+			continue
+		}
+		for _, va := range b.Variants {
+			label := va.Label
+			if label == "" {
+				label = b.Label
+			}
+			out = append(out, NumberedCopyable{
+				N:       len(out) + 1,
+				Label:   label,
+				Lang:    va.Lang,
+				Content: va.Content,
+			})
+		}
+	}
+	return out
+}
+
+// stepResultFromEvent rebuilds a *StepResult from a StepEnd event.
+// Returns nil for a "ok" terminal with no message/error, matching
+// the legacy "no result was returned by Run" sentinel that
+// RenderResult interprets as a plain success.
+func stepResultFromEvent(e events.StepEnd) *StepResult {
+	if e.Status == "ok" && e.Message == "" && e.ErrorText == "" {
+		return nil
+	}
+	res := &StepResult{
+		Status:  parseStatus(e.Status),
+		Message: e.Message,
+	}
+	if e.ErrorText != "" {
+		res.Err = fmt.Errorf("%s", e.ErrorText)
+	}
+	return res
+}
+
+func parseStatus(s string) ResultStatus {
+	switch s {
+	case "error":
+		return StatusError
+	case "warning":
+		return StatusWarning
+	case "info":
+		return StatusInfo
+	default:
+		return StatusSuccess
+	}
+}
+
+// parseEventInput interprets the user's raw line for one events.Input
+// projection, mirroring the InputDef.Parse semantics for the three
+// built-in shapes. Unknown types fall through to a string.
+func parseEventInput(in events.Input, raw string) (any, error) {
+	switch v := in.(type) {
+	case events.IntInput:
+		_ = v
+		n, err := strconv.Atoi(raw)
+		if err != nil {
+			return nil, fmt.Errorf("not an integer: %v", err)
+		}
+		return n, nil
+	case events.ChoiceInput:
+		for _, opt := range v.Options {
+			if opt == raw {
+				return raw, nil
+			}
+		}
+		return nil, fmt.Errorf("must be one of %v", v.Options)
+	default:
+		return raw, nil
+	}
 }

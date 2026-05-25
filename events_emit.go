@@ -11,12 +11,13 @@ import "github.com/panyam/demokit/events"
 // stepStartEvent builds the events.StepStart payload for a step
 // visit. Projects arrows / refs / verbatims into their public
 // shapes (no demokit-internal types in the event).
-func stepStartEvent(visit int, s *StepDef) events.StepStart {
+func stepStartEvent(visit, declared int, s *StepDef) events.StepStart {
 	return events.StepStart{
 		Visit:     visit,
 		StepID:    s.id,
 		Title:     s.title,
 		Note:      s.note,
+		Declared:  declared,
 		Arrows:    arrowsToEvents(s.Arrows()),
 		Refs:      refsToEvents(s.Refs()),
 		Verbatims: verbatimsToEvents(s.VerbatimBlocks()),

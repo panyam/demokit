@@ -49,6 +49,16 @@ type EventAwareRenderer interface {
 	AttachEventQueue(q *events.EventQueue)
 }
 
+// FinishableRenderer is implemented by event-aware renderers that
+// need a post-Done barrier — typically waiting for a drain goroutine
+// to exit before Execute returns. Demokit calls Finish after emitting
+// the Done event and after the legacy RenderDone path, so writes from
+// the renderer's drain are sequenced before the test/process moves on
+// (race-detector safety). Optional; renderers without it just skip.
+type FinishableRenderer interface {
+	Finish()
+}
+
 // Demo is the top-level container for an interactive example.
 type Demo struct {
 	title               string
@@ -613,8 +623,22 @@ func (d *Demo) RunLoop() {
 		eventAware.AttachEventQueue(d.events)
 	}
 
-	d.events.Append(events.Header{Title: d.title, Description: d.description, StepCount: d.stepCount})
-	r.RenderHeader(d.title, d.description, d.stepCount)
+	d.events.Append(events.Header{
+		Title:         d.title,
+		Description:   d.description,
+		StepCount:     d.stepCount,
+		BoxedVerbatim: d.IsBoxedVerbatim(),
+	})
+	// Skip the legacy method when the renderer drains the queue itself —
+	// avoids dual-rendering. Same shape repeats for the other discrete
+	// events below; sync events (WaitForAdvance, PromptOpen) are already
+	// only dispatched along the legacy WaitForStep/Prompt path when
+	// !isEventAware (see the WaitForAdvance + collectInputsWithEvents
+	// branches), and StreamOutput stays inline so chunks tee live in
+	// both paths.
+	if !isEventAware {
+		r.RenderHeader(d.title, d.description, d.stepCount)
+	}
 
 	visits := make(map[string]int)
 	totalVisits := 0
@@ -640,7 +664,14 @@ walk:
 						Message: msg,
 					})
 				}
-				r.RenderResult(totalVisits, "", Errf("%s", msg))
+				abortErr := Errf("%s", msg)
+				// Emit a StepEnd event so the event-aware drain surfaces
+				// the abort the same way the legacy path does via the
+				// RenderResult call below.
+				d.events.Append(stepEndEvent(totalVisits, abortErr))
+				if !isEventAware {
+					r.RenderResult(totalVisits, "", abortErr)
+				}
 				break walk
 			}
 
@@ -650,8 +681,10 @@ walk:
 			if d.showStepDenominator {
 				declared = d.stepCount
 			}
-			d.events.Append(stepStartEvent(totalVisits, v))
-			r.RenderStep(totalVisits, declared, v)
+			d.events.Append(stepStartEvent(totalVisits, declared, v))
+			if !isEventAware {
+				r.RenderStep(totalVisits, declared, v)
+			}
 
 			// Replay mode pulls inputs and the next-step path from the
 			// recorded trace. A mismatched step ID falls through to the
@@ -808,7 +841,9 @@ walk:
 			if streaming || isEventAware {
 				displayOutput = ""
 			}
-			r.RenderResult(totalVisits, displayOutput, result)
+			if !isEventAware {
+				r.RenderResult(totalVisits, displayOutput, result)
+			}
 
 			entry := TraceEntry{
 				Kind:   KindStep,
@@ -832,8 +867,15 @@ walk:
 						entry.Message = fmt.Sprintf("unknown step id %q", result.Next)
 						d.recorder.Record(entry)
 					}
-					r.RenderResult(totalVisits, "",
-						Errf("unknown step id %q in Next from %q", result.Next, v.id))
+					nextErr := Errf("unknown step id %q in Next from %q", result.Next, v.id)
+					// StepEnd already fired above for the step's own
+					// result; emit a second one carrying the routing
+					// error so event-aware drains surface it via
+					// RenderResult the same way the legacy path does.
+					d.events.Append(stepEndEvent(totalVisits, nextErr))
+					if !isEventAware {
+						r.RenderResult(totalVisits, "", nextErr)
+					}
 					break walk
 				}
 				entry.Next = result.Next
@@ -850,7 +892,9 @@ walk:
 
 		case *SectionDef:
 			d.events.Append(events.Section{Title: v.title, Body: v.body})
-			r.RenderSection(v)
+			if !isEventAware {
+				r.RenderSection(v)
+			}
 			if d.recorder != nil {
 				d.recorder.Record(TraceEntry{
 					Kind:  KindSection,
@@ -879,7 +923,11 @@ walk:
 				Message: msg,
 			})
 		}
-		r.RenderResult(totalVisits, "", Errf("%s", msg))
+		abortErr := Errf("%s", msg)
+		d.events.Append(stepEndEvent(totalVisits, abortErr))
+		if !isEventAware {
+			r.RenderResult(totalVisits, "", abortErr)
+		}
 	}
 
 	if d.recorder != nil {
@@ -887,7 +935,12 @@ walk:
 	}
 
 	d.events.Append(events.Done{})
-	r.RenderDone()
+	if !isEventAware {
+		r.RenderDone()
+	}
+	if f, ok := r.(FinishableRenderer); ok {
+		f.Finish()
+	}
 }
 
 // emitDoc writes one documentation render to stdout (or, for the
