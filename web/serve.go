@@ -12,6 +12,7 @@ import (
 
 	"github.com/gorilla/websocket"
 	"github.com/panyam/demokit"
+	"github.com/panyam/demokit/events"
 	gohttp "github.com/panyam/servicekit/http"
 	skmiddleware "github.com/panyam/servicekit/middleware"
 	"github.com/panyam/templar"
@@ -48,10 +49,12 @@ func ServeHTTP(d *demokit.Demo, addr string) error {
 // addr; tests use httptest.NewServer.
 func newLiveServer(d *demokit.Demo) (*liveServer, http.Handler) {
 	srv := &liveServer{
-		demo:    d,
-		hub:     newWSHub(),
-		inputs:  make(chan map[string]any, 1),
-		history: nil,
+		demo:          d,
+		hub:           newWSHub(),
+		inputs:        make(chan map[string]any, 1),
+		history:       nil,
+		outBuffers:    map[int][]byte{},
+		stepIDByVisit: map[int]string{},
 	}
 
 	mux := http.NewServeMux()
@@ -71,18 +74,32 @@ func newLiveServer(d *demokit.Demo) (*liveServer, http.Handler) {
 	return srv, corsMiddleware(mux)
 }
 
-// shutdown cancels the running demo and force-closes every WS
-// connection so gorilla's blocking ReadMessage returns and
-// http.Server.Shutdown can drain. Idempotent — safe to call
-// multiple times (cancel of an already-cancelled context is a
-// no-op; closing already-closed sockets is harmless).
+// shutdown cancels the running demo, force-closes every WS
+// connection so gorilla's blocking ReadMessage returns, AND waits
+// for runDemo to exit so the drain goroutine + any in-flight
+// captureOutput is sequenced before the caller returns. Idempotent
+// — safe to call multiple times.
+//
+// Waiting on runDone here matters under -race: tests that just
+// `defer srv.shutdown()` previously let runDemo leak into the next
+// test, where its captureOutput's os.Stdout mutation races with
+// the next test's stdout snapshot (issue 23's same class).
 func (s *liveServer) shutdown() {
 	s.runCancel()
 	s.hub.closeAll()
+	<-s.runDone
 }
 
 // --- liveServer ---
 
+// liveServer doubles as the demokit Renderer for --serve mode:
+// implements EventAwareRenderer (drains the demo's event queue,
+// broadcasts WS frames) and FinishableRenderer (waits for the
+// drain on Done). The legacy Render* methods are no-ops because
+// demokit gates them for event-aware renderers; they only exist
+// to satisfy the interface. This is the notebook-style decomposition
+// — the browser player is the view, liveServer is the bridge,
+// nothing wraps an inner local renderer (see PR thread).
 type liveServer struct {
 	demo *demokit.Demo
 	hub  *wsHub
@@ -98,20 +115,21 @@ type liveServer struct {
 	runCtx    context.Context
 	runCancel context.CancelFunc
 	runDone   chan struct{} // closed when the current runDemo goroutine exits
+
+	// --- event-aware path ---
+	queue         *events.EventQueue
+	drainDone     bool
+	drainWG       sync.WaitGroup
+	outBuffers    map[int][]byte // per-visit accumulated chunks for the step-end frame's output field
+	stepIDByVisit map[int]string // visit -> step id captured from StepStart; lets PromptOpen tag the input-needed frame and lets StepEnd detect missing-StepStart abort paths (synthesise a step-start)
 }
 
+// registerRenderer wires liveServer as the demo's renderer.
+// Notebook-style: the browser player is the view; liveServer drains
+// the event queue and broadcasts. No inner local-terminal renderer
+// is composed — for a local view, run the demo without --serve.
 func (s *liveServer) registerRenderer() {
-	// Tee onto whatever renderer the caller already configured (--tui,
-	// a custom one, or the PlainRenderer default) so the operator's
-	// terminal sees the same demo the browser does, in their chosen
-	// style. Only the framing methods delegate; Prompt / WaitForStep
-	// stay WS-only because the inner renderer would otherwise read
-	// the operator's stdin.
-	inner := s.demo.Renderer()
-	if inner == nil {
-		inner = &demokit.PlainRenderer{}
-	}
-	s.demo.WithRenderer(&webRenderer{srv: s, inner: inner})
+	s.demo.WithRenderer(s)
 }
 
 func (s *liveServer) runDemo() {
@@ -361,173 +379,254 @@ func (h *wsHub) closeAll() {
 	h.conns = make(map[string]*liveConn)
 }
 
-// --- webRenderer ---
+// --- liveServer as demokit.Renderer / EventAwareRenderer / FinishableRenderer ---
 
-// Compile-time assertion that webRenderer satisfies StreamingRenderer
-// — without it, demokit silently falls back to the buffered path.
-var _ demokit.StreamingRenderer = (*webRenderer)(nil)
+// Compile-time assertions: liveServer is the renderer demokit calls
+// (every method on the legacy Renderer/StreamingRenderer surface),
+// AND the event-aware drain that does the real work; demokit gates
+// the legacy methods for event-aware renderers (Phase 3a) so the
+// no-ops below only exist to satisfy the interface.
+var (
+	_ demokit.Renderer           = (*liveServer)(nil)
+	_ demokit.StreamingRenderer  = (*liveServer)(nil)
+	_ demokit.EventAwareRenderer = (*liveServer)(nil)
+	_ demokit.FinishableRenderer = (*liveServer)(nil)
+)
 
-type webRenderer struct {
-	srv      *liveServer
-	inner    demokit.Renderer // mirrors the full demo to the operator's terminal — whatever the user picked (PlainRenderer, tui.Renderer, ...)
-	stepOpen bool             // true between RenderStep and RenderResult
+// --- Renderer interface stubs (never called when event-aware) ---
+
+func (s *liveServer) RenderHeader(string, string, int)                 {}
+func (s *liveServer) RenderStep(int, int, *demokit.StepDef)            {}
+func (s *liveServer) RenderResult(int, string, *demokit.StepResult)    {}
+func (s *liveServer) RenderSection(*demokit.SectionDef)                {}
+func (s *liveServer) RenderDone()                                      {}
+func (s *liveServer) WaitForStep(demokit.WaitOpts)                     {}
+func (s *liveServer) Prompt(string, []demokit.InputDef) map[string]any { return nil }
+func (s *liveServer) StreamOutput(int, []byte, io.Writer)              {}
+
+// --- EventAwareRenderer + FinishableRenderer ---
+
+// AttachEventQueue wires the demo's event queue and spawns the drain.
+// Called once per RunLoop. reset() re-launches runDemo with a fresh
+// AttachEventQueue, so prior-run state (drainDone, buffers) resets
+// here too.
+func (s *liveServer) AttachEventQueue(q *events.EventQueue) {
+	s.queue = q
+	s.drainDone = false
+	s.outBuffers = map[int][]byte{}
+	s.stepIDByVisit = map[int]string{}
+	s.drainWG.Add(1)
+	go func() {
+		defer s.drainWG.Done()
+		s.drainEvents()
+	}()
 }
 
-func (r *webRenderer) RenderHeader(title, description string, stepCount int) {
-	r.inner.RenderHeader(title, description, stepCount)
-	r.srv.broadcast(serverEvent{
-		Kind: "header",
-		Demo: map[string]any{
-			"title":       title,
-			"description": description,
-			"step_count":  stepCount,
-		},
-	})
+// Finish blocks until the drain goroutine exits — same race-detector
+// hygiene as PlainRenderer's Finish (Phase 3a). Demokit calls this
+// after emitting Done.
+func (s *liveServer) Finish() {
+	s.drainWG.Wait()
 }
 
-func (r *webRenderer) RenderStep(stepNum, totalSteps int, step *demokit.StepDef) {
-	r.inner.RenderStep(stepNum, totalSteps, step)
-	r.stepOpen = true
-	r.srv.broadcast(serverEvent{
-		Kind: "step-start",
-		Extra: map[string]any{
-			"step_num":    stepNum,
-			"total_steps": totalSteps,
-			"id":          step.StepID(),
-			"title":       step.Title(),
-			"note":        step.NoteText(),
-			"refs":        step.Refs(),
-			"arrows":      step.Arrows(),
-			"verbatim":    step.VerbatimBlocks(),
-		},
-	})
+// drainEvents subscribes + catch-up drains (same lesson as the
+// notebookbridge: events appended before subscribe are missed if
+// you only block on Notify) + loops until Done sets drainDone.
+func (s *liveServer) drainEvents() {
+	sub := s.queue.Subscribe()
+	defer sub.Close()
+	offset := s.drainFrom(0)
+	for !s.drainDone {
+		<-sub.Notify()
+		offset = s.drainFrom(offset)
+	}
 }
 
-func (r *webRenderer) RenderResult(stepNum int, output string, result *demokit.StepResult) {
-	r.inner.RenderResult(stepNum, output, result)
-	// MaxSteps / unknown-Next aborts call RenderResult without a
-	// preceding RenderStep. Synthesize an open step so the player has
-	// something to mark as errored — otherwise the abort is silent
-	// and the prior successful "→ jumped to X" looks like the end.
-	if !r.stepOpen {
-		r.srv.broadcast(serverEvent{
-			Kind: "step-start",
-			Extra: map[string]any{
-				"step_num": stepNum,
-				"id":       "__demokit_aborted__",
-				"title":    "Aborted",
+func (s *liveServer) drainFrom(offset int) int {
+	evs, newOff := s.queue.ReadFrom(offset)
+	for i, ev := range evs {
+		s.handleEvent(offset+i, ev)
+	}
+	return newOff
+}
+
+// handleEvent translates one demokit event into a WS frame (or
+// blocks for sync events). Mirrors what the pre-3b webRenderer did
+// in its Render*/Prompt/StreamOutput methods, but driven by the
+// queue rather than by Execute's method calls.
+func (s *liveServer) handleEvent(off int, ev events.Event) {
+	switch e := ev.(type) {
+	case events.Header:
+		s.broadcast(serverEvent{
+			Kind: "header",
+			Demo: map[string]any{
+				"title":       e.Title,
+				"description": e.Description,
+				"step_count":  e.StepCount,
 			},
 		})
-		r.stepOpen = true
-	}
-	evt := serverEvent{Kind: "step-end"}
-	if result != nil {
-		evt.Status = int(result.Status)
-		evt.Extra = map[string]any{
-			"label":   result.DisplayLabel(),
-			"message": result.Message,
-			"next":    result.Next,
-			"output":  output,
+	case events.Section:
+		s.broadcast(serverEvent{
+			Kind: "section",
+			Extra: map[string]any{
+				"title": e.Title,
+				"body":  e.Body,
+			},
+		})
+	case events.StepStart:
+		s.stepIDByVisit[e.Visit] = e.StepID
+		s.broadcast(serverEvent{
+			Kind: "step-start",
+			Extra: map[string]any{
+				"step_num":    e.Visit,
+				"total_steps": e.Declared,
+				"id":          e.StepID,
+				"title":       e.Title,
+				"note":        e.Note,
+				"refs":        e.Refs,
+				"arrows":      e.Arrows,
+				"verbatim":    e.Verbatims,
+			},
+		})
+	case events.OutputChunk:
+		s.outBuffers[e.Visit] = append(s.outBuffers[e.Visit], e.Chunk...)
+		s.broadcast(serverEvent{
+			Kind:  "chunk",
+			Chunk: string(e.Chunk),
+			Extra: map[string]any{"step_num": e.Visit},
+		})
+	case events.StepEnd:
+		// max-visits / max-steps aborts emit StepEnd for a visit
+		// that never had a StepStart (Phase 3a's error-path emits).
+		// Synthesise a step-start so the player has something to
+		// mark as errored — same intent as the pre-3b webRenderer's
+		// !stepOpen branch.
+		if _, seen := s.stepIDByVisit[e.Visit]; !seen {
+			abortedID := "__demokit_aborted__"
+			s.broadcast(serverEvent{
+				Kind: "step-start",
+				Extra: map[string]any{
+					"step_num": e.Visit,
+					"id":       abortedID,
+					"title":    "Aborted",
+				},
+			})
+			s.stepIDByVisit[e.Visit] = abortedID
 		}
+		evt := serverEvent{Kind: "step-end"}
+		out := string(s.outBuffers[e.Visit])
+		delete(s.outBuffers, e.Visit)
+		// Preserve the legacy frame shape: status/label/message/next
+		// only when there's a non-trivial result. stepEndEvent on
+		// demokit emits Status="ok" with empty Message/ErrorText for
+		// successes, so mirror that into the int Status the JS player
+		// expects.
+		if res := demokit.StepResultFromEvent(e); res != nil {
+			evt.Status = int(res.Status)
+			evt.Extra = map[string]any{
+				"label":   res.DisplayLabel(),
+				"message": res.Message,
+				"next":    "", // not in StepEnd event; player handles absence
+				"output":  out,
+			}
+		} else if out != "" {
+			evt.Extra = map[string]any{"output": out}
+		}
+		s.broadcast(evt)
+	case events.Done:
+		// runDemo emits the final "done" after RunLoop returns;
+		// nothing extra to broadcast here. Setting drainDone exits
+		// the drain loop so Finish() can return.
+		s.drainDone = true
+	case events.WaitForAdvance:
+		// --serve doesn't set stdinAttached, so demokit shouldn't
+		// emit WaitForAdvance in this mode. Defensive auto-Resolve
+		// in case the invariant changes.
+		_ = s.queue.Resolve(off, &events.AdvanceResolution{
+			Source: "web-auto", Timestamp: time.Now(),
+		})
+	case events.PromptOpen:
+		// Already resolved (e.g. non-interactive defaults) — skip.
+		if _, resolved := s.queue.Resolution(off); resolved {
+			return
+		}
+		stepID := s.stepIDByVisit[e.Visit]
+		s.broadcast(serverEvent{
+			Kind:   "input-needed",
+			StepID: stepID,
+			Inputs: inputDefsFromEvents(e.Inputs),
+		})
+		answers, source := s.awaitPromptAnswers(stepID, e.Inputs)
+		_ = s.queue.Resolve(off, &events.PromptResolution{
+			Answers: answers, Source: source, Timestamp: time.Now(),
+		})
 	}
-	r.srv.broadcast(evt)
-	r.stepOpen = false
 }
 
-func (r *webRenderer) RenderSection(section *demokit.SectionDef) {
-	r.inner.RenderSection(section)
-	r.srv.broadcast(serverEvent{
-		Kind: "section",
-		Extra: map[string]any{
-			"title": section.Title(),
-			"body":  section.Body(),
-		},
-	})
-}
-
-func (r *webRenderer) RenderDone() {
-	r.inner.RenderDone()
-	// runDemo emits the final "done" after Execute returns; that
-	// covers the broadcast side, so no broadcast here.
-}
-
-func (r *webRenderer) WaitForStep(opts demokit.WaitOpts) {
-	// Live mode auto-advances; no terminal pause.
-}
-
-// Prompt collects inputs for the current step. Broadcasts an
-// "input-needed" event with the declared input shapes, then blocks
-// reading from the server's inputs channel (filled by WS "input"
-// messages). Selects on runCtx so shutdown unblocks the demo
-// goroutine instead of leaking it. If Demo.EffectiveInputTimeout
-// is non-zero for this step, falls back to declared defaults
-// after the deadline and broadcasts "input-timeout" so the
-// player can dismiss its form.
-func (r *webRenderer) Prompt(stepID string, inputs []demokit.InputDef) map[string]any {
-	r.srv.broadcast(serverEvent{
-		Kind:   "input-needed",
-		StepID: stepID,
-		Inputs: inputs,
-	})
-
-	timeout := r.srv.demo.EffectiveInputTimeout(stepID)
+// awaitPromptAnswers blocks on the inputs channel / runCtx / per-step
+// deadline; matches the legacy webRenderer.Prompt select shape.
+func (s *liveServer) awaitPromptAnswers(stepID string, inputs []events.Input) (map[string]any, string) {
+	timeout := s.demo.EffectiveInputTimeout(stepID)
 	var deadline <-chan time.Time
 	if timeout > 0 {
 		t := time.NewTimer(timeout)
 		defer t.Stop()
 		deadline = t.C
 	}
-
 	select {
-	case values, ok := <-r.srv.inputs:
+	case values, ok := <-s.inputs:
 		if !ok || values == nil {
-			return map[string]any{}
+			return map[string]any{}, "cancelled"
 		}
-		return values
-	case <-r.srv.runCtx.Done():
-		return map[string]any{}
+		return values, "user-submitted"
+	case <-s.runCtx.Done():
+		return map[string]any{}, "cancelled"
 	case <-deadline:
-		defaults := defaultsForInputs(inputs)
-		r.srv.broadcast(serverEvent{
+		s.broadcast(serverEvent{
 			Kind:   "input-timeout",
 			StepID: stepID,
 			Extra:  map[string]any{"timeout_ms": timeout.Milliseconds()},
 		})
-		return defaults
+		return defaultsForEventInputs(inputs), "timeout"
 	}
 }
 
-// defaultsForInputs builds the same map collectInputs would build
-// in non-interactive mode — any input with a Default contributes
-// to the result; inputs without a Default are absent. Used as the
-// fallback when an input prompt times out.
-func defaultsForInputs(inputs []demokit.InputDef) map[string]any {
-	out := make(map[string]any, len(inputs))
-	for _, in := range inputs {
-		if in.Default != nil {
-			out[in.Name] = in.Default
+// inputDefsFromEvents projects events.Input back into the legacy
+// demokit.InputDef shape the WS frame's `Inputs` field carries (the
+// JS player consumes that JSON shape).
+func inputDefsFromEvents(in []events.Input) []demokit.InputDef {
+	out := make([]demokit.InputDef, 0, len(in))
+	for _, ev := range in {
+		def := demokit.InputDef{
+			Name:    ev.InputName(),
+			Prompt:  ev.InputPrompt(),
+			Default: ev.InputDefault(),
 		}
+		switch v := ev.(type) {
+		case events.IntInput:
+			def.Kind = "int"
+		case events.ChoiceInput:
+			def.Kind = "choice"
+			def.Options = v.Options
+		default:
+			def.Kind = "string"
+		}
+		out = append(out, def)
 	}
 	return out
 }
 
-// StreamOutput broadcasts a chunk event so the live page can render
-// streaming step output in real time, and mirrors the chunk to the
-// operator's terminal in the inner renderer's preferred style (TUI
-// users get TUI-styled chunks; plain users get raw bytes). out is
-// the stdout snapshotted before captureOutput's redirect — writing
-// to os.Stdout directly would loop back into the capture pipe.
-func (r *webRenderer) StreamOutput(stepNum int, chunk []byte, out io.Writer) {
-	if sr, ok := r.inner.(demokit.StreamingRenderer); ok {
-		sr.StreamOutput(stepNum, chunk, out)
-	} else if out != nil {
-		_, _ = out.Write(chunk)
+// defaultsForEventInputs builds the timeout-fallback answer map from
+// the event projection — InputDefault() returns whatever the author
+// set (typed value or nil).
+func defaultsForEventInputs(inputs []events.Input) map[string]any {
+	out := make(map[string]any, len(inputs))
+	for _, in := range inputs {
+		if d := in.InputDefault(); d != nil {
+			out[in.InputName()] = d
+		}
 	}
-	r.srv.broadcast(serverEvent{
-		Kind:  "chunk",
-		Chunk: string(chunk),
-		Extra: map[string]any{"step_num": stepNum},
-	})
+	return out
 }
 
 // --- helpers ---

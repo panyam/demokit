@@ -878,7 +878,7 @@ func (r *PlainRenderer) handleEvent(off int, ev events.Event) {
 		// Output already streamed via StreamOutput's inline tee in
 		// Execute, so RenderResult receives "" (matches today's
 		// displayOutput="" path for streaming/event-aware).
-		r.RenderResult(e.Visit, "", stepResultFromEvent(e))
+		r.RenderResult(e.Visit, "", StepResultFromEvent(e))
 	case events.Done:
 		r.RenderDone()
 		r.done = true
@@ -1019,11 +1019,14 @@ func numberedCopyablesFromVerbatims(blocks []events.Verbatim, boxedDefault bool)
 	return out
 }
 
-// stepResultFromEvent rebuilds a *StepResult from a StepEnd event.
-// Returns nil for a "ok" terminal with no message/error, matching
+// StepResultFromEvent rebuilds a *StepResult from a StepEnd event.
+// Returns nil for an "ok" terminal with no message/error, matching
 // the legacy "no result was returned by Run" sentinel that
-// RenderResult interprets as a plain success.
-func stepResultFromEvent(e events.StepEnd) *StepResult {
+// RenderResult interprets as a plain success. Exported so any
+// event-aware renderer (plain, web bridge, future tui) can
+// reconstruct the legacy result shape without duplicating the
+// status-string parse.
+func StepResultFromEvent(e events.StepEnd) *StepResult {
 	if e.Status == "ok" && e.Message == "" && e.ErrorText == "" {
 		return nil
 	}
