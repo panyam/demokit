@@ -27,9 +27,14 @@ func (r *Renderer) copyableBlocks(step *demokit.StepDef) []copyableBlock {
 		return nil
 	}
 	demo := step.Demo()
-	boxedDefault := demo != nil && demo.IsBoxedVerbatim()
+	return copyableBlocksFromVerbatims(step.VerbatimBlocks(), demo != nil && demo.IsBoxedVerbatim())
+}
+
+// copyableBlocksFromVerbatims is the projection-taking version used
+// by the event drain. Same boxing rule as copyableBlocks.
+func copyableBlocksFromVerbatims(blocks []demokit.VerbatimView, boxedDefault bool) []copyableBlock {
 	var out []copyableBlock
-	for i, v := range step.VerbatimBlocks() {
+	for i, v := range blocks {
 		if len(v.Variants) == 0 {
 			continue
 		}

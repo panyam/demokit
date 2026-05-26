@@ -10,10 +10,13 @@ import (
 	"io"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"charm.land/lipgloss/v2"
+	"github.com/charmbracelet/x/term"
 	"github.com/panyam/demokit"
+	"github.com/panyam/demokit/events"
 )
 
 // Palette holds the colors used by the TUI renderer.
@@ -85,6 +88,48 @@ type Renderer struct {
 	// variant is active. Reset at each RenderStep so a fresh step's
 	// defaults take over.
 	activeVariant map[int]int
+
+	// --- event-aware path (demokit.EventAwareRenderer) ---
+	//
+	// When Execute attaches its queue via AttachEventQueue, TUI
+	// becomes a queue consumer (same shape as Plain in phase 3a):
+	// a drain goroutine dispatches discrete events into the same
+	// printX helpers the legacy methods use. OutputChunk events
+	// stay on the inline StreamOutput tee for live streaming.
+	// Snapshots of os.Stdout/Stderr are pinned at attach time so
+	// the drain never reads the live globals (race-free against
+	// captureOutput's redirect, per issue 23).
+	queue      *events.EventQueue
+	drainDone  bool
+	drainWG    sync.WaitGroup
+	boxedFlag  bool              // mirror of events.Header.BoxedVerbatim
+	lastStepEv *events.StepStart // event-side mirror of lastStep, for the copy prompt
+	snapOut    *os.File
+	snapErr    *os.File
+}
+
+// stdoutFor returns the writer the drain (and legacy path) should
+// write to. Drain uses the snapshot; legacy falls back to live
+// os.Stdout. Same pattern as PlainRenderer's snap helpers.
+func (r *Renderer) stdoutFor() io.Writer {
+	if r.snapOut != nil {
+		return r.snapOut
+	}
+	return os.Stdout
+}
+
+func (r *Renderer) stdoutFile() *os.File {
+	if r.snapOut != nil {
+		return r.snapOut
+	}
+	return os.Stdout
+}
+
+func (r *Renderer) stderrFile() *os.File {
+	if r.snapErr != nil {
+		return r.snapErr
+	}
+	return os.Stderr
 }
 
 // New creates a TUI Renderer with default settings.
@@ -114,8 +159,20 @@ func (r *Renderer) activePrompter() FormPrompter {
 	return r.prompter
 }
 
-// termWidth returns the current terminal width via the shared demokit helper.
-func termWidth() int {
+// terminalWidth queries the terminal width through the renderer's
+// snapshot file handles (drain path) or the live os.Stdout/Stderr
+// via demokit.TermWidth (legacy path), 80 fallback. The drain-side
+// path takes no extra lock — its snapshots are pinned at
+// AttachEventQueue time.
+func (r *Renderer) terminalWidth() int {
+	if r.snapOut != nil || r.snapErr != nil {
+		for _, f := range []*os.File{r.stdoutFile(), r.stderrFile()} {
+			if w, _, err := term.GetSize(f.Fd()); err == nil && w > 0 {
+				return w
+			}
+		}
+		return 80
+	}
 	return demokit.TermWidth()
 }
 
@@ -128,7 +185,7 @@ func (r *Renderer) width() int {
 	if maxW <= 0 {
 		maxW = 120
 	}
-	w := int(float64(termWidth()) * frac)
+	w := int(float64(r.terminalWidth()) * frac)
 	if w > maxW {
 		w = maxW
 	}
@@ -160,12 +217,12 @@ func (r *Renderer) scrollDelay() time.Duration {
 func (r *Renderer) smoothPrint(rendered string) {
 	delay := r.scrollDelay()
 	if delay == 0 {
-		fmt.Println(rendered)
+		fmt.Fprintln(r.stdoutFor(), rendered)
 		return
 	}
 	lines := strings.Split(rendered, "\n")
 	for i, line := range lines {
-		fmt.Println(line)
+		fmt.Fprintln(r.stdoutFor(), line)
 		// Skip delay on the last line to avoid trailing pause.
 		if i < len(lines)-1 {
 			time.Sleep(delay)
@@ -208,52 +265,63 @@ func (r *Renderer) RenderHeader(title, description string, stepCount int) {
 		Width(r.width())
 
 	r.smoothPrint(box.Render(content))
-	fmt.Println()
+	fmt.Fprintln(r.stdoutFor())
 }
 
 func (r *Renderer) RenderStep(stepNum, totalSteps int, step *demokit.StepDef) {
 	r.lastStep = step
-	r.activeVariant = initialActiveVariants(step)
+	demo := step.Demo()
+	r.printStepBlock(stepNum, totalSteps, events.StepStart{
+		Visit:     stepNum,
+		StepID:    step.StepID(),
+		Title:     step.Title(),
+		Note:      step.NoteText(),
+		Declared:  totalSteps,
+		Refs:      refsToEvents(step.Refs()),
+		Arrows:    arrowsToEvents(step.Arrows()),
+		Verbatims: verbatimsToEventsTUI(step.VerbatimBlocks()),
+	}, demo != nil && demo.IsBoxedVerbatim())
+}
+
+// printStepBlock is the shared formatter the event drain also calls.
+// Body extracted from RenderStep; reads through the event projection
+// so both legacy and drain paths converge on one implementation.
+func (r *Renderer) printStepBlock(stepNum, totalSteps int, e events.StepStart, boxedDefault bool) {
+	r.activeVariant = initialActiveVariantsFromVerbatims(e.Verbatims)
 	p := r.Palette
 	iw := r.innerWidth()
 
-	// Step number badge
 	numStyle := lipgloss.NewStyle().
 		Bold(true).
 		Foreground(p.StepNumber)
-	// Once visit count exceeds the declared step total (cyclic graph),
-	// the "N/M" denominator becomes misleading — drop it.
 	stepLabel := fmt.Sprintf("Step %d/%d", stepNum, totalSteps)
 	if stepNum > totalSteps {
 		stepLabel = fmt.Sprintf("Step %d", stepNum)
 	}
 	badge := numStyle.Render(stepLabel)
 
-	// Title
 	titleStyle := lipgloss.NewStyle().
 		Bold(true).
 		Foreground(p.Title)
-	title := titleStyle.Render(step.Title())
+	title := titleStyle.Render(e.Title)
 
 	header := badge + "  " + title
 
 	var sections []string
 	sections = append(sections, header)
 
-	// Refs
-	if refs := step.Refs(); len(refs) > 0 {
+	if len(e.Refs) > 0 {
 		refStyle := lipgloss.NewStyle().Foreground(p.Ref)
-		var refParts []string
-		for _, ref := range refs {
+		refParts := make([]string, 0, len(e.Refs))
+		for _, ref := range e.Refs {
 			refParts = append(refParts, ref.Name)
 		}
 		sections = append(sections, refStyle.Render("Refs: "+strings.Join(refParts, ", ")))
 	}
 
-	// Arrows
 	arrowStyle := lipgloss.NewStyle().Foreground(p.Arrow)
 	dashedStyle := lipgloss.NewStyle().Foreground(p.DashedArrow)
-	for _, a := range step.Arrows() {
+	for _, a := range e.Arrows {
 		sym := "──>>"
 		style := arrowStyle
 		if a.Dashed {
@@ -264,14 +332,13 @@ func (r *Renderer) RenderStep(stepNum, totalSteps int, step *demokit.StepDef) {
 		sections = append(sections, style.Render(line))
 	}
 
-	// Note
-	if note := step.NoteText(); note != "" {
+	if e.Note != "" {
 		noteStyle := lipgloss.NewStyle().
 			Italic(true).
 			Foreground(p.Note).
 			Width(iw)
 		sections = append(sections, "")
-		sections = append(sections, noteStyle.Render(note))
+		sections = append(sections, noteStyle.Render(e.Note))
 	}
 
 	content := lipgloss.JoinVertical(lipgloss.Left, sections...)
@@ -284,7 +351,7 @@ func (r *Renderer) RenderStep(stepNum, totalSteps int, step *demokit.StepDef) {
 
 	r.smoothPrint(box.Render(content))
 
-	r.renderVerbatimBlocks(step)
+	r.printVerbatimBlocks(e.Verbatims, boxedDefault)
 }
 
 // renderVerbatimBlocks emits each verbatim block according to the
@@ -300,25 +367,29 @@ func (r *Renderer) RenderStep(stepNum, totalSteps int, step *demokit.StepDef) {
 //     active variant. Default-marked variant starts active; user
 //     switches via line-input command at the pause; the new active
 //     variant is echoed inline.
-func (r *Renderer) renderVerbatimBlocks(step *demokit.StepDef) {
-	blocks := step.VerbatimBlocks()
+//
+// printVerbatimBlocks is the shared formatter the event drain also
+// calls. Takes the projected event vocabulary so the drain doesn't
+// need to reconstruct *StepDef. Body matches renderVerbatimBlocks
+// modulo the projection types (events.Verbatim has identical shape
+// to demokit.VerbatimView; renderUnboxedVariant / renderBoxedBlock
+// still take the legacy view types so we convert at the block edge).
+func (r *Renderer) printVerbatimBlocks(blocks []events.Verbatim, boxedDefault bool) {
 	if len(blocks) == 0 {
 		return
 	}
-	demo := step.Demo()
-	boxedDefault := demo != nil && demo.IsBoxedVerbatim()
-
 	for idx, v := range blocks {
-		fmt.Println()
+		fmt.Fprintln(r.stdoutFor())
 		multi := len(v.Variants) > 1
 		boxed := boxedDefault || multi
+		view := verbatimEventToView(v)
 		if !boxed {
-			r.renderUnboxedVariant(v)
+			r.renderUnboxedVariant(view)
 			continue
 		}
-		r.renderBoxedBlock(idx, v, multi)
+		r.renderBoxedBlock(idx, view, multi)
 	}
-	fmt.Println()
+	fmt.Fprintln(r.stdoutFor())
 }
 
 // renderUnboxedVariant emits a single-variant block in today's
@@ -328,7 +399,7 @@ func (r *Renderer) renderVerbatimBlocks(step *demokit.StepDef) {
 func (r *Renderer) renderUnboxedVariant(v demokit.VerbatimView) {
 	labelStyle := lipgloss.NewStyle().Italic(true).Foreground(r.Palette.Note)
 	if v.Label != "" {
-		fmt.Println(labelStyle.Render(v.Label))
+		fmt.Fprintln(r.stdoutFor(), labelStyle.Render(v.Label))
 	}
 	r.smoothPrint(strings.TrimRight(v.Variants[0].Content, "\n"))
 }
@@ -347,11 +418,11 @@ func (r *Renderer) renderBoxedBlock(blockIdx int, v demokit.VerbatimView, multi 
 	p := r.Palette
 	labelStyle := lipgloss.NewStyle().Bold(true).Foreground(p.Title)
 	if v.Label != "" {
-		fmt.Println(labelStyle.Render(v.Label))
-		fmt.Println()
+		fmt.Fprintln(r.stdoutFor(), labelStyle.Render(v.Label))
+		fmt.Fprintln(r.stdoutFor())
 	}
 	if multi {
-		fmt.Println(r.renderTabStrip(v.Variants, r.activeIndex(blockIdx)))
+		fmt.Fprintln(r.stdoutFor(), r.renderTabStrip(v.Variants, r.activeIndex(blockIdx)))
 	}
 	active := v.Variants[r.activeIndex(blockIdx)]
 	box := lipgloss.NewStyle().
@@ -407,8 +478,16 @@ func initialActiveVariants(step *demokit.StepDef) map[int]int {
 	if step == nil {
 		return nil
 	}
+	return initialActiveVariantsFromVerbatims(verbatimsToEventsTUI(step.VerbatimBlocks()))
+}
+
+// initialActiveVariantsFromVerbatims is the event-projection variant
+// of initialActiveVariants. Same default-marked-variant rule; works
+// off the events.Verbatim shape so the drain doesn't reconstruct
+// *StepDef.
+func initialActiveVariantsFromVerbatims(blocks []events.Verbatim) map[int]int {
 	out := map[int]int{}
-	for i, v := range step.VerbatimBlocks() {
+	for i, v := range blocks {
 		for j, va := range v.Variants {
 			if va.IsDefault {
 				out[i] = j
@@ -417,6 +496,64 @@ func initialActiveVariants(step *demokit.StepDef) map[int]int {
 		}
 	}
 	return out
+}
+
+// --- event projection <-> demokit-view converters ---
+//
+// events.Ref/Arrow/Variant/Verbatim have identical field shapes to
+// demokit.Ref/ArrowView/VariantView/VerbatimView. These tiny copy
+// helpers let the legacy methods build event projections (so they
+// can call the projection-taking printX helpers) and let the drain
+// hand block-rendering helpers the legacy view types they already
+// take. The cleanup PR may extract these to a shared location.
+
+func refsToEvents(in []demokit.Ref) []events.Ref {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]events.Ref, len(in))
+	for i, r := range in {
+		out[i] = events.Ref{Name: r.Name, URL: r.URL}
+	}
+	return out
+}
+
+func arrowsToEvents(in []demokit.ArrowView) []events.Arrow {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]events.Arrow, len(in))
+	for i, a := range in {
+		out[i] = events.Arrow{From: a.From, To: a.To, Label: a.Label, Dashed: a.Dashed}
+	}
+	return out
+}
+
+func verbatimsToEventsTUI(in []demokit.VerbatimView) []events.Verbatim {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]events.Verbatim, len(in))
+	for i, vb := range in {
+		variants := make([]events.Variant, len(vb.Variants))
+		for j, v := range vb.Variants {
+			variants[j] = events.Variant{
+				Label: v.Label, Lang: v.Lang, Content: v.Content, IsDefault: v.IsDefault,
+			}
+		}
+		out[i] = events.Verbatim{Label: vb.Label, Variants: variants}
+	}
+	return out
+}
+
+func verbatimEventToView(e events.Verbatim) demokit.VerbatimView {
+	variants := make([]demokit.VariantView, len(e.Variants))
+	for i, v := range e.Variants {
+		variants[i] = demokit.VariantView{
+			Label: v.Label, Lang: v.Lang, Content: v.Content, IsDefault: v.IsDefault,
+		}
+	}
+	return demokit.VerbatimView{Label: e.Label, Variants: variants}
 }
 
 // statusColors returns the border and label colors for a given result status.
@@ -455,7 +592,7 @@ func (r *Renderer) RenderResult(stepNum int, output string, result *demokit.Step
 
 	// Nothing to show
 	if output == "" && result == nil {
-		fmt.Println()
+		fmt.Fprintln(r.stdoutFor())
 		return
 	}
 
@@ -502,10 +639,15 @@ func (r *Renderer) RenderResult(stepNum int, output string, result *demokit.Step
 		Width(r.width())
 
 	r.smoothPrint(box.Render(content))
-	fmt.Println()
+	fmt.Fprintln(r.stdoutFor())
 }
 
 func (r *Renderer) RenderSection(section *demokit.SectionDef) {
+	r.printSectionBlock(section.Title(), section.Body())
+}
+
+// printSectionBlock is the shared formatter the event drain also calls.
+func (r *Renderer) printSectionBlock(title, body string) {
 	p := r.Palette
 	iw := r.innerWidth()
 
@@ -519,8 +661,8 @@ func (r *Renderer) RenderSection(section *demokit.SectionDef) {
 		Width(iw)
 
 	var parts []string
-	parts = append(parts, titleStyle.Render(section.Title()))
-	if body := section.Body(); body != "" {
+	parts = append(parts, titleStyle.Render(title))
+	if body != "" {
 		parts = append(parts, bodyStyle.Render(body))
 	}
 
@@ -533,7 +675,7 @@ func (r *Renderer) RenderSection(section *demokit.SectionDef) {
 		Width(r.width())
 
 	r.smoothPrint(box.Render(content))
-	fmt.Println()
+	fmt.Fprintln(r.stdoutFor())
 }
 
 func (r *Renderer) RenderDone() {
@@ -554,32 +696,28 @@ func (r *Renderer) RenderDone() {
 }
 
 func (r *Renderer) WaitForStep(opts demokit.WaitOpts) {
+	r.waitForAdvanceUI(opts, r.copyableBlocks(r.lastStep))
+}
+
+// waitForAdvanceUI is the shared interactive-pause loop the event
+// drain also calls (with copyables computed from r.lastStepEv).
+// Body lifted from WaitForStep so legacy and drain converge on one
+// implementation.
+func (r *Renderer) waitForAdvanceUI(opts demokit.WaitOpts, copyables []copyableBlock) {
 	p := r.Palette
 	style := lipgloss.NewStyle().
 		Foreground(p.Prompt).
 		Italic(true)
 
-	copyables := r.copyableBlocks(r.lastStep)
-
-	// Countdown path. The user's escape hatch is "type anything to
-	// review" — empty Enter accepts and advances (today's behavior),
-	// any other input cancels the countdown and drops into the
-	// interactive hold (copy loop if the step has copyables; plain
-	// Enter wait otherwise). v1.1's raw mode will make Tab the
-	// literal trigger; the prompt wording reflects that v1 reality
-	// honestly.
 	if opts.AutoAcceptAfter > 0 {
 		r.waitWithCountdown(opts, copyables, style)
 		return
 	}
-
-	// No countdown — line-based pause. Copy loop when the step has
-	// copyables, otherwise today's plain Enter pause.
 	if len(copyables) > 0 {
 		r.copyPromptLoop(copyables, style)
 		return
 	}
-	fmt.Println(style.Render("  Press Enter to run this step..."))
+	fmt.Fprintln(r.stdoutFor(), style.Render("  Press Enter to run this step..."))
 	bufio.NewReader(os.Stdin).ReadString('\n')
 }
 
@@ -603,16 +741,16 @@ func (r *Renderer) waitWithCountdown(opts demokit.WaitOpts, copyables []copyable
 	var key byte
 	var gotKey bool
 	if !opts.ShowCountdown {
-		fmt.Println(promptStyle.Render(fmt.Sprintf("  Press Enter to run (auto in %s) · any key to review",
+		fmt.Fprintln(r.stdoutFor(), promptStyle.Render(fmt.Sprintf("  Press Enter to run (auto in %s) · any key to review",
 			opts.AutoAcceptAfter.Round(time.Second))))
 		key, gotKey = demokit.WaitForKeyOrTimeout(opts.AutoAcceptAfter, nil)
 	} else {
 		key, gotKey = demokit.WaitForKeyOrTimeout(opts.AutoAcceptAfter, func(remaining time.Duration) {
 			bar := plainCountdownBar(remaining, opts.AutoAcceptAfter, 20)
 			row := fmt.Sprintf("  %s  %4.1fs  (%s)", bar, remaining.Seconds(), hint)
-			fmt.Print("\r" + promptStyle.Render(row))
+			fmt.Fprint(r.stdoutFor(), "\r"+promptStyle.Render(row))
 		})
-		fmt.Print("\r" + strings.Repeat(" ", 80) + "\r")
+		fmt.Fprint(r.stdoutFor(), "\r"+strings.Repeat(" ", 80)+"\r")
 	}
 
 	if !gotKey {
@@ -631,7 +769,7 @@ func (r *Renderer) waitWithCountdown(opts demokit.WaitOpts, copyables []copyable
 		r.copyPromptLoop(copyables, promptStyle)
 		return
 	}
-	fmt.Println(noteStyle.Render("  (countdown stopped — press Enter to continue)"))
+	fmt.Fprintln(r.stdoutFor(), noteStyle.Render("  (countdown stopped — press Enter to continue)"))
 	bufio.NewReader(os.Stdin).ReadString('\n')
 }
 
@@ -645,7 +783,7 @@ func (r *Renderer) copyPromptLoop(copyables []copyableBlock, promptStyle lipglos
 	reader := bufio.NewReader(os.Stdin)
 	noteStyle := lipgloss.NewStyle().Foreground(p.Note).Italic(true)
 	for {
-		fmt.Println(promptStyle.Render(copyPromptHint(copyables)))
+		fmt.Fprintln(r.stdoutFor(), promptStyle.Render(copyPromptHint(copyables)))
 		line, _ := reader.ReadString('\n')
 		cmd := strings.TrimSpace(line)
 		if cmd == "" {
@@ -653,7 +791,7 @@ func (r *Renderer) copyPromptLoop(copyables []copyableBlock, promptStyle lipglos
 		}
 		msg, switched := r.handleCopyCommand(cmd, copyables)
 		if msg != "" {
-			fmt.Println(noteStyle.Render("  " + msg))
+			fmt.Fprintln(r.stdoutFor(), noteStyle.Render("  "+msg))
 		}
 		if switched {
 			r.echoActiveVariant(copyables)
@@ -671,8 +809,8 @@ func (r *Renderer) echoActiveVariant(copyables []copyableBlock) {
 	if target == nil {
 		return
 	}
-	fmt.Println()
-	fmt.Println(r.renderTabStrip(target.view.Variants, r.activeIndex(target.index)))
+	fmt.Fprintln(r.stdoutFor())
+	fmt.Fprintln(r.stdoutFor(), r.renderTabStrip(target.view.Variants, r.activeIndex(target.index)))
 	active := target.view.Variants[r.activeIndex(target.index)]
 	box := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
@@ -700,4 +838,153 @@ func plainCountdownBar(remaining, total time.Duration, width int) string {
 		filled = width
 	}
 	return "[" + strings.Repeat("█", filled) + strings.Repeat("░", width-filled) + "]"
+}
+
+// --- EventAwareRenderer / FinishableRenderer ---
+
+// Compile-time assertions: TUI is event-aware (drains the queue and
+// dispatches into the same printX helpers the legacy methods use)
+// and finishable (waits for the drain at Done).
+var (
+	_ demokit.EventAwareRenderer = (*Renderer)(nil)
+	_ demokit.FinishableRenderer = (*Renderer)(nil)
+)
+
+// AttachEventQueue wires the demokit event queue and spawns the
+// drain goroutine. Once attached, demokit gates the legacy Render*
+// method dispatch and the drain handles everything. Snapshots
+// os.Stdout / Stderr under stdoutMu.RLock (issue 23) so the drain
+// writes to stable file handles, race-free against captureOutput's
+// redirect — same pattern as PlainRenderer in phase 3a.
+func (r *Renderer) AttachEventQueue(q *events.EventQueue) {
+	r.queue = q
+	r.drainDone = false
+	r.lastStepEv = nil
+	r.boxedFlag = false
+	r.snapOut = os.Stdout
+	r.snapErr = os.Stderr
+	r.drainWG.Add(1)
+	go func() {
+		defer r.drainWG.Done()
+		r.drainEvents()
+	}()
+}
+
+// Finish waits for the drain goroutine to exit. Demokit calls this
+// after emitting Done so writes are sequenced before the test/process
+// moves on (race-detector hygiene).
+func (r *Renderer) Finish() {
+	r.drainWG.Wait()
+}
+
+// drainEvents subscribes + catch-up drains (events appended before
+// Subscribe ran won't fire Notify on their own; see issue 40) +
+// loops on Notify until Done sets drainDone.
+func (r *Renderer) drainEvents() {
+	sub := r.queue.Subscribe()
+	defer sub.Close()
+	offset := r.drainFrom(0)
+	for !r.drainDone {
+		<-sub.Notify()
+		offset = r.drainFrom(offset)
+	}
+}
+
+func (r *Renderer) drainFrom(offset int) int {
+	evs, newOff := r.queue.ReadFrom(offset)
+	for i, ev := range evs {
+		r.handleEvent(offset+i, ev)
+	}
+	return newOff
+}
+
+// handleEvent dispatches one event into the shared printX helpers.
+// OutputChunk + StepReadyToRun stay no-ops here — chunks tee live
+// via StreamOutput (the inline path in Execute already has the real
+// pre-captureOutput stdout writer).
+func (r *Renderer) handleEvent(off int, ev events.Event) {
+	switch e := ev.(type) {
+	case events.Header:
+		r.boxedFlag = e.BoxedVerbatim
+		r.RenderHeader(e.Title, e.Description, e.StepCount)
+	case events.Section:
+		r.printSectionBlock(e.Title, e.Body)
+	case events.StepStart:
+		stepCopy := e
+		r.lastStepEv = &stepCopy
+		r.printStepBlock(e.Visit, e.Declared, e, r.boxedFlag)
+	case events.StepEnd:
+		// Output already streamed via StreamOutput's inline tee, so
+		// the result block gets "" — matches phase 3a's pattern.
+		r.RenderResult(e.Visit, "", demokit.StepResultFromEvent(e))
+	case events.Done:
+		r.RenderDone()
+		r.drainDone = true
+	case events.WaitForAdvance:
+		// Already resolved (non-interactive defaults) — skip.
+		if _, resolved := r.queue.Resolution(off); resolved {
+			return
+		}
+		opts := demokit.WaitOpts{}
+		if !e.Deadline.IsZero() {
+			opts.AutoAcceptAfter = time.Until(e.Deadline)
+		}
+		var copyables []copyableBlock
+		if r.lastStepEv != nil {
+			copyables = copyableBlocksFromVerbatims(verbatimEventsToViews(r.lastStepEv.Verbatims), r.boxedFlag)
+		}
+		r.waitForAdvanceUI(opts, copyables)
+		_ = r.queue.Resolve(off, &events.AdvanceResolution{
+			Source: "user-submitted", Timestamp: time.Now(),
+		})
+	case events.PromptOpen:
+		if _, resolved := r.queue.Resolution(off); resolved {
+			return
+		}
+		stepID := ""
+		if r.lastStepEv != nil {
+			stepID = r.lastStepEv.StepID
+		}
+		answers := r.activePrompter().Prompt(stepID, inputDefsFromEvents(e.Inputs))
+		_ = r.queue.Resolve(off, &events.PromptResolution{
+			Answers: answers, Source: "user-submitted", Timestamp: time.Now(),
+		})
+	}
+}
+
+// inputDefsFromEvents projects events.Input back into demokit.InputDef
+// so the existing FormPrompter (line-mode readline UI) can consume
+// it. The prompter doesn't care about the runtime Parse closure here
+// — it re-derives validation from Kind, same as the legacy path.
+func inputDefsFromEvents(in []events.Input) []demokit.InputDef {
+	out := make([]demokit.InputDef, 0, len(in))
+	for _, ev := range in {
+		def := demokit.InputDef{
+			Name:    ev.InputName(),
+			Prompt:  ev.InputPrompt(),
+			Default: ev.InputDefault(),
+		}
+		switch v := ev.(type) {
+		case events.IntInput:
+			def.Kind = "int"
+		case events.ChoiceInput:
+			def.Kind = "choice"
+			def.Options = v.Options
+		default:
+			def.Kind = "string"
+		}
+		out = append(out, def)
+	}
+	return out
+}
+
+// verbatimEventsToViews converts the event projection slice back to
+// the legacy view slice — used by waitForAdvanceUI in the drain so
+// the existing copyableBlocksFromVerbatims helper can do its work.
+func verbatimEventsToViews(in []events.Verbatim) []demokit.VerbatimView {
+	out := make([]demokit.VerbatimView, len(in))
+	for i, v := range in {
+		out[i] = verbatimEventToView(v)
+	}
+	return out
 }
