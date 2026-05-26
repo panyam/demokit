@@ -68,14 +68,13 @@ func TestCopyableBlocksNilStep(t *testing.T) {
 	}
 }
 
-// rendererWithStep returns a Renderer prepared as if RenderStep had
-// just been called on step — activeVariant map seeded from default
-// markers. Lets the tests skip the actual Render plumbing while still
-// exercising the active-variant logic.
+// rendererWithStep returns a Renderer prepared as if the drain had
+// just dispatched a StepStart for step — activeVariant map seeded
+// from default markers. Lets the tests skip the actual drain plumbing
+// while still exercising the active-variant logic.
 func rendererWithStep(step *demokit.StepDef) *Renderer {
 	r := New()
-	r.lastStep = step
-	r.activeVariant = initialActiveVariants(step)
+	r.activeVariant = initialActiveVariantsFromVerbatims(verbatimsToEventsTUI(step.VerbatimBlocks()))
 	return r
 }
 

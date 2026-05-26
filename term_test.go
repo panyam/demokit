@@ -2,7 +2,6 @@ package demokit
 
 import (
 	"fmt"
-	"io"
 	"os"
 	"strings"
 	"sync"
@@ -85,55 +84,41 @@ func TestCaptureOutputOnChunkCallbackFires(t *testing.T) {
 	}
 }
 
-// streamingTestRenderer extends recordingRenderer with StreamOutput
-// support. Used to verify the streaming dispatch path.
-type streamingTestRenderer struct {
+// streamingResultRenderer is the event-aware test spy: it captures
+// every OutputChunk into the chunks slice so tests can assert what a
+// step streamed during Run. lastOutput stays empty by design — the
+// post-cleanup architecture delivers output exclusively as chunks
+// (StepEnd carries status/message but no output text), so any test
+// asserting on lastOutput is asserting on the no-double-print
+// invariant.
+type streamingResultRenderer struct {
 	recordingRenderer
-	mu     sync.Mutex
-	chunks []string
-}
-
-func (r *streamingTestRenderer) StreamOutput(_ int, chunk []byte, _ io.Writer) {
-	r.mu.Lock()
-	r.chunks = append(r.chunks, string(chunk))
-	r.mu.Unlock()
-}
-
-// resultRecordingRenderer captures the output value RenderResult sees,
-// so tests can assert the streaming path passes "" while the buffered
-// path passes the full text.
-type resultRecordingRenderer struct {
-	recordingRenderer
+	mu         sync.Mutex
+	chunks     []string
 	lastOutput string
 }
 
-func (r *resultRecordingRenderer) RenderResult(num int, out string, res *StepResult) {
-	r.recordingRenderer.RenderResult(num, out, res)
-	r.lastOutput = out
+func newStreamingResultRenderer() *streamingResultRenderer {
+	r := &streamingResultRenderer{}
+	r.onChunk = func(_ int, chunk []byte) {
+		r.mu.Lock()
+		r.chunks = append(r.chunks, string(chunk))
+		r.mu.Unlock()
+	}
+	return r
 }
 
-type streamingResultRenderer struct {
-	resultRecordingRenderer
-	mu     sync.Mutex
-	chunks []string
-}
-
-func (r *streamingResultRenderer) StreamOutput(_ int, chunk []byte, _ io.Writer) {
-	r.mu.Lock()
-	r.chunks = append(r.chunks, string(chunk))
-	r.mu.Unlock()
-}
-
-// TestExecuteStreamingRendererReceivesChunks verifies that when a
-// renderer implements StreamingRenderer, a step's Run output is
-// teed into StreamOutput in roughly real time AND RenderResult is
-// invoked with output == "" so the body isn't double-printed.
-func TestExecuteStreamingRendererReceivesChunks(t *testing.T) {
+// TestExecuteStreamingChunksAreDelivered verifies a step's Run output
+// flows to the renderer as OutputChunk events in roughly real time.
+// The drain accumulates them; the assertion checks the full payload
+// arrived. lastOutput stays empty because StepEnd carries no output
+// (chunks are the only delivery path).
+func TestExecuteStreamingChunksAreDelivered(t *testing.T) {
 	orig := os.Args
 	defer func() { os.Args = orig }()
 	os.Args = []string{"test", "--non-interactive"}
 
-	r := &streamingResultRenderer{}
+	r := newStreamingResultRenderer()
 	demo := New("Stream").WithRenderer(r)
 	demo.Step("emit").ID("emit").Run(func(ctx StepContext) *StepResult {
 		fmt.Print("live output")
@@ -149,28 +134,7 @@ func TestExecuteStreamingRendererReceivesChunks(t *testing.T) {
 		t.Errorf("streamed chunks = %q, want %q", gotChunks, "live output")
 	}
 	if r.lastOutput != "" {
-		t.Errorf("RenderResult should receive empty output when streaming, got %q", r.lastOutput)
-	}
-}
-
-// TestExecuteNonStreamingRendererBuffers verifies the legacy path
-// for renderers that don't implement StreamingRenderer: the captured
-// output flows in full to RenderResult, no streaming.
-func TestExecuteNonStreamingRendererBuffers(t *testing.T) {
-	orig := os.Args
-	defer func() { os.Args = orig }()
-	os.Args = []string{"test", "--non-interactive"}
-
-	r := &resultRecordingRenderer{}
-	demo := New("Buffer").WithRenderer(r)
-	demo.Step("emit").ID("emit").Run(func(ctx StepContext) *StepResult {
-		fmt.Print("buffered output")
-		return nil
-	})
-	demo.Execute()
-
-	if r.lastOutput != "buffered output" {
-		t.Errorf("buffered RenderResult output = %q, want %q", r.lastOutput, "buffered output")
+		t.Errorf("StepEnd should carry no output text (chunks are the only delivery), got %q", r.lastOutput)
 	}
 }
 

@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	"io"
 	"log"
 	"net/http"
 	"sync"
@@ -92,14 +91,11 @@ func (s *liveServer) shutdown() {
 
 // --- liveServer ---
 
-// liveServer doubles as the demokit Renderer for --serve mode:
-// implements EventAwareRenderer (drains the demo's event queue,
-// broadcasts WS frames) and FinishableRenderer (waits for the
-// drain on Done). The legacy Render* methods are no-ops because
-// demokit gates them for event-aware renderers; they only exist
-// to satisfy the interface. This is the notebook-style decomposition
+// liveServer is the demokit Renderer for --serve mode: drains the
+// demo's event queue, broadcasts WS frames, and (via Finish) waits
+// for the drain on Done. This is the notebook-style decomposition
 // — the browser player is the view, liveServer is the bridge,
-// nothing wraps an inner local renderer (see PR thread).
+// nothing wraps an inner local renderer.
 type liveServer struct {
 	demo *demokit.Demo
 	hub  *wsHub
@@ -379,32 +375,15 @@ func (h *wsHub) closeAll() {
 	h.conns = make(map[string]*liveConn)
 }
 
-// --- liveServer as demokit.Renderer / EventAwareRenderer / FinishableRenderer ---
+// --- liveServer as demokit.Renderer ---
 
-// Compile-time assertions: liveServer is the renderer demokit calls
-// (every method on the legacy Renderer/StreamingRenderer surface),
-// AND the event-aware drain that does the real work; demokit gates
-// the legacy methods for event-aware renderers (Phase 3a) so the
-// no-ops below only exist to satisfy the interface.
+// Compile-time assertions: liveServer is the demokit Renderer
+// (event-aware drain that broadcasts WS frames) and Finishable
+// (waits for the drain at Done).
 var (
 	_ demokit.Renderer           = (*liveServer)(nil)
-	_ demokit.StreamingRenderer  = (*liveServer)(nil)
-	_ demokit.EventAwareRenderer = (*liveServer)(nil)
 	_ demokit.FinishableRenderer = (*liveServer)(nil)
 )
-
-// --- Renderer interface stubs (never called when event-aware) ---
-
-func (s *liveServer) RenderHeader(string, string, int)                 {}
-func (s *liveServer) RenderStep(int, int, *demokit.StepDef)            {}
-func (s *liveServer) RenderResult(int, string, *demokit.StepResult)    {}
-func (s *liveServer) RenderSection(*demokit.SectionDef)                {}
-func (s *liveServer) RenderDone()                                      {}
-func (s *liveServer) WaitForStep(demokit.WaitOpts)                     {}
-func (s *liveServer) Prompt(string, []demokit.InputDef) map[string]any { return nil }
-func (s *liveServer) StreamOutput(int, []byte, io.Writer)              {}
-
-// --- EventAwareRenderer + FinishableRenderer ---
 
 // AttachEventQueue wires the demo's event queue and spawns the drain.
 // Called once per RunLoop. reset() re-launches runDemo with a fresh
@@ -451,9 +430,7 @@ func (s *liveServer) drainFrom(offset int) int {
 }
 
 // handleEvent translates one demokit event into a WS frame (or
-// blocks for sync events). Mirrors what the pre-3b webRenderer did
-// in its Render*/Prompt/StreamOutput methods, but driven by the
-// queue rather than by Execute's method calls.
+// blocks for sync events).
 func (s *liveServer) handleEvent(off int, ev events.Event) {
 	switch e := ev.(type) {
 	case events.Header:
@@ -497,10 +474,8 @@ func (s *liveServer) handleEvent(off int, ev events.Event) {
 		})
 	case events.StepEnd:
 		// max-visits / max-steps aborts emit StepEnd for a visit
-		// that never had a StepStart (Phase 3a's error-path emits).
-		// Synthesise a step-start so the player has something to
-		// mark as errored — same intent as the pre-3b webRenderer's
-		// !stepOpen branch.
+		// that never had a StepStart. Synthesise a step-start so
+		// the player has something to mark as errored.
 		if _, seen := s.stepIDByVisit[e.Visit]; !seen {
 			abortedID := "__demokit_aborted__"
 			s.broadcast(serverEvent{
@@ -564,7 +539,8 @@ func (s *liveServer) handleEvent(off int, ev events.Event) {
 }
 
 // awaitPromptAnswers blocks on the inputs channel / runCtx / per-step
-// deadline; matches the legacy webRenderer.Prompt select shape.
+// deadline, returning the answers + a source label for the
+// PromptResolution event.
 func (s *liveServer) awaitPromptAnswers(stepID string, inputs []events.Input) (map[string]any, string) {
 	timeout := s.demo.EffectiveInputTimeout(stepID)
 	var deadline <-chan time.Time
@@ -591,9 +567,9 @@ func (s *liveServer) awaitPromptAnswers(stepID string, inputs []events.Input) (m
 	}
 }
 
-// inputDefsFromEvents projects events.Input back into the legacy
-// demokit.InputDef shape the WS frame's `Inputs` field carries (the
-// JS player consumes that JSON shape).
+// inputDefsFromEvents projects events.Input back into the
+// demokit.InputDef shape the WS frame's `Inputs` field carries —
+// the JS player consumes that JSON shape.
 func inputDefsFromEvents(in []events.Input) []demokit.InputDef {
 	out := make([]demokit.InputDef, 0, len(in))
 	for _, ev := range in {

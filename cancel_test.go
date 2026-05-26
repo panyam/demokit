@@ -135,7 +135,7 @@ func TestRunHonorsCancelDuringStreaming(t *testing.T) {
 	defer func() { os.Args = orig }()
 	os.Args = []string{"test", "--non-interactive"}
 
-	r := &streamingResultRenderer{}
+	r := newStreamingResultRenderer()
 	demo := New("flush").WithRenderer(r)
 	demo.Step("watch").Timeout(20 * time.Millisecond).Run(func(ctx StepContext) *StepResult {
 		fmt.Print("starting...\n")

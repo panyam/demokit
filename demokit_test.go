@@ -6,8 +6,11 @@ import (
 	"os"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
+
+	"github.com/panyam/demokit/events"
 )
 
 func TestStepAccessors(t *testing.T) {
@@ -233,33 +236,96 @@ func TestStepResultDefaultLabels(t *testing.T) {
 	}
 }
 
-// recordingRenderer captures all renderer calls for testing.
+// recordingRenderer is an event-aware test spy. It drains the demo's
+// event queue and records a string for each discrete event so tests
+// can assert on the demo's emission sequence. AttachEventQueue +
+// Finish satisfy the EventAwareRenderer / FinishableRenderer contract;
+// PromptOpen events auto-resolve with declared defaults so tests
+// that exercise input-bearing steps don't deadlock.
+//
+// Subclasses install onChunk / onStepEnd hooks to react to streamed
+// output without re-implementing the drain loop — used by the
+// streaming spies in term_test.go and cancel_test.go.
 type recordingRenderer struct {
-	calls []string
+	mu      sync.Mutex
+	calls   []string
+	queue   *events.EventQueue
+	drainWG sync.WaitGroup
+	done    bool
+
+	onChunk   func(visit int, chunk []byte)
+	onStepEnd func(visit int, status, message, errorText string)
 }
 
-func (r *recordingRenderer) RenderHeader(title, desc string, n int) {
-	r.calls = append(r.calls, "header:"+title)
-}
-func (r *recordingRenderer) RenderStep(num, total int, s *StepDef) {
-	r.calls = append(r.calls, "step:"+s.title)
-}
-func (r *recordingRenderer) RenderResult(num int, out string, res *StepResult) {
-	r.calls = append(r.calls, "result")
-}
-func (r *recordingRenderer) RenderSection(s *SectionDef) {
-	r.calls = append(r.calls, "section:"+s.title)
-}
-func (r *recordingRenderer) RenderDone()               { r.calls = append(r.calls, "done") }
-func (r *recordingRenderer) WaitForStep(opts WaitOpts) {} // no-op
-func (r *recordingRenderer) Prompt(stepID string, inputs []InputDef) map[string]any {
-	out := make(map[string]any, len(inputs))
-	for _, in := range inputs {
-		if in.Default != nil {
-			out[in.Name] = in.Default
+func (r *recordingRenderer) AttachEventQueue(q *events.EventQueue) {
+	r.queue = q
+	r.done = false
+	r.drainWG.Add(1)
+	go func() {
+		defer r.drainWG.Done()
+		sub := q.Subscribe()
+		defer sub.Close()
+		offset := r.drainFrom(0)
+		for !r.done {
+			<-sub.Notify()
+			offset = r.drainFrom(offset)
 		}
+	}()
+}
+
+func (r *recordingRenderer) Finish() { r.drainWG.Wait() }
+
+func (r *recordingRenderer) drainFrom(offset int) int {
+	evs, newOff := r.queue.ReadFrom(offset)
+	for i, ev := range evs {
+		r.handleEvent(offset+i, ev)
 	}
-	return out
+	return newOff
+}
+
+func (r *recordingRenderer) handleEvent(off int, ev events.Event) {
+	switch e := ev.(type) {
+	case events.Header:
+		r.record("header:" + e.Title)
+	case events.StepStart:
+		r.record("step:" + e.Title)
+	case events.StepEnd:
+		r.record("result")
+		if r.onStepEnd != nil {
+			r.onStepEnd(e.Visit, e.Status, e.Message, e.ErrorText)
+		}
+	case events.OutputChunk:
+		if r.onChunk != nil {
+			r.onChunk(e.Visit, e.Chunk)
+		}
+	case events.Section:
+		r.record("section:" + e.Title)
+	case events.Done:
+		r.record("done")
+		r.done = true
+	case events.PromptOpen:
+		// Mirror the legacy spy's default-filling behavior so input
+		// steps don't deadlock waiting on a stdin that tests don't
+		// provide.
+		if _, resolved := r.queue.Resolution(off); resolved {
+			return
+		}
+		out := make(map[string]any, len(e.Inputs))
+		for _, in := range e.Inputs {
+			if d := in.InputDefault(); d != nil {
+				out[in.InputName()] = d
+			}
+		}
+		_ = r.queue.Resolve(off, &events.PromptResolution{
+			Answers: out, Source: "default", Timestamp: time.Now(),
+		})
+	}
+}
+
+func (r *recordingRenderer) record(s string) {
+	r.mu.Lock()
+	r.calls = append(r.calls, s)
+	r.mu.Unlock()
 }
 
 // TestExecuteJumpViaNext verifies that a step's StepResult.Next jumps to
