@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/panyam/demokit"
+	"github.com/panyam/demokit/events"
 )
 
 // captureStdout runs fn and returns what it wrote to stdout.
@@ -41,6 +42,23 @@ func newTestRenderer() *Renderer {
 	return r
 }
 
+// stepStartFromDef builds the events.StepStart projection for a
+// *demokit.StepDef the same way demokit's event emitter does. Tests
+// use this to drive printStepBlock directly without standing up a
+// full Execute + event queue.
+func stepStartFromDef(visit, declared int, step *demokit.StepDef) events.StepStart {
+	return events.StepStart{
+		Visit:     visit,
+		StepID:    step.StepID(),
+		Title:     step.Title(),
+		Note:      step.NoteText(),
+		Declared:  declared,
+		Refs:      refsToEvents(step.Refs()),
+		Arrows:    arrowsToEvents(step.Arrows()),
+		Verbatims: verbatimsToEventsTUI(step.VerbatimBlocks()),
+	}
+}
+
 func TestRendererImplementsInterface(t *testing.T) {
 	var _ demokit.Renderer = (*Renderer)(nil)
 }
@@ -48,7 +66,7 @@ func TestRendererImplementsInterface(t *testing.T) {
 func TestRenderHeader(t *testing.T) {
 	r := newTestRenderer()
 	out := captureStdout(t, func() {
-		r.RenderHeader("My Demo", "A description", 5)
+		r.printHeaderBlock("My Demo", "A description", 5)
 	})
 	if !strings.Contains(out, "My Demo") {
 		t.Error("header should contain title")
@@ -68,7 +86,7 @@ func TestRenderStep(t *testing.T) {
 		Note("This is a note")
 
 	out := captureStdout(t, func() {
-		r.RenderStep(1, 3, step)
+		r.printStepBlock(1, 3, stepStartFromDef(1, 3, step), false)
 	})
 
 	checks := []string{"Step 1/3", "Test Step", "RFC 123", "A", "B", "call", "This is a note"}
@@ -97,7 +115,7 @@ func TestRenderStepVerbatimNoBorderInjection(t *testing.T) {
 	step := demo.Step("Repro").VerbatimLang("the wire", "bash", content)
 
 	out := captureStdout(t, func() {
-		r.RenderStep(1, 1, step)
+		r.printStepBlock(1, 1, stepStartFromDef(1, 1, step), false)
 	})
 
 	// Walk every output row. If a row contains the verbatim content
@@ -139,7 +157,7 @@ func TestRenderStepVerbatimMultilinePreserved(t *testing.T) {
 	step := demo.Step("Repro").Verbatim("", "line1\nline2\nline3")
 
 	out := captureStdout(t, func() {
-		r.RenderStep(1, 1, step)
+		r.printStepBlock(1, 1, stepStartFromDef(1, 1, step), false)
 	})
 
 	for _, want := range []string{"line1", "line2", "line3"} {
@@ -152,7 +170,7 @@ func TestRenderStepVerbatimMultilinePreserved(t *testing.T) {
 func TestRenderResultSuccess(t *testing.T) {
 	r := newTestRenderer()
 	out := captureStdout(t, func() {
-		r.RenderResult(1, "some output", nil)
+		r.printResultBlock(1, "some output", nil)
 	})
 	if !strings.Contains(out, "Result") {
 		t.Error("result should contain 'Result' label")
@@ -165,7 +183,7 @@ func TestRenderResultSuccess(t *testing.T) {
 func TestRenderResultEmpty(t *testing.T) {
 	r := newTestRenderer()
 	out := captureStdout(t, func() {
-		r.RenderResult(1, "", nil)
+		r.printResultBlock(1, "", nil)
 	})
 	if strings.Contains(out, "Result") {
 		t.Error("empty result should not render a Result box")
@@ -175,7 +193,7 @@ func TestRenderResultEmpty(t *testing.T) {
 func TestRenderResultError(t *testing.T) {
 	r := newTestRenderer()
 	out := captureStdout(t, func() {
-		r.RenderResult(1, "partial output", demokit.Errf("something broke"))
+		r.printResultBlock(1, "partial output", demokit.Errf("something broke"))
 	})
 	if !strings.Contains(out, "Error") {
 		t.Error("error result should contain 'Error' label")
@@ -191,7 +209,7 @@ func TestRenderResultError(t *testing.T) {
 func TestRenderResultWarning(t *testing.T) {
 	r := newTestRenderer()
 	out := captureStdout(t, func() {
-		r.RenderResult(1, "", demokit.Warn("watch out"))
+		r.printResultBlock(1, "", demokit.Warn("watch out"))
 	})
 	if !strings.Contains(out, "Warning") {
 		t.Error("warning result should contain 'Warning' label")
@@ -204,7 +222,7 @@ func TestRenderResultWarning(t *testing.T) {
 func TestRenderResultInfo(t *testing.T) {
 	r := newTestRenderer()
 	out := captureStdout(t, func() {
-		r.RenderResult(1, "", demokit.Info("FYI"))
+		r.printResultBlock(1, "", demokit.Info("FYI"))
 	})
 	if !strings.Contains(out, "Info") {
 		t.Error("info result should contain 'Info' label")
@@ -217,7 +235,7 @@ func TestRenderResultInfo(t *testing.T) {
 func TestRenderResultCustomLabel(t *testing.T) {
 	r := newTestRenderer()
 	out := captureStdout(t, func() {
-		r.RenderResult(1, "", &demokit.StepResult{
+		r.printResultBlock(1, "", &demokit.StepResult{
 			Status: demokit.StatusWarning, Label: "Heads Up", Message: "custom label",
 		})
 	})
@@ -258,7 +276,7 @@ func TestRenderSection(t *testing.T) {
 func TestRenderDone(t *testing.T) {
 	r := newTestRenderer()
 	out := captureStdout(t, func() {
-		r.RenderDone()
+		r.printDoneBlock()
 	})
 	if !strings.Contains(out, "Done") {
 		t.Error("done output missing 'Done'")
@@ -272,7 +290,7 @@ func TestCustomWidth(t *testing.T) {
 	r.Delay = -1     // disable smooth scroll for test speed
 
 	out := captureStdout(t, func() {
-		r.RenderHeader("Narrow", "", 1)
+		r.printHeaderBlock("Narrow", "", 1)
 	})
 	if !strings.Contains(out, "Narrow") {
 		t.Error("narrow render missing title")
@@ -284,7 +302,7 @@ func TestCustomPalette(t *testing.T) {
 	// Just verify it doesn't panic with a custom palette.
 	r.Palette = DefaultPalette()
 	out := captureStdout(t, func() {
-		r.RenderHeader("Palette Test", "", 1)
+		r.printHeaderBlock("Palette Test", "", 1)
 	})
 	if !strings.Contains(out, "Palette Test") {
 		t.Error("custom palette render failed")

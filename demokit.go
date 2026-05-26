@@ -34,27 +34,28 @@ import (
 	"github.com/panyam/demokit/events"
 )
 
-// EventAwareRenderer is an optional interface a Renderer can
-// implement to receive the demo's event queue. Renderers that
-// consume from the queue retain the reference and drain it
-// themselves; Execute then skips the blocking Renderer.WaitForStep
-// / Renderer.Prompt calls for them, since the queue-side
-// resolution covers the sync rendezvous.
+// Renderer is the contract demokit calls into. A renderer receives
+// the demo's event queue at the start of each Execute via
+// AttachEventQueue, drains it on its own goroutine, and translates
+// events into whatever surface it presents (terminal text, TUI
+// boxes, WebSocket frames, notebook cells). The queue is the only
+// data flow from demokit to the renderer — there are no per-event
+// callbacks.
 //
-// Legacy renderers (Plain, TUI) don't implement this; Execute
-// continues to call WaitForStep / Prompt directly and mirrors the
-// resolution into the queue afterward for consistency.
-type EventAwareRenderer interface {
-	Renderer
+// Discrete events (Header, StepStart, StepEnd, Section, Done) are
+// fire-and-forget. Sync events (WaitForAdvance, PromptOpen) carry
+// an offset the renderer's drain Resolves once user input arrives;
+// Execute blocks on AwaitResolution for that offset.
+type Renderer interface {
 	AttachEventQueue(q *events.EventQueue)
 }
 
-// FinishableRenderer is implemented by event-aware renderers that
-// need a post-Done barrier — typically waiting for a drain goroutine
-// to exit before Execute returns. Demokit calls Finish after emitting
-// the Done event and after the legacy RenderDone path, so writes from
-// the renderer's drain are sequenced before the test/process moves on
-// (race-detector safety). Optional; renderers without it just skip.
+// FinishableRenderer is implemented by renderers that need a
+// post-Done barrier — typically waiting for a drain goroutine to
+// exit before Execute returns. Demokit calls Finish after emitting
+// the Done event so writes from the renderer's drain are sequenced
+// before the test/process moves on (race-detector safety).
+// Optional; renderers without it just skip.
 type FinishableRenderer interface {
 	Finish()
 }
@@ -107,10 +108,9 @@ type Demo struct {
 	docHandlers  map[string]DocHandler
 	serveHandler ServeHandler
 
-	// events is the per-Execute event queue. Renderers that
-	// implement EventAwareRenderer consume from it; legacy
-	// renderers don't reference it, but events are still emitted
-	// so future consumers (web, --record) can hook in.
+	// events is the per-Execute event queue. The renderer drains
+	// it via AttachEventQueue; the recorder (and any other
+	// consumer) can read from it independently.
 	events *events.EventQueue
 }
 
@@ -612,16 +612,12 @@ func (d *Demo) RunLoop() {
 		ShowCountdown:   d.showCountdown,
 	}
 
-	// Event queue: fresh per Execute. Renderers implementing
-	// EventAwareRenderer attach here and drain it themselves;
-	// legacy renderers see only the Renderer interface calls but
-	// the queue is still populated so future consumers (web,
-	// --record) can hook in.
+	// Event queue: fresh per Execute. Renderers drain it themselves
+	// via AttachEventQueue; demokit's only side-channel is the
+	// recorder. The queue is the canonical log for any consumer
+	// (renderer, --record, future observers).
 	d.events = events.NewQueue()
-	eventAware, isEventAware := r.(EventAwareRenderer)
-	if isEventAware {
-		eventAware.AttachEventQueue(d.events)
-	}
+	r.AttachEventQueue(d.events)
 
 	d.events.Append(events.Header{
 		Title:         d.title,
@@ -629,16 +625,6 @@ func (d *Demo) RunLoop() {
 		StepCount:     d.stepCount,
 		BoxedVerbatim: d.IsBoxedVerbatim(),
 	})
-	// Skip the legacy method when the renderer drains the queue itself —
-	// avoids dual-rendering. Same shape repeats for the other discrete
-	// events below; sync events (WaitForAdvance, PromptOpen) are already
-	// only dispatched along the legacy WaitForStep/Prompt path when
-	// !isEventAware (see the WaitForAdvance + collectInputsWithEvents
-	// branches), and StreamOutput stays inline so chunks tee live in
-	// both paths.
-	if !isEventAware {
-		r.RenderHeader(d.title, d.description, d.stepCount)
-	}
 
 	visits := make(map[string]int)
 	totalVisits := 0
@@ -665,13 +651,9 @@ walk:
 					})
 				}
 				abortErr := Errf("%s", msg)
-				// Emit a StepEnd event so the event-aware drain surfaces
-				// the abort the same way the legacy path does via the
-				// RenderResult call below.
+				// Emit a StepEnd event so the drain surfaces the abort
+				// (no legacy RenderResult path remains).
 				d.events.Append(stepEndEvent(totalVisits, abortErr))
-				if !isEventAware {
-					r.RenderResult(totalVisits, "", abortErr)
-				}
 				break walk
 			}
 
@@ -682,9 +664,6 @@ walk:
 				declared = d.stepCount
 			}
 			d.events.Append(stepStartEvent(totalVisits, declared, v))
-			if !isEventAware {
-				r.RenderStep(totalVisits, declared, v)
-			}
 
 			// Replay mode pulls inputs and the next-step path from the
 			// recorded trace. A mismatched step ID falls through to the
@@ -705,22 +684,10 @@ walk:
 					wait.Deadline = time.Now().Add(waitOpts.AutoAcceptAfter)
 				}
 				offset := d.events.Append(wait)
-				if isEventAware {
-					// Queue-side rendezvous: event-aware renderer's
-					// user input calls q.Resolve. Blocks here until
-					// that happens (or program shutdown).
-					_ = d.events.AwaitResolution(offset)
-				} else {
-					// Legacy renderer: it does the blocking via
-					// stdin / raw-mode keypress. Mirror the
-					// resolution into the queue afterward so the
-					// event log is complete for any other consumer
-					// observing the queue (e.g. --record).
-					r.WaitForStep(waitOpts)
-					_ = d.events.Resolve(offset, &events.AdvanceResolution{
-						Source: "legacy-renderer", Timestamp: time.Now(),
-					})
-				}
+				// Queue-side rendezvous: the renderer's user-input
+				// path calls q.Resolve. Block here until that
+				// happens (or program shutdown).
+				_ = d.events.AwaitResolution(offset)
 			}
 
 			var inputs map[string]any
@@ -730,7 +697,7 @@ walk:
 					inputs = map[string]any{}
 				}
 			} else {
-				inputs = d.collectInputsWithEvents(r, v, interactive, isEventAware, totalVisits)
+				inputs = d.collectInputsWithEvents(v, interactive, totalVisits)
 			}
 			// Build a per-step context for cancellation. Steps without
 			// Timeout or Cancellable get a never-cancelled background
@@ -760,35 +727,13 @@ walk:
 
 			var output string
 			var result *StepResult
-			// Tee output chunks into the renderer in real time when it
-			// supports streaming. The trace and recorder still receive
-			// the full captured string regardless. Snapshot os.Stdout
-			// before captureOutput redirects it so the chunk callback
-			// can write to the user's actual terminal — writing to
-			// os.Stdout from the drain goroutine would loop the bytes
-			// back into the capture pipe.
-			var onChunk func([]byte)
-			streaming := false
-			sr, srOk := r.(StreamingRenderer)
-			if srOk {
-				streaming = true
-			}
 			stepNum := totalVisits
-			// Snapshot the real terminal stdout before captureOutput
-			// redirects it. RLock-gated so we read a stable value even
-			// if a concurrent demo's captureOutput is mid-mutation —
-			// see term.go's stdoutMu.
-			stdoutMu.RLock()
-			originalStdout := os.Stdout
-			stdoutMu.RUnlock()
-			// Always emit OutputChunk events (so the queue is the
-			// canonical log for any consumer); pass through to
-			// the streaming renderer when present.
-			onChunk = func(chunk []byte) {
+			// Every chunk a step writes is emitted as an OutputChunk
+			// event so the queue is the canonical log. Renderers that
+			// want live streaming consume OutputChunk in their drain —
+			// no separate StreamingRenderer plumbing needed.
+			onChunk := func(chunk []byte) {
 				d.events.Append(events.OutputChunk{Visit: stepNum, Chunk: chunk})
-				if srOk {
-					sr.StreamOutput(stepNum, chunk, originalStdout)
-				}
 			}
 			// StepReadyToRun marks the boundary between "user has
 			// signalled advance" and "runFn is about to execute."
@@ -827,23 +772,11 @@ walk:
 				result.Next = replayEntry.Next
 			}
 
-			// Emit the StepEnd event before RenderResult — the
-			// queue is the canonical log; the renderer call is
-			// for legacy paths.
+			// StepEnd carries the result vocabulary for the drain.
+			// Output already flowed via OutputChunk events; the
+			// trace entry below still carries the full captured
+			// string for the recorder.
 			d.events.Append(stepEndEvent(totalVisits, result))
-
-			// When the body has already been streamed (legacy
-			// StreamingRenderer) or when an event-aware renderer
-			// is in use, hand RenderResult an empty output so the
-			// legacy path doesn't double-print. The trace entry
-			// below still carries the full captured string.
-			displayOutput := output
-			if streaming || isEventAware {
-				displayOutput = ""
-			}
-			if !isEventAware {
-				r.RenderResult(totalVisits, displayOutput, result)
-			}
 
 			entry := TraceEntry{
 				Kind:   KindStep,
@@ -870,12 +803,8 @@ walk:
 					nextErr := Errf("unknown step id %q in Next from %q", result.Next, v.id)
 					// StepEnd already fired above for the step's own
 					// result; emit a second one carrying the routing
-					// error so event-aware drains surface it via
-					// RenderResult the same way the legacy path does.
+					// error so the drain surfaces it.
 					d.events.Append(stepEndEvent(totalVisits, nextErr))
-					if !isEventAware {
-						r.RenderResult(totalVisits, "", nextErr)
-					}
 					break walk
 				}
 				entry.Next = result.Next
@@ -892,9 +821,6 @@ walk:
 
 		case *SectionDef:
 			d.events.Append(events.Section{Title: v.title, Body: v.body})
-			if !isEventAware {
-				r.RenderSection(v)
-			}
 			if d.recorder != nil {
 				d.recorder.Record(TraceEntry{
 					Kind:  KindSection,
@@ -925,9 +851,6 @@ walk:
 		}
 		abortErr := Errf("%s", msg)
 		d.events.Append(stepEndEvent(totalVisits, abortErr))
-		if !isEventAware {
-			r.RenderResult(totalVisits, "", abortErr)
-		}
 	}
 
 	if d.recorder != nil {
@@ -935,9 +858,6 @@ walk:
 	}
 
 	d.events.Append(events.Done{})
-	if !isEventAware {
-		r.RenderDone()
-	}
 	if f, ok := r.(FinishableRenderer); ok {
 		f.Finish()
 	}
@@ -994,16 +914,14 @@ func (d *Demo) emitDoc(format, from string) {
 }
 
 // collectInputsWithEvents gathers a step's input payload via the
-// event queue. Behaviour:
+// event queue.
 //
 //   - Non-interactive: defaults only; a PromptOpen is appended
 //     and auto-resolved so the event log records the resolution.
-//   - Event-aware renderer: PromptOpen → AwaitResolution returns
-//     the user's answers from the queue. The renderer's own
-//     Prompt method is not called.
-//   - Legacy renderer: PromptOpen appended; r.Prompt called; the
-//     returned answers are mirrored into the queue via Resolve.
-func (d *Demo) collectInputsWithEvents(r Renderer, s *StepDef, interactive, isEventAware bool, visit int) map[string]any {
+//   - Interactive: PromptOpen → AwaitResolution returns the
+//     user's answers from the queue. The renderer's drain is
+//     responsible for resolving the prompt offset.
+func (d *Demo) collectInputsWithEvents(s *StepDef, interactive bool, visit int) map[string]any {
 	if len(s.inputs) == 0 {
 		return map[string]any{}
 	}
@@ -1023,21 +941,11 @@ func (d *Demo) collectInputsWithEvents(r Renderer, s *StepDef, interactive, isEv
 		})
 		return out
 	}
-	if isEventAware {
-		res, _ := d.events.AwaitResolution(offset).(*events.PromptResolution)
-		if res == nil || res.Answers == nil {
-			return map[string]any{}
-		}
-		return res.Answers
+	res, _ := d.events.AwaitResolution(offset).(*events.PromptResolution)
+	if res == nil || res.Answers == nil {
+		return map[string]any{}
 	}
-	answers := r.Prompt(s.id, s.inputs)
-	if answers == nil {
-		answers = map[string]any{}
-	}
-	_ = d.events.Resolve(offset, &events.PromptResolution{
-		Answers: answers, Source: "legacy-renderer", Timestamp: time.Now(),
-	})
-	return answers
+	return res.Answers
 }
 
 // assignStepIDs fills in any unset step IDs with auto-generated ones

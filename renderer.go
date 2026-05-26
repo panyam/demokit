@@ -16,56 +16,12 @@ import (
 	"github.com/panyam/demokit/events"
 )
 
-// Renderer controls how demo output is displayed. Implement this interface
-// to provide custom visual styles (e.g., TUI with Lipgloss boxes).
-type Renderer interface {
-	// RenderHeader displays the demo title, description, and step count.
-	RenderHeader(title, description string, stepCount int)
-	// RenderStep displays a step's metadata (number, title, arrows, refs, note)
-	// before it is executed.
-	RenderStep(stepNum, totalSteps int, step *StepDef)
-	// RenderResult displays the captured output from a step's run function.
-	// output is the captured stdout. result is nil for success with no message.
-	RenderResult(stepNum int, output string, result *StepResult)
-	// RenderSection displays a non-executable explanatory block.
-	RenderSection(section *SectionDef)
-	// RenderDone displays the demo completion message.
-	RenderDone()
-	// WaitForStep blocks until the user is ready to run the next step.
-	// Called only in interactive mode. If opts.AutoAcceptAfter > 0 the
-	// renderer should advance automatically after that duration.
-	WaitForStep(opts WaitOpts)
-	// Prompt collects the declared inputs from the user and returns a
-	// typed map keyed by InputDef.Name. Only called in interactive mode
-	// when the step has at least one input. Implementations should
-	// re-prompt on Parse error and respect each input's Default.
-	Prompt(stepID string, inputs []InputDef) map[string]any
-}
-
-// StreamingRenderer is implemented by renderers that can show step
-// output incrementally while Run is still executing. demokit detects
-// this via type assertion: when the renderer implements StreamOutput,
-// captureOutput tees each chunk into the renderer in roughly real
-// time. RenderResult is then called with output == "" because the
-// body has already appeared on screen.
-//
-// Renderers that don't implement StreamingRenderer get the buffered
-// path: the full captured output is passed to RenderResult after Run
-// returns.
-type StreamingRenderer interface {
-	Renderer
-	// StreamOutput is called for each byte chunk a step's Run writes
-	// to stdout or stderr while it's still executing. May be invoked
-	// from a goroutine other than the one driving Render*; renderers
-	// must serialize their own state if needed.
-	//
-	// out is the writer to emit chunks to — the user's actual stdout,
-	// captured before captureOutput redirected it. Writing to
-	// os.Stdout directly would loop the chunks back into the capture
-	// pipe. stepNum is the absolute visit count (matching what
-	// RenderStep received); implementations are free to ignore it.
-	StreamOutput(stepNum int, chunk []byte, out io.Writer)
-}
+// Compile-time assertion: PlainRenderer is the demokit Renderer
+// (event-aware, finishable).
+var (
+	_ Renderer           = (*PlainRenderer)(nil)
+	_ FinishableRenderer = (*PlainRenderer)(nil)
+)
 
 // --- PlainRenderer: default text-only renderer (zero dependencies) ---
 
@@ -80,28 +36,15 @@ type PlainRenderer struct {
 	// Fraction of terminal width to use. 0 means 0.90.
 	Fraction float64
 
-	// lastStep is set by RenderStep (legacy path) and consulted by
-	// WaitForStep to build the digit-to-copy prompt. Cleared at the
-	// next RenderStep so a step with no copyables falls through to
-	// the plain Enter pause.
-	lastStep *StepDef
-
-	// --- event-aware path (demokit.EventAwareRenderer) ---
+	// --- event drain state ---
 	//
-	// When Execute attaches its queue via AttachEventQueue, plain
-	// becomes a queue consumer like the bridge: a goroutine drains
-	// the *discrete* events (Header, StepStart, Section, StepEnd,
-	// Done, sync waits/prompts) and dispatches to the same printX
-	// helpers the legacy methods use. OutputChunk events are
-	// deliberately NOT handled here — chunks continue to flow live
-	// to the user's terminal via the StreamingRenderer.StreamOutput
-	// inline tee in Execute, which already has the real
-	// pre-captureOutput stdout writer to print to. Execute skips
-	// its dual legacy-method calls for the discrete events when
-	// this renderer is attached (see demokit.go).
+	// When Execute attaches its queue via AttachEventQueue, a
+	// goroutine drains every event (Header, StepStart, OutputChunk,
+	// StepEnd, Section, Done, sync waits/prompts) and dispatches
+	// to the printX helpers + the stdout snapshot below.
 	queue      *events.EventQueue
 	boxedFlag  bool              // mirror of events.Header.BoxedVerbatim
-	lastStepEv *events.StepStart // event-side mirror of lastStep, for the copy prompt
+	lastStepEv *events.StepStart // most recent StepStart, used to compute the copy prompt
 	done       bool              // set by Done; tells drainEvents to exit so the goroutine doesn't leak across runs/tests
 	drainWG    sync.WaitGroup    // tracks the drain goroutine so Finish can wait for it
 
@@ -116,8 +59,8 @@ type PlainRenderer struct {
 	snapErr *os.File
 }
 
-// width returns the usable output width. Uses the renderer's snapshot
-// *os.File handles when set (drain path) so the term.GetSize call
+// width returns the usable output width. Uses the renderer's
+// pinned snapshot *os.File handles so the term.GetSize call
 // doesn't race with captureOutput's os.Stdout swap.
 func (r *PlainRenderer) width() int {
 	frac := r.Fraction
@@ -139,9 +82,12 @@ func (r *PlainRenderer) width() int {
 }
 
 // termWidth queries the terminal width through the renderer's
-// snapshot file handles (drain path) or live os.Stdout/Stderr (legacy
-// path), 80 fallback. The drain-side path takes no extra lock — its
-// snapshots are pinned at AttachEventQueue time.
+// pinned snapshot file handles, 80 fallback. The snapshots are
+// taken at AttachEventQueue time so no extra lock is needed — they
+// don't race with captureOutput's os.Stdout swap. Before the
+// snapshot is set (e.g. tests that construct a PlainRenderer
+// without attaching to a queue) falls back to live os.Stdout via
+// TermWidth's RLock.
 func (r *PlainRenderer) termWidth() int {
 	if r.snapOut != nil || r.snapErr != nil {
 		for _, f := range []*os.File{r.stdoutFile(), r.stderrFile()} {
@@ -151,7 +97,6 @@ func (r *PlainRenderer) termWidth() int {
 		}
 		return 80
 	}
-	// Legacy path: live os.Stdout/Stderr, gated by TermWidth's RLock.
 	return TermWidth()
 }
 
@@ -197,7 +142,10 @@ func (r *PlainRenderer) printLine(format string, args ...any) {
 	}
 }
 
-func (r *PlainRenderer) RenderHeader(title, description string, stepCount int) {
+// printHeaderBlock formats and emits the demo header. Called by the
+// event drain on Header; tests in the demokit package call it
+// directly to assert the formatting.
+func (r *PlainRenderer) printHeaderBlock(title, description string, stepCount int) {
 	w := r.width()
 	sep := strings.Repeat("=", w)
 	r.printLine("%s\n", sep)
@@ -210,26 +158,9 @@ func (r *PlainRenderer) RenderHeader(title, description string, stepCount int) {
 	fmt.Fprintln(r.stdoutFor())
 }
 
-func (r *PlainRenderer) RenderStep(stepNum, totalSteps int, step *StepDef) {
-	r.lastStep = step
-	demo := step.Demo()
-	r.printStepBlock(stepNum, totalSteps, events.StepStart{
-		Visit:     stepNum,
-		StepID:    step.id,
-		Title:     step.title,
-		Note:      step.note,
-		Declared:  totalSteps,
-		Arrows:    arrowsToEvents(step.Arrows()),
-		Refs:      refsToEvents(step.Refs()),
-		Verbatims: verbatimsToEvents(step.VerbatimBlocks()),
-	}, demo != nil && demo.IsBoxedVerbatim())
-}
-
-// printStepBlock is the shared formatter: the legacy RenderStep
-// extracts fields from *StepDef into the event projection and calls
-// here; the event drain calls here directly with the projection it
-// already has. boxedDefault is the demo-wide flag (Header carries it
-// for the drain; the legacy path pulls it from step.Demo()).
+// printStepBlock is the shared formatter the event drain calls.
+// boxedDefault comes from the Header.BoxedVerbatim flag the drain
+// caches on the renderer.
 func (r *PlainRenderer) printStepBlock(stepNum, totalSteps int, e events.StepStart, boxedDefault bool) {
 	w := r.width()
 	// totalSteps == 0 means "no denominator" — Demo.ShowStepDenominator
@@ -338,7 +269,11 @@ func (r *PlainRenderer) printVerbatimBlocks(blocks []events.Verbatim, boxedDefau
 	fmt.Fprintln(r.stdoutFor())
 }
 
-func (r *PlainRenderer) RenderResult(_ int, output string, result *StepResult) {
+// printResultBlock formats the post-Run result label and any
+// trailing message. Called by the event drain on StepEnd; the
+// output argument is always "" along the event-driven path
+// (chunks arrived via OutputChunk).
+func (r *PlainRenderer) printResultBlock(_ int, output string, result *StepResult) {
 	w := r.width()
 
 	// Determine label
@@ -365,10 +300,6 @@ func (r *PlainRenderer) RenderResult(_ int, output string, result *StepResult) {
 	fmt.Fprintln(r.stdoutFor())
 }
 
-func (r *PlainRenderer) RenderSection(section *SectionDef) {
-	r.printSection(section.title, section.body)
-}
-
 // printSection is the shared formatter the event drain also calls.
 func (r *PlainRenderer) printSection(title, body string) {
 	w := r.width()
@@ -377,57 +308,10 @@ func (r *PlainRenderer) printSection(title, body string) {
 	fmt.Fprintln(r.stdoutFor())
 }
 
-func (r *PlainRenderer) RenderDone() {
+// printDoneBlock prints the completion marker. Called by the event
+// drain on Done.
+func (r *PlainRenderer) printDoneBlock() {
 	r.printLine("=== Done ===\n")
-}
-
-// StreamOutput writes a chunk of step output as it's produced. The
-// out writer is the user's actual stdout (captured by Execute before
-// captureOutput redirected os.Stdout into the capture pipe); writing
-// to os.Stdout directly here would loop straight back into the pipe.
-// PlainRenderer doesn't style or buffer per-chunk — this is a
-// passthrough that lets long-running steps print live.
-func (r *PlainRenderer) StreamOutput(_ int, chunk []byte, out io.Writer) {
-	out.Write(chunk)
-}
-
-func (r *PlainRenderer) WaitForStep(opts WaitOpts) {
-	copyables := r.lastStep.NumberedCopyables()
-	if len(copyables) > 0 {
-		r.waitWithCopyPrompt(opts, copyables)
-		return
-	}
-
-	if opts.AutoAcceptAfter <= 0 {
-		fmt.Fprint(r.stdoutFor(), "\n    Press Enter to run this step...")
-		bufio.NewReader(os.Stdin).ReadString('\n')
-		fmt.Fprintln(r.stdoutFor())
-		return
-	}
-
-	var key byte
-	var gotKey bool
-	if !opts.ShowCountdown {
-		fmt.Fprintf(r.stdoutFor(), "\n    Press Enter to run (auto in %s · any key to hold)...", opts.AutoAcceptAfter.Round(time.Second))
-		key, gotKey = WaitForKeyOrTimeout(opts.AutoAcceptAfter, nil)
-		fmt.Fprintln(r.stdoutFor())
-	} else {
-		fmt.Fprintln(r.stdoutFor())
-		key, gotKey = WaitForKeyOrTimeout(opts.AutoAcceptAfter, func(remaining time.Duration) {
-			bar := countdownBar(remaining, opts.AutoAcceptAfter, 20)
-			fmt.Fprintf(r.stdoutFor(), "\r    %s  %4.1fs  (Enter to accept · any key to hold)", bar, remaining.Seconds())
-		})
-		fmt.Fprintf(r.stdoutFor(), "\r    %s\n", strings.Repeat(" ", 60))
-	}
-
-	if !gotKey || key == KeyEnter || key == '\n' {
-		return // timer fired or Enter — advance
-	}
-	// Any other key cancels the countdown. Drop into a cooked-mode
-	// "press Enter to continue" hold so the user can read the screen
-	// before advancing.
-	fmt.Fprint(r.stdoutFor(), "    (countdown stopped — press Enter to continue) ")
-	bufio.NewReader(os.Stdin).ReadString('\n')
 }
 
 // waitWithCopyPrompt is PlainRenderer's pause when the step exposes
@@ -700,62 +584,6 @@ func WaitForLineOrTimeout(timeout time.Duration, onTick func(remaining time.Dura
 	}
 }
 
-// Prompt collects inputs sequentially via stdin readline. On any Parse
-// error the renderer collects the rest of the fields, prints errors, and
-// re-prompts everything — using each just-typed valid value as the new
-// default so the user only retypes the invalid one (Enter to accept).
-func (r *PlainRenderer) Prompt(stepID string, inputs []InputDef) map[string]any {
-	if len(inputs) == 0 {
-		return map[string]any{}
-	}
-	pending := make([]InputDef, len(inputs))
-	copy(pending, inputs)
-	stdin := bufio.NewReader(os.Stdin)
-
-	for attempt := 0; ; attempt++ {
-		if attempt > 0 {
-			fmt.Fprintln(r.stdoutFor(), "    Re-enter values (Enter to keep [bracketed]):")
-		}
-		result := map[string]any{}
-		errored := false
-		for i, in := range pending {
-			label := in.Prompt
-			if label == "" {
-				label = in.Name
-			}
-			if in.Default != nil {
-				fmt.Fprintf(r.stdoutFor(), "    %s [%v]: ", label, in.Default)
-			} else {
-				fmt.Fprintf(r.stdoutFor(), "    %s: ", label)
-			}
-			line, _ := stdin.ReadString('\n')
-			line = strings.TrimRight(line, "\r\n")
-
-			if line == "" && in.Default != nil {
-				result[in.Name] = in.Default
-				continue
-			}
-
-			parser := in.Parse
-			if parser == nil {
-				parser = func(s string) (any, error) { return s, nil }
-			}
-			val, err := parser(line)
-			if err != nil {
-				fmt.Fprintf(r.stdoutFor(), "    [error] %v\n", err)
-				errored = true
-				continue
-			}
-			result[in.Name] = val
-			// Sticky: a valid value becomes the next attempt's default.
-			pending[i].Default = val
-		}
-		if !errored {
-			return result
-		}
-	}
-}
-
 // countdownBar renders a left-to-right depleting progress bar.
 func countdownBar(remaining, total time.Duration, width int) string {
 	if total <= 0 {
@@ -771,13 +599,12 @@ func countdownBar(remaining, total time.Duration, width int) string {
 	return "[" + strings.Repeat("#", filled) + strings.Repeat(" ", width-filled) + "]"
 }
 
-// --- EventAwareRenderer (demokit.EventAwareRenderer) ---
+// --- demokit.Renderer ---
 
 // AttachEventQueue wires the demokit event queue and spawns the
-// drain goroutine. Execute calls this once per run; once attached,
-// PlainRenderer drains discrete events on its own goroutine and
-// Execute stops dual-calling the legacy Render* methods. Chunks
-// still flow live via StreamOutput (see struct doc).
+// drain goroutine. Execute calls this once per run; the drain
+// dispatches every event into the printX helpers and the stdout
+// snapshot taken below.
 //
 // Resets per-run state so a renderer reused across Execute calls
 // (tests do this) starts each run with a fresh drain rather than
@@ -801,9 +628,10 @@ func (r *PlainRenderer) AttachEventQueue(q *events.EventQueue) {
 	}()
 }
 
-// stdoutFor returns the writer the drain (and legacy path) should
-// write to. Drain uses the snapshot; legacy falls back to live
-// os.Stdout. Same shape for stderr-side queries via stderrFile.
+// stdoutFor returns the writer the drain should write to. Uses
+// the snapshot taken at AttachEventQueue when present, falling
+// back to live os.Stdout for tests that drive printX helpers
+// directly without going through Execute.
 func (r *PlainRenderer) stdoutFor() io.Writer {
 	if r.snapOut != nil {
 		return r.snapOut
@@ -857,9 +685,9 @@ func (r *PlainRenderer) drainFrom(offset int) int {
 	return newOff
 }
 
-// handleEvent dispatches one event. OutputChunk + StepReadyToRun
-// are intentionally no-ops here — chunks tee live via StreamOutput.
-// No outer stdoutMu lock needed: the drain writes through
+// handleEvent dispatches one event. StepReadyToRun is intentionally
+// a no-op here — PlainRenderer has no pre-allocated output widget
+// to place. No outer stdoutMu lock needed: the drain writes through
 // snapshotted *os.File handles (r.snapOut / r.snapErr) taken at
 // AttachEventQueue time, so it never touches the live os.Stdout
 // variable that captureOutput mutates.
@@ -867,20 +695,26 @@ func (r *PlainRenderer) handleEvent(off int, ev events.Event) {
 	switch e := ev.(type) {
 	case events.Header:
 		r.boxedFlag = e.BoxedVerbatim
-		r.RenderHeader(e.Title, e.Description, e.StepCount)
+		r.printHeaderBlock(e.Title, e.Description, e.StepCount)
 	case events.Section:
 		r.printSection(e.Title, e.Body)
 	case events.StepStart:
 		stepCopy := e
 		r.lastStepEv = &stepCopy
 		r.printStepBlock(e.Visit, e.Declared, e, r.boxedFlag)
+	case events.OutputChunk:
+		// Chunks flow through the drain. r.stdoutFor() returns the
+		// snapshot pinned at AttachEventQueue, so we never read the
+		// live os.Stdout var that captureOutput mutates (issue 23 +
+		// the nested RLock deadlock — see AttachEventQueue's doc).
+		r.stdoutFor().Write(e.Chunk)
 	case events.StepEnd:
-		// Output already streamed via StreamOutput's inline tee in
-		// Execute, so RenderResult receives "" (matches today's
-		// displayOutput="" path for streaming/event-aware).
-		r.RenderResult(e.Visit, "", StepResultFromEvent(e))
+		// Output already streamed via the OutputChunk drain above;
+		// printResultBlock gets "" so the result label/message
+		// don't re-emit the body.
+		r.printResultBlock(e.Visit, "", StepResultFromEvent(e))
 	case events.Done:
-		r.RenderDone()
+		r.printDoneBlock()
 		r.done = true
 	case events.WaitForAdvance:
 		// Skip if already resolved (e.g. non-interactive paths where

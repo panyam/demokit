@@ -1,12 +1,9 @@
 // Package notebookbridge wires demokit's event queue to the
 // standalone notebook component. It implements demokit.Renderer
-// (mostly as no-ops) + demokit.EventAwareRenderer; when demokit
-// detects the EventAwareRenderer interface it skips the legacy
-// renderer-driven path and just appends events. The bridge drains
-// those events in a background goroutine and translates each one
-// into the equivalent notebook.* call.
-//
-// Replaces the in-tree tui/notebook/ event-aware renderer.
+// (the event-aware contract): AttachEventQueue is the entry point
+// for lazy notebook setup + drain, and Finish blocks until the
+// notebook UI exits so demokit's Execute waits for the user before
+// returning.
 package notebookbridge
 
 import (
@@ -20,6 +17,13 @@ import (
 	"github.com/panyam/demokit/events"
 	"github.com/panyam/demokit/notebook"
 	"github.com/panyam/demokit/notebook/cells"
+)
+
+// Compile-time assertions: Bridge is the demokit Renderer
+// (event-aware) and Finishable (waits for notebook UI exit at Done).
+var (
+	_ demokit.Renderer           = (*Bridge)(nil)
+	_ demokit.FinishableRenderer = (*Bridge)(nil)
 )
 
 // Bridge wires the demokit event queue to a notebook.Notebook.
@@ -82,33 +86,19 @@ func (b *Bridge) WithMaxOutputBody(n int) *Bridge {
 	return b
 }
 
-// --- demokit.EventAwareRenderer ---
-
-// AttachEventQueue stores the queue. demokit calls this once at
-// the start of each run, before any Render* call.
-func (b *Bridge) AttachEventQueue(q *events.EventQueue) { b.queue = q }
-
-// --- demokit.Renderer (no-ops; events drive everything) ---
-
-// RenderHeader is the first lifecycle hook; we use it as the
-// trigger to start the notebook program lazily.
-func (b *Bridge) RenderHeader(string, string, int) { b.ensureBridge() }
-
-func (b *Bridge) RenderStep(int, int, *demokit.StepDef)         { b.ensureBridge() }
-func (b *Bridge) RenderResult(int, string, *demokit.StepResult) {}
-func (b *Bridge) RenderSection(*demokit.SectionDef)             {}
-func (b *Bridge) WaitForStep(demokit.WaitOpts)                  {}
-func (b *Bridge) Prompt(string, []demokit.InputDef) map[string]any {
-	return nil
-}
-func (b *Bridge) StreamOutput(int, []byte, io.Writer) {}
-
-// RenderDone blocks until the notebook program exits (user
-// pressed Ctrl+C / q / etc.). Idempotent.
-func (b *Bridge) RenderDone() {
+// AttachEventQueue stores the queue and spawns the notebook program
+// + the event-drain goroutine. demokit calls this once at the start
+// of each run, before any event is appended.
+func (b *Bridge) AttachEventQueue(q *events.EventQueue) {
+	b.queue = q
 	b.ensureBridge()
-	<-b.nbDone
 }
+
+// Finish blocks until the notebook program exits (user pressed
+// Ctrl+C / q / etc.). Demokit calls this after emitting the Done
+// event so Execute doesn't return until the user has dismissed the
+// notebook UI.
+func (b *Bridge) Finish() { <-b.nbDone }
 
 // ensureBridge spins up the notebook program + the event-drain
 // goroutine the first time it's called.
