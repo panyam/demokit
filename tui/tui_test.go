@@ -347,6 +347,28 @@ func TestResultBoxBorderHorizontalOnly(t *testing.T) {
 	}
 }
 
+// TestTabStripPrefixesIndex verifies multi-variant verbatim tabs
+// are prefixed with their 1-based index ("1. curl", "2. python")
+// so the `<n> to switch` affordance from the pause prompt has a
+// visual anchor on the tab itself.
+func TestTabStripPrefixesIndex(t *testing.T) {
+	r := newTestRenderer()
+	demo := demokit.New("v").BoxedVerbatim()
+	step := demo.Step("Fetch").VerbatimVariants("Make the call",
+		demokit.MakeVariant("curl", "bash", "curl https://x").Default(),
+		demokit.MakeVariant("python", "py", "requests.get(...)"),
+		demokit.MakeVariant("go", "go", "http.Get(...)"),
+	)
+	out := captureStdout(t, func() {
+		r.printStepBlock(1, 1, stepStartFromDef(1, 1, step), true)
+	})
+	for _, want := range []string{"1. curl", "2. python", "3. go"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("tab strip missing %q in:\n%s", want, out)
+		}
+	}
+}
+
 // TestVerbatimBorderDefaultUnchanged is the regression guard for
 // callers who never opt in: the existing rounded all-sides border
 // must still be drawn when WithBorderStyle / WithBorderChars are

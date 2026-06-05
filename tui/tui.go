@@ -502,6 +502,10 @@ func (r *Renderer) renderBoxedBlock(blockIdx int, v demokit.VerbatimView, multi 
 // others are dim. Spacing: two spaces between entries. Default-marked
 // variant gets a "(default)" trailing tag so the user knows what bare
 // `c` will copy when the active is reset.
+//
+// Each tab is prefixed with its 1-based index ("1. curl") so the
+// `<n> to switch` affordance shown in the pause prompt has a visual
+// anchor on the tab itself.
 func (r *Renderer) renderTabStrip(variants []demokit.VariantView, activeIdx int) string {
 	active := lipgloss.NewStyle().Bold(true).Foreground(r.Palette.Header)
 	dim := lipgloss.NewStyle().Foreground(r.Palette.Dim)
@@ -514,6 +518,7 @@ func (r *Renderer) renderTabStrip(variants []demokit.VariantView, activeIdx int)
 		if v.IsDefault {
 			label += " (default)"
 		}
+		label = fmt.Sprintf("%d. %s", i+1, label)
 		if i == activeIdx {
 			parts[i] = active.Render("<" + label + ">")
 		} else {
