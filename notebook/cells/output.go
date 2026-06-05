@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"image/color"
 	"strings"
+	"sync/atomic"
 
 	"charm.land/lipgloss/v2"
 	tea "github.com/charmbracelet/bubbletea"
@@ -29,6 +30,11 @@ type OutputStyle struct {
 	// bottom only) so users can drag-select the output body
 	// without picking up vertical bar characters.
 	Edges BorderEdges
+	// Border overrides the lipgloss border shape (which glyphs
+	// the four sides + corners use). Zero value falls back to the
+	// focus-based default (RoundedBorder unfocused, ThickBorder
+	// focused). When set, focus is signaled via BorderColor only.
+	Border lipgloss.Border
 }
 
 // DarkOutputStyle returns the dark-terminal defaults.
@@ -90,8 +96,11 @@ type OutputCell struct {
 	fallbackClip notebook.Clipboard
 	scrollOffset int
 	follow       bool
-	done         bool
-	copyMsg      string
+	// done is set by MarkDone() from the streaming goroutine and
+	// read by RenderRows() from the bubbletea View goroutine. Use
+	// atomic so the two-write/read pair stays race-free.
+	done    atomic.Bool
+	copyMsg string
 	lastCopy     string // payload retained after 'c' so 't' can replay it
 	lastWidth    int    // body width from the last render; scopes key/wheel scroll math to visual rows
 }
@@ -138,7 +147,9 @@ func (c *OutputCell) SetFallbackClipboard(clip notebook.Clipboard) {
 }
 
 // MarkDone flips the box state accent from "·live" to "·end".
-func (c *OutputCell) MarkDone() { c.done = true }
+// Safe to call from any goroutine; the View goroutine reads the
+// flag atomically.
+func (c *OutputCell) MarkDone() { c.done.Store(true) }
 
 // MaxBody returns the current row cap for the cell's rendered
 // body. Useful for resize key bindings ("+"/"-" actions in the
@@ -219,7 +230,7 @@ func (c *OutputCell) RenderRows(width, startRow, endRow int, focused bool, _ not
 	dim := lipgloss.NewStyle().Foreground(c.Style.DimColor)
 	state := "live"
 	stateStyle := lipgloss.NewStyle().Foreground(c.Style.LiveColor)
-	if c.done {
+	if c.done.Load() {
 		state = "end"
 		stateStyle = lipgloss.NewStyle().Foreground(c.Style.DoneColor)
 	}
@@ -233,7 +244,7 @@ func (c *OutputCell) RenderRows(width, startRow, endRow int, focused bool, _ not
 	content := title + "\n" + bodyText + "\n" + status
 
 	boxStyle := lipgloss.NewStyle().
-		Border(focusedBorder(focused)).
+		Border(borderFor(c.Style.Border, focused)).
 		BorderForeground(border).
 		BorderTop(c.Style.Edges.Top).
 		BorderRight(c.Style.Edges.Right).

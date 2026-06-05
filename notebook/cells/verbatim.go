@@ -32,6 +32,12 @@ type VerbatimStyle struct {
 	ActiveTabColor   color.Color
 	InactiveTabColor color.Color
 	Edges            BorderEdges
+	// Border overrides the lipgloss border shape (which glyphs
+	// the four sides + corners use). Zero value falls back to the
+	// focus-based default (RoundedBorder unfocused, ThickBorder
+	// focused). When set, focus is signaled via BorderColor only
+	// — chars stay consistent for the configured look.
+	Border lipgloss.Border
 }
 
 // DarkVerbatimStyle returns the dark-terminal defaults.
@@ -291,7 +297,7 @@ func (c *VerbatimCell) materialize(width int, focused bool) {
 
 	content := strings.Join(parts, "\n\n")
 	boxStyle := lipgloss.NewStyle().
-		Border(focusedBorder(focused)).
+		Border(borderFor(c.Style.Border, focused)).
 		BorderForeground(border).
 		BorderTop(c.Style.Edges.Top).
 		BorderRight(c.Style.Edges.Right).

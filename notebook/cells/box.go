@@ -22,6 +22,21 @@ func focusedBorder(focused bool) lipgloss.Border {
 	return lipgloss.RoundedBorder()
 }
 
+// borderFor returns the lipgloss.Border a cell should draw with,
+// honoring an explicit style override before falling back to the
+// focus-based default. The override (when non-zero) wins
+// regardless of focus state — focus is then signaled via
+// BorderForeground (Color), not by swapping the char set.
+//
+// Cells call this from their RenderRows. Custom cells using the
+// same Style shape can adopt it for consistent override behavior.
+func borderFor(style lipgloss.Border, focused bool) lipgloss.Border {
+	if style != (lipgloss.Border{}) {
+		return style
+	}
+	return focusedBorder(focused)
+}
+
 // BorderEdges configures which sides of a cell's box draw a
 // border line. Default zero value is all-off, which is rarely
 // desired; cells expose typed style defaults instead. The

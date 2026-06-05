@@ -66,11 +66,13 @@ func DefaultPalette() Palette {
 
 // Renderer renders demo output using Lipgloss styled boxes.
 type Renderer struct {
-	Palette  Palette
-	MaxWidth int           // hard cap on box width; 0 means 120
-	Fraction float64       // fraction of terminal width to use; 0 means 0.80
-	Delay    time.Duration // per-line scroll delay; 0 means 18ms, negative disables
-	prompter FormPrompter
+	Palette     Palette
+	MaxWidth    int                 // hard cap on box width; 0 means 120
+	Fraction    float64             // fraction of terminal width to use; 0 means 0.80
+	Delay       time.Duration       // per-line scroll delay; 0 means 18ms, negative disables
+	borderStyle demokit.BorderStyle // per-side toggles for verbatim + result boxes; see WithBorderStyle
+	borderChars demokit.BorderChars // glyphs for the border; zero value = lipgloss.RoundedBorder(); see WithBorderChars
+	prompter    FormPrompter
 
 	// activeVariant maps a block's index within the current step to
 	// the currently-active variant index within that block. Initial
@@ -138,6 +140,87 @@ func New() *Renderer {
 func (r *Renderer) WithPrompter(p FormPrompter) *Renderer {
 	r.prompter = p
 	return r
+}
+
+// WithBorderStyle configures which sides of the verbatim and result
+// boxes draw border lines. Header, step, section, and done boxes
+// always use their default rounded/double borders — they have no
+// copy-relevant content, so per-side toggling there is noise.
+//
+// BorderDefault preserves today's all-sides rounded look.
+// BorderHorizontalOnly is the copy-paste-friendly choice for
+// walkthroughs whose readers mouse-select snippets out of multi-
+// variant verbatim blocks.
+func (r *Renderer) WithBorderStyle(s demokit.BorderStyle) *Renderer {
+	r.borderStyle = s
+	return r
+}
+
+// WithBorderChars configures which characters the verbatim and
+// result borders use. The zero BorderChars{} value (the default)
+// means "use lipgloss.RoundedBorder()" — today's look. Apply a
+// preset (demokit.BorderCharsDouble, .Thick, .ASCII, .Normal) or
+// supply a struct literal with custom glyphs.
+//
+// Composes with WithBorderStyle: chars say what glyphs to use,
+// style says which sides those glyphs draw on.
+func (r *Renderer) WithBorderChars(bc demokit.BorderChars) *Renderer {
+	r.borderChars = bc
+	return r
+}
+
+// verbatimBorder returns the lipgloss.Border the verbatim/result
+// boxes should draw with. Honors r.borderChars when non-zero;
+// otherwise falls back to lipgloss.RoundedBorder() so today's
+// look is preserved for callers who don't opt in.
+func (r *Renderer) verbatimBorder() lipgloss.Border {
+	if r.borderChars.IsZero() {
+		return lipgloss.RoundedBorder()
+	}
+	return lipgloss.Border{
+		Top:         r.borderChars.Top,
+		Bottom:      r.borderChars.Bottom,
+		Left:        r.borderChars.Left,
+		Right:       r.borderChars.Right,
+		TopLeft:     r.borderChars.TopLeft,
+		TopRight:    r.borderChars.TopRight,
+		BottomLeft:  r.borderChars.BottomLeft,
+		BottomRight: r.borderChars.BottomRight,
+	}
+}
+
+// applyBorderStyle takes a base lipgloss.Style and returns it with
+// per-side toggles applied. Resolution order:
+//
+//  1. An explicit r.borderStyle (Full / HorizontalOnly / None)
+//     wins outright — the chars don't get a say.
+//  2. r.borderStyle == BorderDefault AND r.borderChars is non-zero:
+//     infer sides from the chars. Empty char fields → that side off.
+//     Lets one-call use of `WithBorderChars(BorderCharsRoundedH)`
+//     produce a horizontal-only box without a companion
+//     WithBorderStyle.
+//  3. Neither set: pass through unchanged. The base style's
+//     Border(...) (set by the caller) decides.
+//
+// Called at the verbatim and result draw sites only — header,
+// step, section, done boxes skip this and keep their defaults.
+func (r *Renderer) applyBorderStyle(s lipgloss.Style) lipgloss.Style {
+	switch r.borderStyle {
+	case demokit.BorderFull:
+		return s.BorderTop(true).BorderRight(true).BorderBottom(true).BorderLeft(true)
+	case demokit.BorderHorizontalOnly:
+		return s.BorderTop(true).BorderRight(false).BorderBottom(true).BorderLeft(false)
+	case demokit.BorderNone:
+		return s.BorderTop(false).BorderRight(false).BorderBottom(false).BorderLeft(false)
+	}
+	if r.borderChars.IsZero() {
+		return s
+	}
+	return s.
+		BorderTop(r.borderChars.Top != "").
+		BorderRight(r.borderChars.Right != "").
+		BorderBottom(r.borderChars.Bottom != "").
+		BorderLeft(r.borderChars.Left != "")
 }
 
 // activePrompter returns the configured FormPrompter, lazily creating
@@ -406,11 +489,11 @@ func (r *Renderer) renderBoxedBlock(blockIdx int, v demokit.VerbatimView, multi 
 		fmt.Fprintln(r.stdoutFor(), r.renderTabStrip(v.Variants, r.activeIndex(blockIdx)))
 	}
 	active := v.Variants[r.activeIndex(blockIdx)]
-	box := lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
+	box := r.applyBorderStyle(lipgloss.NewStyle().
+		Border(r.verbatimBorder()).
 		BorderForeground(p.Note).
 		Padding(0, 1).
-		Width(r.width())
+		Width(r.width()))
 	r.smoothPrint(box.Render(strings.TrimRight(active.Content, "\n")))
 }
 
@@ -589,11 +672,11 @@ func (r *Renderer) printResultBlock(_ int, output string, result *demokit.StepRe
 		content += "\n" + strings.Join(bodyParts, "\n")
 	}
 
-	box := lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
+	box := r.applyBorderStyle(lipgloss.NewStyle().
+		Border(r.verbatimBorder()).
 		BorderForeground(borderColor).
 		Padding(0, 1).
-		Width(r.width())
+		Width(r.width()))
 
 	r.smoothPrint(box.Render(content))
 	fmt.Fprintln(r.stdoutFor())
@@ -761,11 +844,11 @@ func (r *Renderer) echoActiveVariant(copyables []copyableBlock) {
 	fmt.Fprintln(r.stdoutFor())
 	fmt.Fprintln(r.stdoutFor(), r.renderTabStrip(target.view.Variants, r.activeIndex(target.index)))
 	active := target.view.Variants[r.activeIndex(target.index)]
-	box := lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
+	box := r.applyBorderStyle(lipgloss.NewStyle().
+		Border(r.verbatimBorder()).
 		BorderForeground(r.Palette.Note).
 		Padding(0, 1).
-		Width(r.width())
+		Width(r.width()))
 	r.smoothPrint(box.Render(strings.TrimRight(active.Content, "\n")))
 }
 
