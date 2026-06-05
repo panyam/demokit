@@ -121,6 +121,43 @@ func (nb *Notebook) IndexOf(id CellID) (int, bool) { return nb.store.indexOf(id)
 // Len returns the current cell count.
 func (nb *Notebook) Len() int { return nb.store.count() }
 
+// AlignCell moves the cursor to the cell with the given ID and
+// adjusts the viewport so the cell sits at the requested
+// position. Returns false (no-op) if no such cell.
+//
+// Honors the same alignment semantics as Append/Insert:
+//
+//   - RevealNone: no-op (returns true if the cell exists).
+//   - RevealTop / RevealMiddle: cursor moves to the cell and a
+//     one-shot viewport alignment fires next frame, placing the
+//     cell at the top of the body or vertically centered. The
+//     cursor pin keeps subsequent RevealNone appends from
+//     pulling the viewport — the "jump-and-focus" semantic
+//     PR 60 introduced.
+//   - RevealBottom: cursor moves to the cell and the model's
+//     per-frame ensureCursorVisible pulls it to the bottom edge.
+//     Subsequent appends keep dragging the viewport down
+//     (`tail -f`).
+//
+// Safe to call from any goroutine. Cell lookup, cursor mutation,
+// and pending-align queue are all guarded by the store mutex.
+// No tea.Msg is sent, so it's safe inside KeyMap action handlers
+// (unlike SetMode / FocusCell).
+func (nb *Notebook) AlignCell(id CellID, alignment Reveal) bool {
+	idx, ok := nb.store.indexOf(id)
+	if !ok {
+		return false
+	}
+	switch alignment {
+	case RevealBottom:
+		nb.store.setCursorByIdx(idx)
+	case RevealTop, RevealMiddle:
+		nb.store.setCursorByIdx(idx)
+		nb.store.setPendingAlign(idx, alignment)
+	}
+	return true
+}
+
 // SetCursor moves the cursor to the cell with the given ID and
 // returns true. Returns false (no-op) if no such cell.
 func (nb *Notebook) SetCursor(id CellID) bool {
