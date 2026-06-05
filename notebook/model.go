@@ -64,12 +64,15 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width = msg.Width
 		m.height = msg.Height
 		m.ensureCursorVisible()
+		m.applyPendingAlignment()
 		return m, nil
 	case repaintTickMsg:
 		m.ensureCursorVisible()
+		m.applyPendingAlignment()
 		return m, repaintTick()
 	case snapshotMsg:
 		m.ensureCursorVisible()
+		m.applyPendingAlignment()
 		msg.reply <- m.View()
 		return m, nil
 	case setModeMsg:
@@ -542,5 +545,51 @@ func (m *model) ensureCursorVisible() {
 		if m.viewportOffset > start {
 			m.viewportOffset = start
 		}
+	}
+}
+
+// applyPendingAlignment consumes any queued RevealTop / RevealMiddle
+// from the store and adjusts viewportOffset so the requested cell
+// sits at the top or center of the body. Runs after
+// ensureCursorVisible in the per-frame Update cases — explicit
+// alignment overrides the cursor-tracking nudge for the one frame
+// it fires on.
+//
+// Skips silently when width/height haven't been set yet (e.g.
+// Insert ran before the first WindowSizeMsg); the request stays
+// queued only if we don't consume — but here we DO consume, so
+// a queued align before init is dropped. In practice the model
+// gets WindowSizeMsg as its first message after Run starts, so
+// this only matters in pathological setups.
+func (m *model) applyPendingAlignment() {
+	idx, r, ok := m.nb.store.consumePendingAlign()
+	if !ok {
+		return
+	}
+	if m.width == 0 || m.height == 0 {
+		return
+	}
+	snap := m.nb.store.snapshot()
+	if idx < 0 || idx >= len(snap.cells) {
+		return
+	}
+	body := m.bodyHeight(snap)
+	start, end := m.cellRowSpan(snap, idx)
+	cellH := end - start
+	switch r {
+	case RevealTop:
+		m.viewportOffset = start
+	case RevealMiddle:
+		// Center the cell's span in the body. Cells taller than
+		// the body have no meaningful middle — clamp to top.
+		if cellH >= body {
+			m.viewportOffset = start
+			return
+		}
+		off := start - (body-cellH)/2
+		if off < 0 {
+			off = 0
+		}
+		m.viewportOffset = off
 	}
 }

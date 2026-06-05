@@ -22,8 +22,18 @@ const (
 	// streams/grows — the `tail -f` behavior. Use for output a caller
 	// streams into, prompts, and anything the user should track.
 	RevealBottom
-	// Future: RevealTop, RevealMiddle (see issues). Adding values here
-	// is backward-compatible — the enum, not the signature, grows.
+	// RevealTop scrolls the new cell so it sits at the top of the
+	// body viewport. One-shot, not sticky: unlike RevealBottom this
+	// does NOT establish a follow anchor (cursor is untouched), so
+	// the user can scroll freely afterward and a subsequent
+	// streaming append won't pull the viewport away. Suits
+	// navigation-style "show me this cell" jumps.
+	RevealTop
+	// RevealMiddle scrolls the new cell so it sits vertically
+	// centered in the body viewport. Same one-shot semantics as
+	// RevealTop. Cells taller than the body clamp to top
+	// alignment (Middle has no meaningful answer there).
+	RevealMiddle
 )
 
 // Append adds c to the end of the cell list and reveals it per the
@@ -44,10 +54,24 @@ func (nb *Notebook) Insert(index int, c Cell, reveal Reveal) (CellID, error) {
 	if err != nil {
 		return id, err
 	}
-	if reveal == RevealBottom {
+	switch reveal {
+	case RevealBottom:
 		// Make the new cell the cursor; the model's per-frame
 		// ensureCursorVisible then keeps it in view as it grows.
 		nb.store.setCursorByIdx(nb.indexOrEndLocked(id))
+	case RevealTop, RevealMiddle:
+		// Move the cursor to the new cell (so the user navigates
+		// from where they're looking) AND queue a one-shot
+		// alignment that overrides ensureCursorVisible's default
+		// placement — Top puts the cell at the viewport's top
+		// row, Middle centers it. Because the cursor lands on the
+		// aligned cell, subsequent RevealNone appends below
+		// don't pull the viewport: ensureCursorVisible is a
+		// no-op while the cursor cell stays in view, so the
+		// alignment is one-shot in the user-visible sense.
+		newIdx := nb.indexOrEndLocked(id)
+		nb.store.setCursorByIdx(newIdx)
+		nb.store.setPendingAlign(newIdx, reveal)
 	}
 	return id, nil
 }
