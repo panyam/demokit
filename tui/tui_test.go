@@ -145,6 +145,236 @@ func TestRenderStepVerbatimNoBorderInjection(t *testing.T) {
 	}
 }
 
+// TestVerbatimBorderHorizontalOnlyNoSideChars verifies a multi-
+// variant verbatim block under BorderHorizontalOnly produces top +
+// bottom border lines but no `│` chars on inner content rows. This
+// is the load-bearing assertion for the copy-paste use case from
+// mcpkit walkthroughs (issue 55): mouse-select on a content row
+// must not pick up vertical box characters.
+func TestVerbatimBorderHorizontalOnlyNoSideChars(t *testing.T) {
+	r := newTestRenderer()
+	r.MaxWidth = 80
+	r.Fraction = 1.0
+	r.Delay = -1
+	r.WithBorderStyle(demokit.BorderHorizontalOnly)
+
+	demo := demokit.New("v").BoxedVerbatim()
+	step := demo.Step("Repro").VerbatimVariants("Fetch",
+		demokit.MakeVariant("curl", "bash", "curl -X GET https://example.com").Default(),
+		demokit.MakeVariant("python", "python", "requests.get('https://example.com')"),
+	)
+
+	out := captureStdout(t, func() {
+		r.printStepBlock(1, 1, stepStartFromDef(1, 1, step), true)
+	})
+
+	// Inner content rows must not contain `│`.
+	for i, row := range strings.Split(out, "\n") {
+		if strings.Contains(row, "curl -X GET") || strings.Contains(row, "requests.get") {
+			if strings.ContainsRune(row, '│') {
+				t.Errorf("row %d contains a side-border char on a content row:\n%q", i, row)
+			}
+		}
+	}
+
+	// And the horizontal border must appear at the top + bottom — the
+	// frame is still visually present, just without side chars.
+	if !strings.ContainsRune(out, '─') {
+		t.Errorf("expected horizontal border char `─` in output, got:\n%s", out)
+	}
+}
+
+// TestVerbatimBorderNoneNoBoxChars verifies BorderNone strips the
+// box entirely from verbatim blocks. The verbatim region starts at
+// the "Fetch" label; from there, no border chars should appear.
+// The step header box (out of scope) retains its rounded chars.
+func TestVerbatimBorderNoneNoBoxChars(t *testing.T) {
+	r := newTestRenderer()
+	r.MaxWidth = 80
+	r.Fraction = 1.0
+	r.Delay = -1
+	r.WithBorderStyle(demokit.BorderNone)
+
+	demo := demokit.New("v").BoxedVerbatim()
+	step := demo.Step("Repro").VerbatimVariants("Fetch",
+		demokit.MakeVariant("curl", "bash", "curl -X GET https://example.com").Default(),
+		demokit.MakeVariant("python", "python", "requests.get('https://example.com')"),
+	)
+
+	out := captureStdout(t, func() {
+		r.printStepBlock(1, 1, stepStartFromDef(1, 1, step), true)
+	})
+
+	if !strings.Contains(out, "curl -X GET") {
+		t.Fatalf("expected variant content in output, got:\n%s", out)
+	}
+
+	// Snip off everything before the "Fetch" label so the step
+	// header box (out of scope) doesn't muddy the assertion.
+	verbatimStart := strings.Index(out, "Fetch")
+	if verbatimStart < 0 {
+		t.Fatalf("verbatim label `Fetch` missing from output:\n%s", out)
+	}
+	verbatimRegion := out[verbatimStart:]
+
+	for _, b := range []rune{'│', '─', '╭', '╮', '╰', '╯'} {
+		if strings.ContainsRune(verbatimRegion, b) {
+			t.Errorf("BorderNone should suppress all border chars in the verbatim region, found %q in:\n%s",
+				string(b), verbatimRegion)
+		}
+	}
+}
+
+// TestVerbatimBorderCharsCustom verifies a custom BorderChars value
+// reaches the rendered output of the verbatim block: a struct
+// literal with `#` on top/bottom, `*` on sides, and `+` corners
+// produces those chars on the verbatim frame. Acceptance for the
+// "custom chars via struct literal" path of the issue 55 design.
+// The step header box (out of scope per WithBorderStyle/Chars) is
+// unaffected.
+func TestVerbatimBorderCharsCustom(t *testing.T) {
+	r := newTestRenderer()
+	r.MaxWidth = 80
+	r.Fraction = 1.0
+	r.Delay = -1
+	r.WithBorderStyle(demokit.BorderFull).
+		WithBorderChars(demokit.BorderChars{
+			Top: "#", Bottom: "#", Left: "*", Right: "*",
+			TopLeft: "+", TopRight: "+", BottomLeft: "+", BottomRight: "+",
+		})
+
+	demo := demokit.New("v").BoxedVerbatim()
+	step := demo.Step("Repro").VerbatimVariants("Fetch",
+		demokit.MakeVariant("curl", "bash", "curl -X GET https://example.com").Default(),
+	)
+
+	out := captureStdout(t, func() {
+		r.printStepBlock(1, 1, stepStartFromDef(1, 1, step), true)
+	})
+
+	// Find the verbatim content row, then assert its surrounding
+	// frame uses the custom chars.
+	rows := strings.Split(out, "\n")
+	contentRowIdx := -1
+	for i, row := range rows {
+		if strings.Contains(row, "curl -X GET") {
+			contentRowIdx = i
+			break
+		}
+	}
+	if contentRowIdx < 0 {
+		t.Fatalf("verbatim content row not found in output:\n%s", out)
+	}
+	contentRow := rows[contentRowIdx]
+	if !strings.Contains(contentRow, "*") {
+		t.Errorf("content row should have `*` side chars (Left/Right custom), got:\n%q", contentRow)
+	}
+	// Inner content rows must NOT contain rounded side-chars `│`.
+	if strings.ContainsRune(contentRow, '│') {
+		t.Errorf("content row should not have default `│`, custom Left=`*` should win:\n%q", contentRow)
+	}
+	// Top/bottom rows of the verbatim frame use `#` and `+`.
+	if contentRowIdx == 0 || contentRowIdx >= len(rows)-1 {
+		t.Fatalf("content row at edge of output, can't inspect frame; output:\n%s", out)
+	}
+	topRow := rows[contentRowIdx-1]
+	bottomRow := rows[contentRowIdx+1]
+	for _, want := range []string{"#", "+"} {
+		if !strings.Contains(topRow, want) {
+			t.Errorf("top frame row should contain %q, got:\n%q", want, topRow)
+		}
+		if !strings.Contains(bottomRow, want) {
+			t.Errorf("bottom frame row should contain %q, got:\n%q", want, bottomRow)
+		}
+	}
+}
+
+// TestVerbatimBorderCharsRoundedHInfersHorizontalSides verifies the
+// one-call ergonomic shortcut: passing BorderCharsRoundedH (Left/
+// Right empty) without an explicit WithBorderStyle still produces
+// a horizontal-only box. The empty side fields are the signal.
+func TestVerbatimBorderCharsRoundedHInfersHorizontalSides(t *testing.T) {
+	r := newTestRenderer()
+	r.MaxWidth = 80
+	r.Fraction = 1.0
+	r.Delay = -1
+	r.WithBorderChars(demokit.BorderCharsRoundedH)
+
+	demo := demokit.New("v").BoxedVerbatim()
+	step := demo.Step("Repro").VerbatimVariants("Fetch",
+		demokit.MakeVariant("curl", "bash", "curl -X GET https://example.com").Default(),
+	)
+
+	out := captureStdout(t, func() {
+		r.printStepBlock(1, 1, stepStartFromDef(1, 1, step), true)
+	})
+
+	// Content rows must not have side chars.
+	for i, row := range strings.Split(out, "\n") {
+		if strings.Contains(row, "curl -X GET") {
+			if strings.ContainsRune(row, '│') {
+				t.Errorf("row %d unexpectedly contains side char `│`:\n%q", i, row)
+			}
+		}
+	}
+	// Top/bottom horizontal chars must appear.
+	if !strings.ContainsRune(out, '─') {
+		t.Errorf("expected horizontal char `─` from BorderCharsRoundedH, got:\n%s", out)
+	}
+}
+
+// TestResultBoxBorderHorizontalOnly verifies the result/output box
+// (printResultBlock) also honors BorderHorizontalOnly. Result box
+// contains captured stdout, so mouse-select on output rows must
+// not pick up `│`.
+func TestResultBoxBorderHorizontalOnly(t *testing.T) {
+	r := newTestRenderer()
+	r.MaxWidth = 80
+	r.Fraction = 1.0
+	r.Delay = -1
+	r.WithBorderStyle(demokit.BorderHorizontalOnly)
+
+	out := captureStdout(t, func() {
+		r.printResultBlock(1, "some captured output line", nil)
+	})
+
+	for i, row := range strings.Split(out, "\n") {
+		if strings.Contains(row, "some captured output") {
+			if strings.ContainsRune(row, '│') {
+				t.Errorf("result output row %d has side-border char:\n%q", i, row)
+			}
+		}
+	}
+}
+
+// TestVerbatimBorderDefaultUnchanged is the regression guard for
+// callers who never opt in: the existing rounded all-sides border
+// must still be drawn when WithBorderStyle / WithBorderChars are
+// not called.
+func TestVerbatimBorderDefaultUnchanged(t *testing.T) {
+	r := newTestRenderer()
+	r.MaxWidth = 80
+	r.Fraction = 1.0
+	r.Delay = -1
+
+	demo := demokit.New("v").BoxedVerbatim()
+	step := demo.Step("Repro").VerbatimVariants("Fetch",
+		demokit.MakeVariant("curl", "bash", "curl -X GET https://example.com").Default(),
+	)
+
+	out := captureStdout(t, func() {
+		r.printStepBlock(1, 1, stepStartFromDef(1, 1, step), true)
+	})
+
+	// Rounded corners must appear (today's default).
+	for _, want := range []rune{'╭', '╮', '╰', '╯', '│', '─'} {
+		if !strings.ContainsRune(out, want) {
+			t.Errorf("default border should contain rounded char %q, missing in:\n%s",
+				string(want), out)
+		}
+	}
+}
+
 // TestRenderStepVerbatimMultilinePreserved verifies multi-line content
 // is emitted line-by-line with each input line on its own output row.
 func TestRenderStepVerbatimMultilinePreserved(t *testing.T) {

@@ -171,6 +171,149 @@ func (d *Demo) RegisterServeHandler(h ServeHandler) *Demo {
 	return d
 }
 
+// Border configuration has two independent axes. Renderers honor
+// both at their verbatim and output draw sites only — header,
+// step, section, and done boxes always use the renderer's default
+// border, since those contain no copy-relevant content.
+//
+//	tui.New().
+//	    WithBorderStyle(demokit.BorderHorizontalOnly).
+//	    WithBorderChars(demokit.BorderCharsDouble)
+//
+//	notebookbridge.New().
+//	    WithBorderStyle(demokit.BorderHorizontalOnly).
+//	    WithBorderChars(demokit.BorderCharsDouble)
+
+// BorderStyle controls which sides of a verbatim/output box draw a
+// border line. Walkthroughs that want mouse-select copy of step
+// output use BorderHorizontalOnly so triple-click selection
+// doesn't pick up vertical box characters.
+type BorderStyle int
+
+const (
+	// BorderDefault leaves the renderer's per-site default in
+	// place. The TUI draws all four sides; the notebook OutputCell
+	// defaults to horizontal-only and the VerbatimCell to all four
+	// sides. Zero value so existing callers don't migrate.
+	BorderDefault BorderStyle = iota
+	// BorderFull draws all four sides.
+	BorderFull
+	// BorderHorizontalOnly draws only the top and bottom edges.
+	// Mouse-select copy on inner content rows then picks up the
+	// content alone — no side chars.
+	BorderHorizontalOnly
+	// BorderNone draws no border. Cell content sits flush with
+	// scrollback; suits walkthroughs that prefer minimal chrome.
+	BorderNone
+)
+
+// BorderChars controls which characters the border lines use.
+// Each field holds the glyph for one position on the box; fields
+// are strings (not runes) so callers can use multi-byte combiners
+// or intentional blanks. The empty BorderChars{} value means
+// "use the renderer's built-in default" — the renderer falls
+// back to lipgloss.RoundedBorder() on the TUI side and to the
+// cell's default Border style on the notebook side.
+//
+// Use one of the named presets (BorderCharsRounded,
+// BorderCharsDouble, BorderCharsThick, BorderCharsASCII) for the
+// common visual styles, or supply a struct literal with custom
+// glyphs (`*`, `#`, `=`, etc.) for one-off looks:
+//
+//	tui.New().WithBorderChars(demokit.BorderChars{
+//	    Top: "#", Bottom: "#", Left: "*", Right: "*",
+//	    TopLeft: "+", TopRight: "+", BottomLeft: "+", BottomRight: "+",
+//	})
+//
+// Field shape mirrors lipgloss.Border so renderers can translate
+// to lipgloss without per-field bridging.
+type BorderChars struct {
+	Top, Bottom, Left, Right                   string
+	TopLeft, TopRight, BottomLeft, BottomRight string
+}
+
+// IsZero reports whether bc is the zero value (no fields set).
+// Renderers use this to choose between "configured" and "use my
+// built-in default."
+func (bc BorderChars) IsZero() bool {
+	return bc == BorderChars{}
+}
+
+// BorderCharsRounded matches lipgloss.RoundedBorder().
+var BorderCharsRounded = BorderChars{
+	Top: "─", Bottom: "─", Left: "│", Right: "│",
+	TopLeft: "╭", TopRight: "╮", BottomLeft: "╰", BottomRight: "╯",
+}
+
+// BorderCharsNormal matches lipgloss.NormalBorder() — single
+// straight lines with square corners.
+var BorderCharsNormal = BorderChars{
+	Top: "─", Bottom: "─", Left: "│", Right: "│",
+	TopLeft: "┌", TopRight: "┐", BottomLeft: "└", BottomRight: "┘",
+}
+
+// BorderCharsDouble matches lipgloss.DoubleBorder().
+var BorderCharsDouble = BorderChars{
+	Top: "═", Bottom: "═", Left: "║", Right: "║",
+	TopLeft: "╔", TopRight: "╗", BottomLeft: "╚", BottomRight: "╝",
+}
+
+// BorderCharsThick matches lipgloss.ThickBorder() — heavy strokes.
+var BorderCharsThick = BorderChars{
+	Top: "━", Bottom: "━", Left: "┃", Right: "┃",
+	TopLeft: "┏", TopRight: "┓", BottomLeft: "┗", BottomRight: "┛",
+}
+
+// BorderCharsASCII matches lipgloss.ASCIIBorder() — uses only
+// printable ASCII (-, |, +), readable in terminals without
+// Unicode box-drawing support.
+var BorderCharsASCII = BorderChars{
+	Top: "-", Bottom: "-", Left: "|", Right: "|",
+	TopLeft: "+", TopRight: "+", BottomLeft: "+", BottomRight: "+",
+}
+
+// Horizontal-only ("H") presets: same character set as their
+// full siblings but with Left/Right empty. Renderers honoring
+// the IsZero-per-side rule (empty → suppress that side) will
+// draw only the top + bottom lines plus the four corner glyphs,
+// leaving inner content rows free of side chars. Suits
+// copy-paste-friendly walkthroughs that still want the visual
+// framing the corners provide.
+//
+// One call is enough — no companion WithBorderStyle needed —
+// because the empty side fields imply BorderHorizontalOnly's
+// side toggles. Apply an explicit WithBorderStyle to override.
+
+// BorderCharsRoundedH is BorderCharsRounded with empty Left/Right.
+var BorderCharsRoundedH = BorderChars{
+	Top: "─", Bottom: "─",
+	TopLeft: "╭", TopRight: "╮", BottomLeft: "╰", BottomRight: "╯",
+}
+
+// BorderCharsNormalH is BorderCharsNormal with empty Left/Right.
+var BorderCharsNormalH = BorderChars{
+	Top: "─", Bottom: "─",
+	TopLeft: "┌", TopRight: "┐", BottomLeft: "└", BottomRight: "┘",
+}
+
+// BorderCharsDoubleH is BorderCharsDouble with empty Left/Right.
+var BorderCharsDoubleH = BorderChars{
+	Top: "═", Bottom: "═",
+	TopLeft: "╔", TopRight: "╗", BottomLeft: "╚", BottomRight: "╝",
+}
+
+// BorderCharsThickH is BorderCharsThick with empty Left/Right.
+var BorderCharsThickH = BorderChars{
+	Top: "━", Bottom: "━",
+	TopLeft: "┏", TopRight: "┓", BottomLeft: "┗", BottomRight: "┛",
+}
+
+// BorderCharsASCIIH is BorderCharsASCII with empty Left/Right.
+var BorderCharsASCIIH = BorderChars{
+	Top: "-", Bottom: "-",
+	TopLeft: "+", TopRight: "+", BottomLeft: "+", BottomRight: "+",
+}
+
 // BoxedVerbatim opts this demo into the TUI's boxed + interactive
 // rendering of verbatim blocks. When set, single-variant verbatim
 // renders inside a styled box (today's behavior is outside the box
@@ -179,7 +322,9 @@ func (d *Demo) RegisterServeHandler(h ServeHandler) *Demo {
 //
 // Multi-variant verbatim blocks (declared via VerbatimVariants) always
 // render boxed regardless of this flag — per-variant labels require a
-// frame to be readable.
+// frame to be readable. Walkthroughs that want the tab switcher AND
+// copy-friendly rows pair this with BorderHorizontalOnly on the
+// renderer.
 //
 // Has no effect on plain / markdown / HTML / JSON renderers — boxing
 // is a TUI rendering concern only.

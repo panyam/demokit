@@ -5,8 +5,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/panyam/demokit"
 	"github.com/panyam/demokit/events"
 	"github.com/panyam/demokit/notebook"
+	"github.com/panyam/demokit/notebook/cells"
 )
 
 func TestSlugifyNormalizesCommonShapes(t *testing.T) {
@@ -76,6 +78,124 @@ func TestBuildCellsFromStepStartProducesHeaderAndVerbatims(t *testing.T) {
 	}
 	if out[1].ID() != "refresh#0.verbatim0" {
 		t.Errorf("verbatim id = %q, want refresh#0.verbatim0", out[1].ID())
+	}
+}
+
+// TestBorderStyleHorizontalOnlyPlumbedToVerbatim verifies the
+// bridge's WithBorderStyle reaches the constructed VerbatimCell's
+// Edges field. Acceptance for the sides axis of issue 55 on the
+// notebook side.
+func TestBorderStyleHorizontalOnlyPlumbedToVerbatim(t *testing.T) {
+	b := New().WithBorderStyle(demokit.BorderHorizontalOnly)
+	e := events.StepStart{
+		StepID: "s",
+		Title:  "S",
+		Verbatims: []events.Verbatim{
+			{Label: "Body", Variants: []events.Variant{
+				{Label: "curl", Content: "curl ..."},
+			}},
+		},
+	}
+	out := b.buildCellsFromStepStart(e)
+	if len(out) != 2 {
+		t.Fatalf("cells = %d, want 2", len(out))
+	}
+	vc, ok := out[1].(*cells.VerbatimCell)
+	if !ok {
+		t.Fatalf("expected *cells.VerbatimCell, got %T", out[1])
+	}
+	want := cells.HorizontalEdges()
+	if vc.Style.Edges != want {
+		t.Errorf("VerbatimCell.Style.Edges = %+v, want %+v", vc.Style.Edges, want)
+	}
+}
+
+// TestBorderStyleNoneZeroesEdges verifies BorderNone drops all
+// edges from the VerbatimCell.
+func TestBorderStyleNoneZeroesEdges(t *testing.T) {
+	b := New().WithBorderStyle(demokit.BorderNone)
+	e := events.StepStart{
+		StepID: "s",
+		Verbatims: []events.Verbatim{
+			{Label: "Body", Variants: []events.Variant{{Content: "x"}}},
+		},
+	}
+	out := b.buildCellsFromStepStart(e)
+	vc := out[1].(*cells.VerbatimCell)
+	want := cells.BorderEdges{}
+	if vc.Style.Edges != want {
+		t.Errorf("BorderNone should zero all edges, got %+v", vc.Style.Edges)
+	}
+}
+
+// TestBorderCharsCustomPlumbedToVerbatim verifies a custom
+// BorderChars value reaches the VerbatimCell's Border field as a
+// matching lipgloss.Border. Acceptance for the chars axis of
+// issue 55 on the notebook side.
+func TestBorderCharsCustomPlumbedToVerbatim(t *testing.T) {
+	custom := demokit.BorderChars{
+		Top: "#", Bottom: "#", Left: "*", Right: "*",
+		TopLeft: "+", TopRight: "+", BottomLeft: "+", BottomRight: "+",
+	}
+	b := New().WithBorderChars(custom)
+	e := events.StepStart{
+		StepID: "s",
+		Verbatims: []events.Verbatim{
+			{Label: "Body", Variants: []events.Variant{{Content: "x"}}},
+		},
+	}
+	out := b.buildCellsFromStepStart(e)
+	vc := out[1].(*cells.VerbatimCell)
+	if vc.Style.Border.Top != "#" || vc.Style.Border.Left != "*" || vc.Style.Border.TopLeft != "+" {
+		t.Errorf("VerbatimCell.Style.Border = %+v, want chars from custom %+v",
+			vc.Style.Border, custom)
+	}
+}
+
+// TestBorderCharsHInfersHorizontalEdges verifies that the H-suffix
+// presets (Left/Right empty) one-call-set the sides to horizontal-
+// only without a companion WithBorderStyle.
+func TestBorderCharsHInfersHorizontalEdges(t *testing.T) {
+	b := New().WithBorderChars(demokit.BorderCharsRoundedH)
+	e := events.StepStart{
+		StepID: "s",
+		Verbatims: []events.Verbatim{
+			{Label: "Body", Variants: []events.Variant{{Content: "x"}}},
+		},
+	}
+	out := b.buildCellsFromStepStart(e)
+	vc := out[1].(*cells.VerbatimCell)
+	if vc.Style.Edges.Left || vc.Style.Edges.Right {
+		t.Errorf("Left/Right edges should be off (inferred from empty chars), got %+v",
+			vc.Style.Edges)
+	}
+	if !vc.Style.Edges.Top || !vc.Style.Edges.Bottom {
+		t.Errorf("Top/Bottom edges should be on, got %+v", vc.Style.Edges)
+	}
+}
+
+// TestBorderStyleDefaultPreservesCellDefaults verifies that with
+// no WithBorderStyle / WithBorderChars call, VerbatimCell uses its
+// all-sides default and OutputCell uses its horizontal-edges
+// default — backwards compatibility for callers who don't opt in.
+func TestBorderStyleDefaultPreservesCellDefaults(t *testing.T) {
+	b := New()
+	e := events.StepStart{
+		StepID: "s",
+		Verbatims: []events.Verbatim{
+			{Label: "Body", Variants: []events.Variant{{Content: "x"}}},
+		},
+	}
+	out := b.buildCellsFromStepStart(e)
+	vc := out[1].(*cells.VerbatimCell)
+	if vc.Style.Edges != cells.AllEdges() {
+		t.Errorf("default VerbatimCell edges should be AllEdges, got %+v", vc.Style.Edges)
+	}
+
+	// OutputCell's default-from-bridge differs: we want horizontal-
+	// edges-only (matching the cell's built-in default).
+	if got, want := b.edgesForOutput(), cells.HorizontalEdges(); got != want {
+		t.Errorf("default OutputCell edges should be HorizontalEdges, got %+v", got)
 	}
 }
 

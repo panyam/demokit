@@ -13,6 +13,7 @@ import (
 	"strings"
 	"sync"
 
+	"charm.land/lipgloss/v2"
 	"github.com/panyam/demokit"
 	"github.com/panyam/demokit/events"
 	"github.com/panyam/demokit/notebook"
@@ -40,8 +41,10 @@ type Bridge struct {
 	outCellByVisit map[int]notebook.CellID
 
 	// configurable knobs
-	theme      *cells.Theme
-	maxOutBody int
+	theme       *cells.Theme
+	maxOutBody  int
+	borderStyle demokit.BorderStyle // per-side toggles for VerbatimCell + OutputCell
+	borderChars demokit.BorderChars // glyphs for the border; zero value = each cell's default
 }
 
 // defaultMaxOutputBody is the OutputCell row cap the bridge
@@ -84,6 +87,102 @@ func (b *Bridge) WithMaxOutputBody(n int) *Bridge {
 		b.maxOutBody = n
 	}
 	return b
+}
+
+// WithBorderStyle configures which sides of VerbatimCell and
+// OutputCell boxes draw border lines. Header / Note / Advance
+// cells keep their per-cell defaults — they have no copy-relevant
+// content. BorderHorizontalOnly is the mouse-select-friendly
+// choice for walkthroughs whose readers copy from verbatim and
+// output rows.
+func (b *Bridge) WithBorderStyle(s demokit.BorderStyle) *Bridge {
+	b.borderStyle = s
+	return b
+}
+
+// WithBorderChars configures which characters the VerbatimCell
+// and OutputCell borders use. Pass a preset
+// (demokit.BorderCharsDouble, .Thick, .ASCII, .Normal, or the
+// horizontal-only .RoundedH / .DoubleH variants) or a struct
+// literal for custom glyphs. The zero BorderChars{} value
+// preserves each cell's built-in default (rounded for verbatim,
+// horizontal-edges-only rounded for output).
+//
+// Composes with WithBorderStyle: chars say what glyphs to use,
+// style says which sides those glyphs draw on. When style is
+// BorderDefault, empty char fields imply that side is off.
+func (b *Bridge) WithBorderChars(bc demokit.BorderChars) *Bridge {
+	b.borderChars = bc
+	return b
+}
+
+// edgesForVerbatim resolves the BorderEdges for VerbatimCell
+// given the bridge's BorderStyle + BorderChars configuration.
+// Explicit BorderStyle wins; otherwise empty char fields imply
+// the corresponding side is off; otherwise falls back to the
+// cell's all-sides default.
+func (b *Bridge) edgesForVerbatim() cells.BorderEdges {
+	switch b.borderStyle {
+	case demokit.BorderFull:
+		return cells.AllEdges()
+	case demokit.BorderHorizontalOnly:
+		return cells.HorizontalEdges()
+	case demokit.BorderNone:
+		return cells.BorderEdges{}
+	}
+	if b.borderChars.IsZero() {
+		return cells.AllEdges()
+	}
+	return cells.BorderEdges{
+		Top:    b.borderChars.Top != "",
+		Right:  b.borderChars.Right != "",
+		Bottom: b.borderChars.Bottom != "",
+		Left:   b.borderChars.Left != "",
+	}
+}
+
+// edgesForOutput resolves the BorderEdges for OutputCell. Same
+// rules as edgesForVerbatim except the default (when nothing's
+// configured) is HorizontalEdges, matching OutputCell's package
+// default — output bodies are already copy-friendly out of the
+// box.
+func (b *Bridge) edgesForOutput() cells.BorderEdges {
+	switch b.borderStyle {
+	case demokit.BorderFull:
+		return cells.AllEdges()
+	case demokit.BorderHorizontalOnly:
+		return cells.HorizontalEdges()
+	case demokit.BorderNone:
+		return cells.BorderEdges{}
+	}
+	if b.borderChars.IsZero() {
+		return cells.HorizontalEdges()
+	}
+	return cells.BorderEdges{
+		Top:    b.borderChars.Top != "",
+		Right:  b.borderChars.Right != "",
+		Bottom: b.borderChars.Bottom != "",
+		Left:   b.borderChars.Left != "",
+	}
+}
+
+// lipglossBorder translates b.borderChars into a lipgloss.Border.
+// Returns the zero lipgloss.Border{} when chars are unset so cells
+// fall back to their focus-based default in cells.borderFor.
+func (b *Bridge) lipglossBorder() lipgloss.Border {
+	if b.borderChars.IsZero() {
+		return lipgloss.Border{}
+	}
+	return lipgloss.Border{
+		Top:         b.borderChars.Top,
+		Bottom:      b.borderChars.Bottom,
+		Left:        b.borderChars.Left,
+		Right:       b.borderChars.Right,
+		TopLeft:     b.borderChars.TopLeft,
+		TopRight:    b.borderChars.TopRight,
+		BottomLeft:  b.borderChars.BottomLeft,
+		BottomRight: b.borderChars.BottomRight,
+	}
 }
 
 // AttachEventQueue stores the queue and spawns the notebook program
@@ -194,6 +293,8 @@ func (b *Bridge) handleEvent(off int, ev events.Event) {
 		if b.theme != nil {
 			oc.Style = b.theme.Output
 		}
+		oc.Style.Edges = b.edgesForOutput()
+		oc.Style.Border = b.lipglossBorder()
 		b.nb.Append(oc, notebook.RevealBottom)
 		b.visitMu.Lock()
 		b.outCellByVisit[e.Visit] = oid
@@ -278,6 +379,8 @@ func (b *Bridge) buildCellsFromStepStart(e events.StepStart) []notebook.Cell {
 		if b.theme != nil {
 			vc.Style = b.theme.Verbatim
 		}
+		vc.Style.Edges = b.edgesForVerbatim()
+		vc.Style.Border = b.lipglossBorder()
 		out = append(out, vc)
 	}
 	return out
