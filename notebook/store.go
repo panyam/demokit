@@ -26,6 +26,15 @@ type store struct {
 	headerDesc string
 	done       bool
 	docks      map[positionKey]Cell
+	// pendingAlign carries a one-shot viewport-alignment request
+	// from CRUD callers to the BT goroutine's per-frame layout.
+	// Insert sets it for RevealTop/RevealMiddle (which don't move
+	// the cursor); the model consumes it next frame and computes
+	// the right viewportOffset. Last-write-wins — repeated Inserts
+	// before a frame consumes the prior request just drop it.
+	pendingAlign    Reveal
+	pendingAlignIdx int
+	pendingAlignSet bool
 }
 
 func newStore() *store { return &store{docks: map[positionKey]Cell{}} }
@@ -180,6 +189,32 @@ func (s *store) cursorPos() int {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.cursor
+}
+
+// setPendingAlign queues a one-shot viewport alignment for the
+// next frame. CRUD callers use it for RevealTop / RevealMiddle —
+// reveals that scroll once and don't establish a follow anchor.
+// Last write wins.
+func (s *store) setPendingAlign(idx int, r Reveal) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.pendingAlignIdx = idx
+	s.pendingAlign = r
+	s.pendingAlignSet = true
+}
+
+// consumePendingAlign returns and clears any queued alignment.
+// The model calls this each frame; if ok is false there's nothing
+// to apply. Idempotent — calling on an empty queue returns false.
+func (s *store) consumePendingAlign() (idx int, r Reveal, ok bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.pendingAlignSet {
+		return 0, 0, false
+	}
+	idx, r = s.pendingAlignIdx, s.pendingAlign
+	s.pendingAlignSet = false
+	return idx, r, true
 }
 
 func (s *store) setHeader(title, desc string) {
