@@ -223,6 +223,96 @@ func (r *Renderer) applyBorderStyle(s lipgloss.Style) lipgloss.Style {
 		BorderLeft(r.borderChars.Left != "")
 }
 
+// borderSides is the resolved per-side draw decision for a verbatim
+// or result box. Computed once via effectiveSides() so the box vs.
+// raw render branching uses the same logic that applyBorderStyle
+// uses to drive lipgloss.
+type borderSides struct{ top, right, bottom, left bool }
+
+// hasSide reports whether either left or right side is drawn. When
+// false, the box has no visible frame columns and content can be
+// emitted raw (no lipgloss.Width()/Padding()) so long lines stay
+// byte-exact for copy-paste.
+func (s borderSides) hasSide() bool { return s.left || s.right }
+
+// effectiveSides resolves r.borderStyle + r.borderChars into the
+// per-side draw decision, mirroring applyBorderStyle's resolution
+// order. Used by renderBoxOrRaw to decide between the lipgloss box
+// path (any side drawn) and the raw-content-plus-rules path (no
+// sides drawn — copy-paste friendly).
+func (r *Renderer) effectiveSides() borderSides {
+	switch r.borderStyle {
+	case demokit.BorderFull:
+		return borderSides{true, true, true, true}
+	case demokit.BorderHorizontalOnly:
+		return borderSides{top: true, bottom: true}
+	case demokit.BorderNone:
+		return borderSides{}
+	}
+	if r.borderChars.IsZero() {
+		return borderSides{true, true, true, true}
+	}
+	return borderSides{
+		top:    r.borderChars.Top != "",
+		right:  r.borderChars.Right != "",
+		bottom: r.borderChars.Bottom != "",
+		left:   r.borderChars.Left != "",
+	}
+}
+
+// horizontalRule returns a single-line rule string for the raw
+// (no-side) render path, in the requested border color. `side` is
+// "top" or "bottom" and selects the glyph from r.borderChars when
+// set; otherwise falls back to `─` (matching the default rounded
+// border's Top/Bottom char). Width is r.width() so the rule visually
+// aligns with the renderer's other framing.
+func (r *Renderer) horizontalRule(side string, fg color.Color) string {
+	ch := ""
+	if !r.borderChars.IsZero() {
+		switch side {
+		case "top":
+			ch = r.borderChars.Top
+		case "bottom":
+			ch = r.borderChars.Bottom
+		}
+	}
+	if ch == "" {
+		ch = "─"
+	}
+	return lipgloss.NewStyle().Foreground(fg).Render(strings.Repeat(ch, r.width()))
+}
+
+// renderBoxOrRaw is the shared draw path for verbatim and result
+// content. When the active border has any side (left/right) drawn,
+// it renders inside a lipgloss box of width r.width() with the
+// standard Padding(0, 1). When neither side is drawn, content is
+// emitted raw via smoothPrint — no Width(), no Padding — flanked by
+// optional top/bottom horizontal rules. The raw path preserves
+// byte-exact content so long lines (curl payloads, JSON blobs)
+// survive copy-paste; explicit \n in `content` still produces line
+// breaks. fg is the border color (Foreground on the rules,
+// BorderForeground on the lipgloss box).
+func (r *Renderer) renderBoxOrRaw(content string, fg color.Color) {
+	content = strings.TrimRight(content, "\n")
+	sides := r.effectiveSides()
+	if sides.hasSide() {
+		box := r.applyBorderStyle(lipgloss.NewStyle().
+			Border(r.verbatimBorder()).
+			BorderForeground(fg).
+			Padding(0, 1).
+			Width(r.width()))
+		r.smoothPrint(box.Render(content))
+		return
+	}
+	if sides.top {
+		r.smoothPrint(r.horizontalRule("top", fg))
+	}
+	r.smoothPrint(content)
+	if sides.bottom {
+		r.smoothPrint(r.horizontalRule("bottom", fg))
+	}
+}
+
 // activePrompter returns the configured FormPrompter, lazily creating
 // the default ReadlinePrompter on first access.
 func (r *Renderer) activePrompter() FormPrompter {
@@ -489,12 +579,7 @@ func (r *Renderer) renderBoxedBlock(blockIdx int, v demokit.VerbatimView, multi 
 		fmt.Fprintln(r.stdoutFor(), r.renderTabStrip(v.Variants, r.activeIndex(blockIdx)))
 	}
 	active := v.Variants[r.activeIndex(blockIdx)]
-	box := r.applyBorderStyle(lipgloss.NewStyle().
-		Border(r.verbatimBorder()).
-		BorderForeground(p.Note).
-		Padding(0, 1).
-		Width(r.width()))
-	r.smoothPrint(box.Render(strings.TrimRight(active.Content, "\n")))
+	r.renderBoxOrRaw(active.Content, p.Note)
 }
 
 // renderTabStrip formats the per-variant tabs above a multi-variant
@@ -677,13 +762,7 @@ func (r *Renderer) printResultBlock(_ int, output string, result *demokit.StepRe
 		content += "\n" + strings.Join(bodyParts, "\n")
 	}
 
-	box := r.applyBorderStyle(lipgloss.NewStyle().
-		Border(r.verbatimBorder()).
-		BorderForeground(borderColor).
-		Padding(0, 1).
-		Width(r.width()))
-
-	r.smoothPrint(box.Render(content))
+	r.renderBoxOrRaw(content, borderColor)
 	fmt.Fprintln(r.stdoutFor())
 }
 
@@ -849,12 +928,7 @@ func (r *Renderer) echoActiveVariant(copyables []copyableBlock) {
 	fmt.Fprintln(r.stdoutFor())
 	fmt.Fprintln(r.stdoutFor(), r.renderTabStrip(target.view.Variants, r.activeIndex(target.index)))
 	active := target.view.Variants[r.activeIndex(target.index)]
-	box := r.applyBorderStyle(lipgloss.NewStyle().
-		Border(r.verbatimBorder()).
-		BorderForeground(r.Palette.Note).
-		Padding(0, 1).
-		Width(r.width()))
-	r.smoothPrint(box.Render(strings.TrimRight(active.Content, "\n")))
+	r.renderBoxOrRaw(active.Content, r.Palette.Note)
 }
 
 func plainCountdownBar(remaining, total time.Duration, width int) string {

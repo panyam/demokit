@@ -185,9 +185,27 @@ func (d *Demo) RegisterServeHandler(h ServeHandler) *Demo {
 //	    WithBorderChars(demokit.BorderCharsDouble)
 
 // BorderStyle controls which sides of a verbatim/output box draw a
-// border line. Walkthroughs that want mouse-select copy of step
-// output use BorderHorizontalOnly so triple-click selection
-// doesn't pick up vertical box characters.
+// border line — AND, on the TUI, what that absence implies for the
+// content inside. Walkthroughs that want mouse-select copy of step
+// output use BorderHorizontalOnly so triple-click selection doesn't
+// pick up vertical box characters, and so long lines (curl payloads,
+// JSON blobs) stay byte-exact for paste.
+//
+// TUI semantics in detail. The presence of a left/right side is the
+// signal for "this content is framed; fit it to the frame":
+//   - With either side drawn (Full, or BorderDefault with side chars),
+//     content is rendered inside a lipgloss box of width r.width()
+//     with 1-char horizontal padding. Lines longer than the inner
+//     width are soft-wrapped by lipgloss.
+//   - With no sides drawn (HorizontalOnly, None, or BorderDefault
+//     with empty side chars), content is emitted RAW — no Width(),
+//     no Padding, flush left. Explicit \n still produces line breaks;
+//     long lines are not re-wrapped. HorizontalOnly still draws top
+//     and bottom rules above and below the raw content; None draws
+//     no rules at all.
+//
+// Callers who want wrapped content under HorizontalOnly/None should
+// pre-wrap the source with explicit \n.
 type BorderStyle int
 
 const (
@@ -196,14 +214,19 @@ const (
 	// defaults to horizontal-only and the VerbatimCell to all four
 	// sides. Zero value so existing callers don't migrate.
 	BorderDefault BorderStyle = iota
-	// BorderFull draws all four sides.
+	// BorderFull draws all four sides. TUI content is fit to the
+	// box width and soft-wrapped if needed.
 	BorderFull
 	// BorderHorizontalOnly draws only the top and bottom edges.
 	// Mouse-select copy on inner content rows then picks up the
-	// content alone — no side chars.
+	// content alone — no side chars. TUI content is emitted raw
+	// (no Width()/Padding) between the rules; pre-wrap with \n if
+	// you want line breaks.
 	BorderHorizontalOnly
 	// BorderNone draws no border. Cell content sits flush with
 	// scrollback; suits walkthroughs that prefer minimal chrome.
+	// TUI content is emitted raw (no Width()/Padding, no rules);
+	// pre-wrap with \n if you want line breaks.
 	BorderNone
 )
 

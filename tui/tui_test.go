@@ -225,6 +225,75 @@ func TestVerbatimBorderNoneNoBoxChars(t *testing.T) {
 	}
 }
 
+// TestVerbatimBorderHorizontalOnlyDoesNotWrap verifies the raw-content
+// contract introduced for HorizontalOnly: a single content line wider
+// than r.width() survives intact (no lipgloss soft-wrap inserting \n
+// mid-string). Load-bearing for the copy-paste use case where a curl
+// command's JSON payload must round-trip through mouse-select.
+func TestVerbatimBorderHorizontalOnlyDoesNotWrap(t *testing.T) {
+	r := newTestRenderer()
+	r.MaxWidth = 80
+	r.Fraction = 1.0
+	r.Delay = -1
+	r.WithBorderStyle(demokit.BorderHorizontalOnly)
+
+	longLine := `curl -X POST http://localhost:8080/mcp -H 'Content-Type: application/json' -d '{"jsonrpc":"2.0","method":"initialize","params":{"protocolVersion":"2025-11-25"}}'`
+	if len(longLine) <= r.width() {
+		t.Fatalf("test fixture sanity: longLine (%d chars) should exceed r.width() (%d) to exercise wrap behavior", len(longLine), r.width())
+	}
+
+	demo := demokit.New("v").BoxedVerbatim()
+	step := demo.Step("Repro").VerbatimVariants("Fetch",
+		demokit.MakeVariant("curl", "bash", longLine).Default(),
+	)
+
+	out := captureStdout(t, func() {
+		r.printStepBlock(1, 1, stepStartFromDef(1, 1, step), true)
+	})
+
+	if !strings.Contains(out, longLine) {
+		t.Errorf("expected long line preserved intact in HorizontalOnly mode (no soft-wrap), got:\n%s", out)
+	}
+}
+
+// TestVerbatimBorderNoneNoLeftIndent verifies the raw-content path
+// under BorderNone emits content flush left — the lipgloss
+// .Padding(0, 1) that previously added a leading space is gone.
+// Load-bearing for "the absence of a side border means no chrome at
+// all" (issue 55 follow-up).
+func TestVerbatimBorderNoneNoLeftIndent(t *testing.T) {
+	r := newTestRenderer()
+	r.MaxWidth = 80
+	r.Fraction = 1.0
+	r.Delay = -1
+	r.WithBorderStyle(demokit.BorderNone)
+
+	const marker = "curl -X GET https://example.com"
+
+	demo := demokit.New("v").BoxedVerbatim()
+	step := demo.Step("Repro").VerbatimVariants("Fetch",
+		demokit.MakeVariant("curl", "bash", marker).Default(),
+	)
+
+	out := captureStdout(t, func() {
+		r.printStepBlock(1, 1, stepStartFromDef(1, 1, step), true)
+	})
+
+	var contentRow string
+	for _, row := range strings.Split(out, "\n") {
+		if strings.Contains(row, marker) {
+			contentRow = row
+			break
+		}
+	}
+	if contentRow == "" {
+		t.Fatalf("content row %q missing from output:\n%s", marker, out)
+	}
+	if strings.HasPrefix(contentRow, " ") {
+		t.Errorf("BorderNone content row should be flush left, got leading space:\n%q", contentRow)
+	}
+}
+
 // TestVerbatimBorderCharsCustom verifies a custom BorderChars value
 // reaches the rendered output of the verbatim block: a struct
 // literal with `#` on top/bottom, `*` on sides, and `+` corners
