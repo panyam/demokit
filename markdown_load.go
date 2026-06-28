@@ -9,6 +9,7 @@ import (
 
 	"github.com/yuin/goldmark"
 	"github.com/yuin/goldmark/ast"
+	"github.com/yuin/goldmark/parser"
 	"github.com/yuin/goldmark/text"
 	"gopkg.in/yaml.v3"
 )
@@ -161,30 +162,33 @@ func splitFrontmatter(src []byte) (*frontmatter, []byte, error) {
 // loadedItem is the intermediate parsed-md form. Classified into
 // *StepDef or *SectionDef based on content shape (isStep).
 type loadedItem struct {
-	id     string
-	title  string
-	note   string
-	body   string
-	arrows []arrowDef
-	refs   []Ref
-	inputs []InputDef
+	id        string
+	title     string
+	note      string
+	body      string
+	arrows    []arrowDef
+	refs      []Ref
+	inputs    []InputDef
+	verbatims []verbatimBlock
 }
 
 func (li loadedItem) isStep() bool {
 	return li.note != "" ||
 		len(li.arrows) > 0 ||
 		len(li.refs) > 0 ||
-		len(li.inputs) > 0
+		len(li.inputs) > 0 ||
+		len(li.verbatims) > 0
 }
 
 func (li loadedItem) toStep() *StepDef {
 	return &StepDef{
-		id:     li.id,
-		title:  li.title,
-		note:   li.note,
-		arrows: li.arrows,
-		refs:   li.refs,
-		inputs: li.inputs,
+		id:       li.id,
+		title:    li.title,
+		note:     li.note,
+		arrows:   li.arrows,
+		refs:     li.refs,
+		inputs:   li.inputs,
+		verbatim: li.verbatims,
 	}
 }
 
@@ -209,6 +213,12 @@ func parseItems(body []byte) ([]loadedItem, []string, error) {
 	var warnings []string
 	var current *loadedItem
 
+	// Verbatim grouping state: consecutive fenced blocks that share the
+	// same verbatim="<title>" merge into one multi-variant block. Any
+	// other node (or a different title) closes the open group.
+	openVerbatim := false
+	openVerbatimTitle := ""
+
 	finalize := func() {
 		if current != nil {
 			items = append(items, *current)
@@ -221,6 +231,7 @@ func parseItems(body []byte) ([]loadedItem, []string, error) {
 			finalize()
 			title, id := parseHeading(h, body)
 			current = &loadedItem{title: title, id: id}
+			openVerbatim = false
 			continue
 		}
 		if current == nil {
@@ -231,6 +242,7 @@ func parseItems(body []byte) ([]loadedItem, []string, error) {
 			continue
 		}
 
+		wasVerbatim := false
 		switch x := n.(type) {
 		case *ast.Blockquote:
 			text := blockquoteText(x, body)
@@ -244,9 +256,47 @@ func parseItems(body []byte) ([]loadedItem, []string, error) {
 			}
 
 		case *ast.FencedCodeBlock:
-			info := strings.TrimSpace(string(x.Language(body)))
 			content := codeBlockText(x, body)
-			switch info {
+			fullInfo := ""
+			if x.Info != nil {
+				fullInfo = string(x.Info.Segment.Value(body))
+			}
+			// Language is the info text before any "{attrs}" group.
+			// Deriving it here (rather than via x.Language) yields an
+			// empty language for an attributes-only fence like
+			// `~~~ {verbatim="..."}`, instead of the "{verbatim=..." token.
+			lang := fullInfo
+			if i := strings.IndexByte(lang, '{'); i >= 0 {
+				lang = lang[:i]
+			}
+			lang = strings.TrimSpace(lang)
+
+			if title, label, isVerb, isDefault := fenceVerbatimAttrs(fullInfo); isVerb {
+				v := Variant{
+					Label: label,
+					Lang:  lang,
+					// codeBlockText keeps the newline that precedes the
+					// closing fence; drop it so the stored content matches
+					// what the Go VerbatimVariants/VerbatimLang setters get.
+					Content:   strings.TrimSuffix(content, "\n"),
+					IsDefault: isDefault,
+				}
+				if openVerbatim && openVerbatimTitle == title && len(current.verbatims) > 0 {
+					last := &current.verbatims[len(current.verbatims)-1]
+					last.Variants = append(last.Variants, v)
+				} else {
+					current.verbatims = append(current.verbatims, verbatimBlock{
+						Label:    title,
+						Variants: []Variant{v},
+					})
+				}
+				openVerbatim = true
+				openVerbatimTitle = title
+				wasVerbatim = true
+				break
+			}
+
+			switch lang {
 			case "mermaid":
 				arrows, mw := parseMermaidArrows(content)
 				current.arrows = append(current.arrows, arrows...)
@@ -269,7 +319,7 @@ func parseItems(body []byte) ([]loadedItem, []string, error) {
 				if current.body != "" {
 					current.body += "\n\n"
 				}
-				current.body += "```" + info + "\n" + content + "```"
+				current.body += "```" + lang + "\n" + content + "```"
 			}
 
 		case *ast.Paragraph:
@@ -293,9 +343,94 @@ func parseItems(body []byte) ([]loadedItem, []string, error) {
 				current.body += text
 			}
 		}
+
+		// A non-verbatim node closes any open verbatim group, so the
+		// next same-titled fence starts a fresh block rather than
+		// merging across intervening prose.
+		if !wasVerbatim {
+			openVerbatim = false
+		}
 	}
 	finalize()
 	return items, warnings, nil
+}
+
+// fenceVerbatimAttrs reads the demokit verbatim attributes out of a
+// fenced-code info string using goldmark's own attribute parser
+// (parser.ParseAttributes — the same one that backs heading attributes),
+// so the quoting and key=value grammar matches the rest of the markdown
+// ecosystem rather than a bespoke parser.
+//
+// A fence opts into verbatim with a `verbatim="<title>"` attribute; the
+// title is the block label. `label="<name>"` names the variant (the
+// curl / go / python tab), and `default=true` marks the preferred
+// variant. Example:
+//
+//	~~~bash {verbatim="Reproduce on the wire" label=curl default=true}
+//	curl ...
+//	~~~
+//
+// goldmark requires `default=true` (a bare `default` flag makes it
+// reject the whole attribute block), and the language token is read
+// separately via FencedCodeBlock.Language. Fences with no `{...}` group
+// (mermaid/inputs/refs and plain code) return isVerbatim=false and are
+// dispatched on language alone, leaving existing behavior unchanged.
+func fenceVerbatimAttrs(info string) (title, label string, isVerbatim, isDefault bool) {
+	open := strings.IndexByte(info, '{')
+	if open < 0 {
+		return
+	}
+	attrs, ok := parser.ParseAttributes(text.NewReader([]byte(info[open:])))
+	if !ok {
+		return
+	}
+	for _, a := range attrs {
+		switch string(a.Name) {
+		case "verbatim":
+			title = attrString(a.Value)
+			isVerbatim = true
+		case "label":
+			label = attrString(a.Value)
+		case "default":
+			isDefault = attrBool(a.Value)
+		}
+	}
+	// label/default are only meaningful on a verbatim fence; a plain
+	// attributed fence (e.g. {label=curl} with no verbatim) is not a
+	// verbatim block and reports nothing.
+	if !isVerbatim {
+		return "", "", false, false
+	}
+	return
+}
+
+// attrString renders a goldmark attribute value (a []byte for string
+// attributes) as a Go string.
+func attrString(v any) string {
+	switch x := v.(type) {
+	case []byte:
+		return string(x)
+	case string:
+		return x
+	default:
+		return fmt.Sprintf("%v", x)
+	}
+}
+
+// attrBool reads a goldmark attribute value as a bool. `key=true` parses
+// to a real bool; the []byte/string fallbacks guard against goldmark
+// representation changes across versions.
+func attrBool(v any) bool {
+	switch x := v.(type) {
+	case bool:
+		return x
+	case []byte:
+		return string(x) == "true"
+	case string:
+		return x == "true"
+	default:
+		return false
+	}
 }
 
 var anchorRegex = regexp.MustCompile(`\s*\{#([\w\-.]+)\}\s*$`)

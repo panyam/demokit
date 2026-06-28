@@ -61,7 +61,7 @@ Run(ctx) closure                ───────────────→
 |---|---|---|
 | **Scalar** (note, title, future per-step `autoAcceptAfter`) | initial value | replace (latest wins) |
 | **Keyed list** (inputs, keyed by `Name`) | initial list | replace-by-key, else append |
-| **Plain list** (refs, future `tags`) | initial list | append |
+| **Plain list** (refs, verbatim blocks, future `tags`) | initial list | append |
 | **Closure** (Run, Coalesce, Parse) | (md has no closures) | set; only Go can |
 
 ### File format
@@ -98,13 +98,21 @@ B -->> A: dashed arrow
 - name: RFC ...
   url: https://...
 ​```
+
+~~~bash {verbatim="Reproduce on the wire" label=curl default=true}
+curl -s https://api.example/...
+~~~
+~~~go {verbatim="Reproduce on the wire" label=go}
+http.Get("https://api.example/...")
+~~~
 ```
 
 ### Conventions
 
 - **Heading anchor `{#id}` is the join key.** CommonMark extension; renders cleanly on GitHub. Without an explicit anchor, the title is slugified.
-- **Step vs section is decided by content shape.** A heading with any of [blockquote note, mermaid arrows, refs, inputs] is a step; prose-only headings are sections. Bind only steps.
+- **Step vs section is decided by content shape.** A heading with any of [blockquote note, mermaid arrows, refs, inputs, verbatim blocks] is a step; prose-only headings are sections. Bind only steps.
 - **Three reserved fenced info-strings:** `mermaid`, `inputs`, `refs`. Other fenced blocks pass through as section body for future renderers.
+- **Verbatim blocks are attribute-driven, not a reserved info-string.** Any fence with a `verbatim="<title>"` attribute becomes a verbatim block (`<title>` is the block label); `label="<name>"` names the variant and `default=true` marks the preferred one. Consecutive fences sharing a title merge into one multi-variant block (the curl/go/python tabs), mapping to `VerbatimVariants`; a lone titled fence maps to `VerbatimLang`. Attributes are parsed by goldmark's own `parser.ParseAttributes`, so `default=true` is required (a bare `default` makes goldmark reject the whole attribute group). Use `~~~` fences so a ```` ``` ```` block can appear inside the verbatim body.
 - **Mermaid features beyond `->>` / `-->>`** (`participant`, `Note over`, `alt`, `loop`, `autonumber`) are silently dropped with a load warning. demokit's model is arrow-only.
 
 ### Examples
