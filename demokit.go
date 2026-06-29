@@ -147,7 +147,7 @@ type DocHandler func(d *Demo, entries []TraceEntry, out string) error
 //	web.RegisterWith(demo)  // wires --doc bundle and --serve
 func (d *Demo) RegisterDocFormat(name string, h DocHandler) *Demo {
 	switch name {
-	case "md", "html", "json":
+	case "md", "html", "json", "sidecar":
 		panic("demokit: cannot override built-in doc format " + name)
 	}
 	if d.docHandlers == nil {
@@ -1063,6 +1063,11 @@ func (d *Demo) emitDoc(format, from string) {
 		fmt.Print(RenderDocumentHTML(RenderContext{Demo: d, Trace: entries}))
 	case "json":
 		fmt.Print(RenderDocumentJSON(RenderContext{Demo: d, Trace: entries}))
+	case "sidecar":
+		// Inverse of FromMarkdown: emit the definition as sidecar markdown.
+		// Definition-only (ignores any --from trace); the point is to lift
+		// inline content into a demo.md.
+		fmt.Print(d.Sidecar())
 	default:
 		// Registered formats (e.g. "bundle" via demokit/web). Hint
 		// at the most common case if it's missing.
@@ -1077,7 +1082,7 @@ func (d *Demo) emitDoc(format, from string) {
 				"demokit: --doc bundle is not enabled. Call web.RegisterWith(demo) before Execute (import github.com/panyam/demokit/web).")
 			return
 		}
-		fmt.Fprintf(os.Stderr, "demokit: unknown --doc format %q (want md|html|json or registered format)\n", format)
+		fmt.Fprintf(os.Stderr, "demokit: unknown --doc format %q (want md|html|json|sidecar or registered format)\n", format)
 	}
 }
 

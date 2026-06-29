@@ -1,0 +1,29 @@
+// {{.Title}} — a live walkthrough.
+//
+// Content (notes, snippets) lives in demo.md; behavior lives here in Go and
+// attaches to a step by its heading id via demo.Bind("id"). This is the
+// common shape for demos that make real calls while keeping prose in markdown.
+package main
+
+import (
+	_ "embed"
+	"fmt"
+
+	"github.com/panyam/demokit"
+	"github.com/panyam/demokit/harness"
+)
+
+//go:embed demo.md
+var demoMD []byte
+
+func main() {
+	demo := demokit.New("{{.Title}}").FromMarkdownBytes(demoMD)
+
+	// The "fetch" step's content is in demo.md; its behavior is here.
+	demo.Bind("fetch").Run(func(ctx demokit.StepContext) *demokit.StepResult {
+		fmt.Println("... do the real work here (HTTP call, command, etc.) ...")
+		return demokit.Info("fetched")
+	})
+
+	harness.Run(demo)
+}

@@ -16,6 +16,7 @@ This document describes how demokit is wired together internally — the files, 
 | `render.go` | `RenderContext{Demo, Trace, State}` + `EntryOpts{StepNumber}` — the contract every doc renderer consumes |
 | `render_trace.go` | `RenderEntryMD/HTML`, `RenderDocumentMD/HTML` |
 | `render_json.go` | `RenderDocumentJSON`, `JSONFromTrace`, `Demo.JSON()` + projection view structs |
+| `render_sidecar.go` | `Demo.Sidecar()` — emits the definition as sidecar markdown (inverse of `FromMarkdown`); backs `--doc sidecar` |
 | `markdown_load.go` | `Demo.FromMarkdown(path)` + `Demo.FromMarkdownBytes` + `Demo.Bind(id)` — sidecar markdown loader |
 | `web/` | Subpackage `package web`. Go-side embed surface (`TraceFragment`, `WriteBundle`, `PlayerJS`, `PlayerCSS`); registers `--doc bundle` with core via `init()`. Imported via `_ "github.com/panyam/demokit/web"` to enable bundle output. |
 | `web/player/` | Vanilla-JS Custom Element (`<demokit-demo>`) + scoped CSS, embedded into the `web` package binary via `//go:embed`. |
@@ -124,6 +125,25 @@ http.Get("https://api.example/...")
 | `examples/graph/` | inline | branching state machine, `Coalesce`, `AutoAcceptAfter` countdown |
 | `examples/dungeon/` | sidecar | `FromMarkdownBytes` + `go:embed`, `Bind`, multiple cycles, `MaxVisits` guard, `int` input, Go-side state (the magic ring), cancellable streaming step (`listen`), live ANSI dragon scene |
 
+## CLI: scaffolding and extraction (`cmd/demokit`)
+
+`cmd/demokit` is a `package main` tool (stdlib only — `flag`, `go/parser`, `text/template`, `embed`) installed via `go install github.com/panyam/demokit/cmd/demokit@latest`. Three subcommands:
+
+| Command | Does |
+|---|---|
+| `demokit init [dir]` | writes a base `walkthrough.mk` and one sample example (`--kind`, default `live`) so `make demo` runs immediately |
+| `demokit new <name> --kind=narrated\|live\|branching` | renders one example dir from an embedded starter (`templates/<kind>/*.tmpl`, substituting the titleized name) plus a per-example `Makefile` that `include`s `walkthrough.mk` |
+| `demokit extract <file.go> [--out file]` | rewires a Go walkthrough's **behavior** into a `bindings.go` skeleton (`Step(...).Run` → `Bind(id).Run`) |
+
+**Starters are a per-example gradient, not project modes:** `narrated` (sidecar only) ⊂ `live` (sidecar + `Bind`) ⊂ `branching` (Go routing/state). A project mixes them freely; `--kind` is a one-time generator choice, and the scaffold is dep-light (generated `main.go` imports only `demokit` + `harness`). The genuinely-common renderer wiring lives in `harness`, not in generated project code.
+
+**Migration is two steps, split by what each source can give:**
+
+1. **Content → `--doc sidecar`** (a renderer, `render_sidecar.go`, `Demo.Sidecar()`). `go run ./mydemo --doc sidecar > demo.md` walks the live `Demo` and emits the inverse of `FromMarkdown`: frontmatter, `## title {#id}`, blockquote notes, `mermaid`/`inputs`/`refs` blocks, verbatim. Because it reads the resolved `Demo` model (never running steps), it handles everything — inputs, computed content — without mirroring the builder API. Round-trip tested (`FromMarkdown` → `Sidecar` → reload).
+2. **Behavior → `demokit extract`** (`go/ast`). Only the closures can't come from the model — a `func` value has no source — so this is the one piece that must read source. It slices each step's `Run`/`Coalesce`/`Parse`/`Timeout`/`Cancellable` args verbatim into `Bind(id).Run(...)`, and warns when a behavior-bearing step lacks an explicit `.ID()` (the join key demo.md and the binding must share).
+
+This split is deliberate: the brittle "know every content construct" logic lives once, in the `Sidecar` renderer over the `Demo` model, instead of being duplicated in an AST walker that drifts as the builder API changes. `extract`'s AST surface is just `Step`/`ID` + the behavior calls.
+
 ## Long-running steps: timeout + cancellation
 
 Steps that consume infinite or near-infinite streams (event listeners, polling loops, "wait for press-Enter") need a way to end. `StepDef.Timeout(d)` and `StepDef.Cancellable(b)` are two orthogonal knobs:
@@ -180,6 +200,7 @@ Load warnings (unsupported mermaid syntax, content before the first heading) pri
 | `--doc html` | yes | `RenderDocumentHTML(ctx)` |
 | `--doc json` | no | `RenderDocumentJSON(ctx)` (definition only) |
 | `--doc json` | yes | `RenderDocumentJSON(ctx)` (definition + trace) |
+| `--doc sidecar` | ignored | `Demo.Sidecar()` — definition as sidecar markdown (inverse of `FromMarkdown`); ignores `--from` |
 | `--doc bundle [--out path]` | either | `web.WriteBundle(d, entries, path)` — self-contained HTML with player + CSS + trace inlined. Requires `_ "github.com/panyam/demokit/web"` import (registers via `RegisterDocFormat`). |
 
 Static-md and trace-md route to **different renderers** because they walk fundamentally different sources (declarations vs. recorded entries) and produce intentionally different shapes. The static visitor includes a "What you'll learn" notes summary, a consolidated mermaid sequence diagram, and a Run-it footer; the trace renderer produces a per-step walkthrough with captured outputs and inputs.

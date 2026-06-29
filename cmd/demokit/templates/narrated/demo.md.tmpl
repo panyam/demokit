@@ -1,0 +1,24 @@
+---
+title: {{.Title}}
+description: A narrated walkthrough — all content lives in this markdown file.
+---
+
+## Welcome {#welcome}
+
+This is a narrated demo. Everything the audience sees is authored here in
+markdown: section prose, step notes, and snippets. Edit this file and run
+`make demo`.
+
+## A step with a note {#first-step}
+
+> Blockquotes become a step's note — the talk-track that explains what is
+> happening. Steps pause for the audience before advancing.
+
+## Show a command {#snippet}
+
+> Fenced blocks tagged with a `verbatim` attribute become copy-pasteable
+> snippets in the rendered demo.
+
+~~~bash {verbatim="Run this"}
+echo "hello from demokit"
+~~~

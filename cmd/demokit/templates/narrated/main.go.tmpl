@@ -1,0 +1,21 @@
+// {{.Title}} — a narrated walkthrough.
+//
+// All content lives in demo.md; this file just loads and runs it. There is
+// no Go behavior. To add behavior, graduate to the "live" kind: bind a Run
+// to a step id with demo.Bind("id").Run(...).
+package main
+
+import (
+	_ "embed"
+
+	"github.com/panyam/demokit"
+	"github.com/panyam/demokit/harness"
+)
+
+//go:embed demo.md
+var demoMD []byte
+
+func main() {
+	demo := demokit.New("{{.Title}}").FromMarkdownBytes(demoMD)
+	harness.Run(demo)
+}
