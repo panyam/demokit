@@ -23,9 +23,7 @@ import (
 	"time"
 
 	"github.com/panyam/demokit"
-	"github.com/panyam/demokit/notebookbridge"
-	"github.com/panyam/demokit/tui"
-	"github.com/panyam/demokit/web"
+	"github.com/panyam/demokit/harness"
 )
 
 type Diagnosis struct {
@@ -47,9 +45,6 @@ func main() {
 			demokit.Actor("App", "App"),
 			demokit.Actor("AS", "Auth Server"),
 		)
-
-	// Enable --doc bundle and --serve.
-	web.RegisterWith(demo)
 
 	demo.Section("How this demo works",
 		"You'll be asked to pick a failure symptom. Each branch shows the",
@@ -208,16 +203,8 @@ defer resp.Body.Close()`),
 
 	demo.Step("End").ID("end")
 
-	// --- renderer / output mode flags ---
-	// --mode=plain (default) | tui | notebook. --tui is honored as a
-	// deprecated alias for --mode=tui.
-
-	switch demokit.Mode() {
-	case "tui":
-		demo.WithRenderer(tui.New())
-	case "notebook":
-		demo.WithRenderer(notebookbridge.New())
-	}
-
-	demo.Execute()
+	// --mode=plain (default) | tui | notebook (--tui / --note aliases).
+	// harness.Run wires the renderer, enables --doc bundle / --serve,
+	// then executes.
+	harness.Run(demo)
 }

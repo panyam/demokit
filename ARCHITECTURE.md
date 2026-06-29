@@ -22,6 +22,7 @@ This document describes how demokit is wired together internally — the files, 
 | `term.go` | Terminal width detection with stdout/stderr fallback |
 | `logger.go` | Internal `print()` helper (writes to stderr — see gotchas) |
 | `tui/` | Lipgloss-based renderer + `FormPrompter` interface |
+| `harness/` | Subpackage `package harness`. `harness.Run(demo)` / `harness.SetupRenderer(demo)` — one-call renderer/mode/web wiring (the `--mode` switch + `web.RegisterWith`). Batteries-included: imports `tui` + `notebookbridge` + `web`, so it pulls their charm/websocket deps; lean consumers skip it and wire renderers directly. |
 
 ## Render contract
 
@@ -210,6 +211,8 @@ demo.Execute()
 Demos that don't call `web.RegisterWith` see clear stderr errors if they invoke `--doc bundle` or `--serve`: `"demokit: --doc bundle is not enabled. Call web.RegisterWith(demo) before Execute (import github.com/panyam/demokit/web)."`. Names `md`, `html`, `json` are reserved; reusing them panics.
 
 Reasoning for instance-scoped: multiple demos in one process don't collide; tests don't share state across runs; the explicit `web.RegisterWith(demo)` line is grep-able evidence of opt-in (vs. a silent `init()`). The `tui/` subpackage uses the same shape (separate package; demos opt in via explicit `tui.New()`).
+
+The `harness/` subpackage bundles this opt-in: `harness.SetupRenderer(demo)` (and `harness.Run`, which adds `Execute`) selects the renderer for `demokit.Mode()` and calls `web.RegisterWith` for you, so a walkthrough's `main` is one line. Because harness owns the `web.RegisterWith` call, a demo using harness must **not** also call it — the `bundle` format would register twice and panic. Demos that need bespoke renderer wiring (e.g. `examples/basic`'s `--smooth` plain renderer, `examples/verbatims`'s border-style flag) skip harness and wire renderers directly; `examples/{graph,dungeon}` use `harness.Run`.
 
 ## Embed surface — `<demokit-demo>` web player
 
