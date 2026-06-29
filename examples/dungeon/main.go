@@ -31,9 +31,7 @@ import (
 	"time"
 
 	"github.com/panyam/demokit"
-	"github.com/panyam/demokit/notebookbridge"
-	"github.com/panyam/demokit/tui"
-	"github.com/panyam/demokit/web"
+	"github.com/panyam/demokit/harness"
 )
 
 // Random honorifics for the cave's introductory greeting. Picked once
@@ -131,9 +129,6 @@ func main() {
 		MaxVisits(3). // catches infinite goblin/passage loops
 		AutoAcceptAfter(8 * time.Second).
 		ShowCountdown(true)
-
-	// Enable --doc bundle and --serve.
-	web.RegisterWith(demo)
 
 	// State held in Go closures, never in the markdown:
 	//   hasRing — set by ring-cave, read by dragon to decide outcome
@@ -325,16 +320,8 @@ func main() {
 
 	// `end` is a prose-only section — no Run needed.
 
-	// --- renderer flag ---
-	// --mode=plain (default) | tui | notebook. --tui is honored as
-	// a deprecated alias for --mode=tui.
-
-	switch demokit.Mode() {
-	case "tui":
-		demo.WithRenderer(tui.New())
-	case "notebook":
-		demo.WithRenderer(notebookbridge.New())
-	}
-
-	demo.Execute()
+	// --mode=plain (default) | tui | notebook (--tui / --note aliases).
+	// harness.Run wires the renderer, enables --doc bundle / --serve,
+	// then executes.
+	harness.Run(demo)
 }

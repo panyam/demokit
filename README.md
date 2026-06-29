@@ -108,6 +108,20 @@ func main() {
 }
 ```
 
+Or skip the boilerplate with the `harness` package, which selects the renderer for `--mode` (plain/tui/notebook), calls `web.RegisterWith`, and runs the demo in one call:
+
+```go
+import "github.com/panyam/demokit/harness"
+
+func main() {
+    demo := demokit.New("...")
+    // ... define steps ...
+    harness.Run(demo)  // --mode wiring + --doc bundle / --serve + Execute
+}
+```
+
+`harness` is batteries-included: it imports the `tui`, `notebookbridge`, and `web` subpackages (and their deps). Demos that want a leaner binary or custom renderer wiring skip it and wire renderers directly (see `examples/basic`). Don't call `web.RegisterWith` yourself when using harness — it registers the bundle format for you.
+
 For programmatic embedding, the same package exposes `web.TraceFragment(d, entries) string` and `web.WriteBundle(d, entries, outPath) error`. See [ARCHITECTURE.md](ARCHITECTURE.md#embed-surface--demokit-demo-web-player) for the full data-source model (URL static, inline blob, programmatic, and the live URL mode driven by `--serve`).
 
 **Live mode (`--serve`).** `go run ./mydemo --serve :8765` runs the demo as an HTTP+WebSocket server. Open `http://localhost:8765/` and the embed page connects via WS, renders structured events as they arrive, and submits input forms back. The server terminal mirrors the same demo in your chosen renderer's style (`PlainRenderer` by default, `tui.Renderer` if you also pass `--tui`). Browser-side reset clears the feed and replays from the top; clients posting `{kind:"reset"}` over WS trigger the same restart. Useful for live presentations and interactive walkthroughs in slide decks.
