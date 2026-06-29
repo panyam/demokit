@@ -1,10 +1,31 @@
 package demokit
 
 import (
+	"flag"
 	"os"
 	"reflect"
 	"testing"
 )
+
+// TestFilterArgsCoversRegisterFlags is the drift guard: every flag
+// RegisterFlags declares must be stripped by FilterArgs, so a consumer
+// running its own flag.Parse(FilterArgs(...)) never chokes on a demokit
+// flag. Enumerating RegisterFlags (rather than a hand-copied list) means
+// adding a flag there without teaching FilterArgs fails here.
+func TestFilterArgsCoversRegisterFlags(t *testing.T) {
+	fs := flag.NewFlagSet("t", flag.ContinueOnError)
+	New("t").RegisterFlags(fs)
+	fs.VisitAll(func(f *flag.Flag) {
+		name := "--" + f.Name
+		args := []string{name, "v", "keep"}
+		if bf, ok := f.Value.(interface{ IsBoolFlag() bool }); ok && bf.IsBoolFlag() {
+			args = []string{name, "keep"}
+		}
+		if got := FilterArgs(args); !reflect.DeepEqual(got, []string{"keep"}) {
+			t.Errorf("FilterArgs does not strip RegisterFlags flag %s: got %v", name, got)
+		}
+	})
+}
 
 // TestFilterArgsBuiltInStripsOnly verifies the built-in flags are
 // stripped (with both spaced and = forms for value flags) and nothing

@@ -19,16 +19,21 @@ import (
 //   - --non-interactive       (bare; skips between-step pauses)
 //   - --doc <format>          (value; routes to doc emission)
 //   - --from <trace-path>     (value; trace input for --doc)
+//   - --out <path>            (value; --doc bundle output)
 //   - --variant <name>        (value; filters verbatim variant output)
+//   - --record <path>         (value; trace record target)
+//   - --replay <path>         (value; trace replay source)
+//   - --serve <addr>          (value; live server address)
+//   - --input-timeout <dur>   (value; input prompt deadline)
 //
+// This mirrors [Demo.RegisterFlags]; the two are kept in sync by a test.
 // Both `--flag value` and `--flag=value` forms are stripped for the
 // value flags. Anything else passes through untouched.
 //
-// To strip caller-declared flags too (e.g. an example's own --serve or
-// --url), pass them as extras built with [BoolFlag] or [ValueFlag]:
+// To strip caller-declared flags too (e.g. an example's own --url),
+// pass them as extras built with [BoolFlag] or [ValueFlag]:
 //
 //	flag.CommandLine.Parse(demokit.FilterArgs(os.Args[1:],
-//	    demokit.BoolFlag("--serve"),
 //	    demokit.ValueFlag("--url"),
 //	))
 func FilterArgs(args []string, extra ...ExtraFlag) []string {
@@ -38,10 +43,15 @@ func FilterArgs(args []string, extra ...ExtraFlag) []string {
 		"--non-interactive": true,
 	}
 	value := map[string]bool{
-		"--doc":     true,
-		"--from":    true,
-		"--variant": true,
-		"--mode":    true,
+		"--doc":           true,
+		"--from":          true,
+		"--variant":       true,
+		"--mode":          true,
+		"--record":        true,
+		"--replay":        true,
+		"--out":           true,
+		"--serve":         true,
+		"--input-timeout": true,
 	}
 	for _, e := range extra {
 		if e.TakesValue {

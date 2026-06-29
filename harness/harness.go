@@ -9,6 +9,11 @@
 // or a custom renderer set, should skip harness and wire renderers
 // directly against demokit — the lean path stays available, the dependency
 // cost lives at the "do I import harness?" boundary.
+//
+// Alongside the wiring entry points (Run, SetupRenderer), harness carries
+// a few small authoring conveniences that walkthroughs repeatedly want —
+// WireRecipe (a curl + Go "reproduce on the wire" verbatim block) and
+// SplitLines — so consumers don't each redefine them.
 package harness
 
 import (
