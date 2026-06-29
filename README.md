@@ -162,7 +162,14 @@ demokit new login --kind=live   # add an example from a starter
 
 `--kind` picks a starter on a gradient: **narrated** (sidecar markdown only, no Go), **live** (markdown content + Go behavior bound by step id), **branching** (Go-driven routing and state). They mix freely within a project — pick per example. Generated code imports only `demokit` and `harness`.
 
-Already have a Go-defined walkthrough and want to move its content into markdown? `demokit extract mydemo.go --out .` emits a `demo.md` (content) and a `bindings.go` skeleton (your `Run` closures, keyed by step id), assigning unique heading ids and flagging anything it can't statically convert with `TODO(extract)`.
+Already have a Go-defined walkthrough and want to move its content into markdown? It's two steps, split by what each source can give:
+
+```bash
+go run ./mydemo --doc sidecar > demo.md   # content, straight from the demo
+demokit extract mydemo.go --out bindings.go   # behavior: Run closures, keyed by step id
+```
+
+`--doc sidecar` is the inverse of `FromMarkdown`: it walks the live demo and emits frontmatter, notes, arrows, inputs, and verbatim blocks (it handles everything the demo declares, because it reads the built model, not the source). `extract` only does the part that can't come from the model — it can't reconstruct a `Run` closure from a function value, so it slices those from the source into a `Bind(id)` skeleton, warning when a bound step needs an explicit `.ID()`.
 
 ## A note on the API surface
 
