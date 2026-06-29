@@ -154,8 +154,8 @@ func Mode() string {
 		if a == "--mode" && i+1 < len(args) {
 			return args[i+1]
 		}
-		if strings.HasPrefix(a, "--mode=") {
-			return strings.TrimPrefix(a, "--mode=")
+		if v, ok := strings.CutPrefix(a, "--mode="); ok {
+			return v
 		}
 	}
 	if slices.Contains(args, "--note") {
