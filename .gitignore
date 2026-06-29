@@ -1,6 +1,8 @@
 # Compiled binaries
 /basic
 /graph
+/demokit
+cmd/demokit/demokit
 examples/basic/basic
 examples/graph/graph
 examples/dungeon/dungeon

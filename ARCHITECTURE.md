@@ -124,6 +124,20 @@ http.Get("https://api.example/...")
 | `examples/graph/` | inline | branching state machine, `Coalesce`, `AutoAcceptAfter` countdown |
 | `examples/dungeon/` | sidecar | `FromMarkdownBytes` + `go:embed`, `Bind`, multiple cycles, `MaxVisits` guard, `int` input, Go-side state (the magic ring), cancellable streaming step (`listen`), live ANSI dragon scene |
 
+## CLI: scaffolding and extraction (`cmd/demokit`)
+
+`cmd/demokit` is a `package main` tool (stdlib only — `flag`, `go/parser`, `text/template`, `embed`) installed via `go install github.com/panyam/demokit/cmd/demokit@latest`. Three subcommands:
+
+| Command | Does |
+|---|---|
+| `demokit init [dir]` | writes a base `walkthrough.mk` and one sample example (`--kind`, default `live`) so `make demo` runs immediately |
+| `demokit new <name> --kind=narrated\|live\|branching` | renders one example dir from an embedded starter (`templates/<kind>/*.tmpl`, substituting the titleized name) plus a per-example `Makefile` that `include`s `walkthrough.mk` |
+| `demokit extract <file.go> [--out dir]` | converts a Go walkthrough to sidecar form: `demo.md` (content) + `bindings.go` (behavior skeleton) |
+
+**Starters are a per-example gradient, not project modes:** `narrated` (sidecar only) ⊂ `live` (sidecar + `Bind`) ⊂ `branching` (Go routing/state). A project mixes them freely; `--kind` is a one-time generator choice, and the scaffold is dep-light (generated `main.go` imports only `demokit` + `harness`). The genuinely-common renderer wiring lives in `harness`, not in generated project code.
+
+**`extract` is a `go/ast` transform**, deliberately a first cut. It handles the linear builder pattern — `demokit.New(...)`/`Description`/`Actors` → frontmatter; `Step`/`Section` chains with `ID`/`Note`/`Arrow`/`DashedArrow`/`Verbatim*`/`Shell` → markdown; `Run`/`Coalesce`/`Parse`/`Timeout`/`Cancellable` carried verbatim into the `Bind` skeleton by source-slicing. It **guarantees unique `{#id}`s** (explicit `ID`, else slugified title, else `-2`/`-3` dedup). What it can't statically resolve — non-literal content, `Input(...)` declarations, project-specific content helpers like a `WireRecipe` wrapper — becomes a `TODO(extract)` marker with a stderr warning, never a silent drop. The emitted `demo.md` is verified by loading it back through demokit's own loader in tests.
+
 ## Long-running steps: timeout + cancellation
 
 Steps that consume infinite or near-infinite streams (event listeners, polling loops, "wait for press-Enter") need a way to end. `StepDef.Timeout(d)` and `StepDef.Cancellable(b)` are two orthogonal knobs:

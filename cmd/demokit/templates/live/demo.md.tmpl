@@ -1,0 +1,22 @@
+---
+title: {{.Title}}
+description: A live walkthrough — content here, behavior in main.go.
+---
+
+## Overview {#overview}
+
+This demo keeps prose and snippets in markdown, and binds real behavior in
+Go via `demo.Bind("id")`. Edit the content here; edit the behavior in main.go.
+
+## Fetch something {#fetch}
+
+> This step runs real Go code — see `Bind("fetch")` in main.go. The note you
+> are reading and the snippet below are content, so they live here in markdown.
+
+~~~bash {verbatim="Reproduce on the wire" label=curl default=true}
+curl -s https://example.com/api
+~~~
+~~~go {verbatim="Reproduce on the wire" label=go}
+resp, _ := http.Get("https://example.com/api")
+defer resp.Body.Close()
+~~~

@@ -1,0 +1,43 @@
+// {{.Title}} — a branching walkthrough.
+//
+// Routing and state live in Go: each step's Run returns a StepResult whose
+// Next names the step to visit. This is the depth case — use it when the
+// path depends on input or computed state rather than a fixed sequence.
+package main
+
+import (
+	"fmt"
+
+	"github.com/panyam/demokit"
+	"github.com/panyam/demokit/harness"
+)
+
+func main() {
+	demo := demokit.New("{{.Title}}").
+		Description("A branching demo: routing and state live in Go.").
+		MaxSteps(20).
+		MaxVisits(3)
+
+	demo.Step("Pick a path").ID("start").
+		Input(demokit.Choice("left", "right").Named("dir", "Which way?").WithDefault("left")).
+		Run(func(ctx demokit.StepContext) *demokit.StepResult {
+			if ctx.Inputs["dir"] == "left" {
+				return &demokit.StepResult{Next: "went-left"}
+			}
+			return &demokit.StepResult{Next: "went-right"}
+		})
+
+	demo.Step("Went left").ID("went-left").
+		Run(func(ctx demokit.StepContext) *demokit.StepResult {
+			fmt.Println("You went left.")
+			return nil
+		})
+
+	demo.Step("Went right").ID("went-right").
+		Run(func(ctx demokit.StepContext) *demokit.StepResult {
+			fmt.Println("You went right.")
+			return nil
+		})
+
+	harness.Run(demo)
+}

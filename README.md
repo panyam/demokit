@@ -151,6 +151,19 @@ go get github.com/panyam/demokit
 
 Go 1.22+. The TUI renderer also pulls in `charm.land/lipgloss/v2`.
 
+## Scaffolding a project (`demokit` CLI)
+
+```bash
+go install github.com/panyam/demokit/cmd/demokit@latest
+
+demokit init myproject          # base Makefile + a runnable sample example
+demokit new login --kind=live   # add an example from a starter
+```
+
+`--kind` picks a starter on a gradient: **narrated** (sidecar markdown only, no Go), **live** (markdown content + Go behavior bound by step id), **branching** (Go-driven routing and state). They mix freely within a project — pick per example. Generated code imports only `demokit` and `harness`.
+
+Already have a Go-defined walkthrough and want to move its content into markdown? `demokit extract mydemo.go --out .` emits a `demo.md` (content) and a `bindings.go` skeleton (your `Run` closures, keyed by step id), assigning unique heading ids and flagging anything it can't statically convert with `TODO(extract)`.
+
 ## A note on the API surface
 
 The builder pattern is deliberately verbose: `Step("name").ID("foo").Input(…).Coalesce(…).Run(…)`. There is no implicit magic — IDs default to `step-N` if you skip them, but anything you'll route to should have an explicit `ID`.
