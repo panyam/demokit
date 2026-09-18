@@ -47,7 +47,7 @@ func (d *Demo) Markdown() string {
 				if i := strings.IndexByte(teaser, '\n'); i >= 0 {
 					teaser = teaser[:i]
 				}
-				fmt.Fprintf(&b, "- **%s** — %s\n", s.title, teaser)
+				fmt.Fprintf(&b, "- **%s** - %s\n", s.title, teaser)
 			}
 		}
 		b.WriteString("\n")

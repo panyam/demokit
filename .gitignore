@@ -6,3 +6,6 @@ cmd/demokit/demokit
 examples/basic/basic
 examples/graph/graph
 examples/dungeon/dungeon
+
+# Local agent settings
+.claude/

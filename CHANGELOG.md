@@ -5,6 +5,16 @@ All notable changes to this project are documented here. The format follows
 (pre-1.0: minor-looking features ship under `v0.0.x` patch tags). Releases
 before v0.0.31 were tag-only; this file starts at v0.0.31.
 
+## v0.0.32 - 2026-09-18
+
+Generated-markdown punctuation. The "What you'll learn" teaser list separates
+title from note with a spaced hyphen instead of an em-dash. Full notes:
+[docs/releases/v0.0.32.md](docs/releases/v0.0.32.md).
+
+### Changed
+
+- `Demo.Markdown()` renders the teaser list as `- **Title** - note` instead of `- **Title** — note`. No API change; regenerating a walkthrough changes one character per step.
+
 ## v0.0.31 - 2026-06-29
 
 Markdown-native authoring: content lives in a sidecar `demo.md`, behavior stays
