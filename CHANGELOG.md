@@ -5,6 +5,15 @@ All notable changes to this project are documented here. The format follows
 (pre-1.0: minor-looking features ship under `v0.0.x` patch tags). Releases
 before v0.0.31 were tag-only; this file starts at v0.0.31.
 
+## v0.0.33 - 2026-10-24
+
+Dependency bump to servicekit v0.2.0. No demokit API changes. Full notes:
+[docs/releases/v0.0.33.md](docs/releases/v0.0.33.md).
+
+### Changed
+
+- servicekit v0.1.1 to v0.2.0; `web` updated for the `ConnId` to `ConnID` rename. grpc, genproto and protobuf drop out of the dependency graph. Consumers that import servicekit directly need the same rename. (PR 76)
+
 ## v0.0.32 - 2026-09-18
 
 Generated-markdown punctuation. The "What you'll learn" teaser list separates
