@@ -270,7 +270,7 @@ func (h *liveWSHandler) Validate(w http.ResponseWriter, r *http.Request) (*liveC
 		srv:      h.srv,
 	}
 	c.NameStr = "demokit-live"
-	c.ConnIdStr = newConnID()
+	c.ConnIDStr = newConnID()
 	return c, true
 }
 
@@ -331,7 +331,7 @@ func (c *liveConn) OnStart(conn *websocket.Conn) error {
 }
 
 func (c *liveConn) OnClose() {
-	c.srv.hub.unregister(c.ConnId())
+	c.srv.hub.unregister(c.ConnID())
 	c.JSONConn.OnClose()
 }
 
@@ -349,7 +349,7 @@ func newWSHub() *wsHub {
 func (h *wsHub) register(c *liveConn) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	h.conns[c.ConnId()] = c
+	h.conns[c.ConnID()] = c
 }
 
 func (h *wsHub) unregister(id string) {
